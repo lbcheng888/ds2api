@@ -16,7 +16,8 @@
 1. **示例保护**：若判定为 fenced code block 示例上下文，则跳过执行型解析。
 2. **候选片段构建**：从完整文本中构建候选（原文、围绕 `tool_calls` 的 JSON 片段、首尾大括号切片等）。
 3. **按序尝试解析（命中即停）**：
-   - XML 解析（`<tool_call>` / `<function_call>` / `<invoke>` / `tool_use` / `antml:function_call` 等）；
+   - 对“明显 JSON 工具载荷候选”（以 `{`/`[` 开头且包含 `tool_calls`/`\"function\"`）先走 JSON 解析，避免 JSON 字符串内偶发 XML 片段误命中；
+   - 其余候选优先 XML 解析（`<tool_call>` / `<function_call>` / `<invoke>` / `tool_use` / `antml:function_call` 等）；
    - JSON 解析（`{"tool_calls": [...]}`、列表、单对象）；
    - Markup 解析；
    - Text-KV 回退（如 `function.name:` + `function.arguments:`）。

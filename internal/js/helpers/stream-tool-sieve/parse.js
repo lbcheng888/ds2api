@@ -52,6 +52,21 @@ function parseToolCallsDetailed(text, toolNames) {
   }
 
   const candidates = buildToolCallCandidates(normalized);
+  for (const c of candidates) {
+    if (!isLikelyJSONToolPayloadCandidate(c)) {
+      continue;
+    }
+    const jsonParsed = parseToolCallsPayload(c);
+    if (jsonParsed.length === 0) {
+      continue;
+    }
+    result.sawToolCallSyntax = true;
+    const filteredJSON = filterToolCallsDetailed(jsonParsed, toolNames);
+    result.calls = filteredJSON.calls;
+    result.rejectedToolNames = filteredJSON.rejectedToolNames;
+    result.rejectedByPolicy = filteredJSON.rejectedToolNames.length > 0 && filteredJSON.calls.length === 0;
+    return result;
+  }
   let parsed = [];
   for (const c of candidates) {
     parsed = parseMarkupToolCalls(c);
@@ -100,6 +115,21 @@ function parseStandaloneToolCallsDetailed(text, toolNames) {
   }
   const candidates = buildToolCallCandidates(trimmed);
   let parsed = [];
+  for (const c of candidates) {
+    if (!isLikelyJSONToolPayloadCandidate(c)) {
+      continue;
+    }
+    parsed = parseToolCallsPayload(c);
+    if (parsed.length === 0) {
+      continue;
+    }
+    result.sawToolCallSyntax = true;
+    const filteredJSON = filterToolCallsDetailed(parsed, toolNames);
+    result.calls = filteredJSON.calls;
+    result.rejectedToolNames = filteredJSON.rejectedToolNames;
+    result.rejectedByPolicy = filteredJSON.rejectedToolNames.length > 0 && filteredJSON.calls.length === 0;
+    return result;
+  }
   for (const c of candidates) {
     parsed = parseMarkupToolCalls(c);
     if (parsed.length === 0) {
@@ -196,6 +226,18 @@ function shouldSkipToolCallParsingForCodeFenceExample(text) {
   }
   const stripped = stripFencedCodeBlocks(text);
   return !looksLikeToolCallSyntax(stripped);
+}
+
+function isLikelyJSONToolPayloadCandidate(text) {
+  const trimmed = toStringSafe(text).trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) {
+    return false;
+  }
+  const lower = trimmed.toLowerCase();
+  return lower.includes('tool_calls') || lower.includes('"function"');
 }
 
 module.exports = {

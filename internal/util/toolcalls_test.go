@@ -162,6 +162,34 @@ func TestParseToolCallsSupportsClaudeXMLToolCall(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsSupportsCanonicalXMLParametersJSON(t *testing.T) {
+	text := `<tool_call><tool_name>get_weather</tool_name><parameters>{"city":"beijing","unit":"c"}</parameters></tool_call>`
+	calls := ParseToolCalls(text, []string{"get_weather"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	if calls[0].Name != "get_weather" {
+		t.Fatalf("expected tool name get_weather, got %q", calls[0].Name)
+	}
+	if calls[0].Input["city"] != "beijing" || calls[0].Input["unit"] != "c" {
+		t.Fatalf("expected parsed json parameters, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsPrefersJSONPayloadOverIncidentalXMLInString(t *testing.T) {
+	text := `{"tool_calls":[{"name":"search","input":{"q":"latest <tool_call><tool_name>wrong</tool_name><parameters>{\"x\":1}</parameters></tool_call>"}}]}`
+	calls := ParseToolCallsDetailed(text, []string{"search"}).Calls
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	if calls[0].Name != "search" {
+		t.Fatalf("expected tool name search, got %q", calls[0].Name)
+	}
+	if calls[0].Input["q"] == nil {
+		t.Fatalf("expected q argument from json payload, got %#v", calls[0].Input)
+	}
+}
+
 func TestParseToolCallsDetailedMarksXMLToolCallSyntax(t *testing.T) {
 	text := `<tool_call><tool_name>Bash</tool_name><parameters><command>pwd</command></parameters></tool_call>`
 	res := ParseToolCallsDetailed(text, []string{"bash"})

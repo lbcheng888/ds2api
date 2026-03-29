@@ -32,6 +32,22 @@ func ParseToolCallsDetailed(text string, availableToolNames []string) ToolCallPa
 	}
 
 	candidates := buildToolCallCandidates(text)
+	for _, candidate := range candidates {
+		if !isLikelyJSONToolPayloadCandidate(candidate) {
+			continue
+		}
+		tc := parseToolCallsPayload(candidate)
+		if len(tc) == 0 {
+			continue
+		}
+		parsed := tc
+		calls, rejectedNames := filterToolCallsDetailed(parsed, availableToolNames)
+		result.Calls = calls
+		result.RejectedToolNames = rejectedNames
+		result.RejectedByPolicy = len(rejectedNames) > 0 && len(calls) == 0
+		result.SawToolCallSyntax = true
+		return result
+	}
 	var parsed []ParsedToolCall
 	for _, candidate := range candidates {
 		tc := parseXMLToolCalls(candidate)
@@ -83,6 +99,21 @@ func ParseStandaloneToolCallsDetailed(text string, availableToolNames []string) 
 	}
 	candidates := buildToolCallCandidates(trimmed)
 	var parsed []ParsedToolCall
+	for _, candidate := range candidates {
+		if !isLikelyJSONToolPayloadCandidate(candidate) {
+			continue
+		}
+		parsed = parseToolCallsPayload(candidate)
+		if len(parsed) == 0 {
+			continue
+		}
+		result.SawToolCallSyntax = true
+		calls, rejectedNames := filterToolCallsDetailed(parsed, availableToolNames)
+		result.Calls = calls
+		result.RejectedToolNames = rejectedNames
+		result.RejectedByPolicy = len(rejectedNames) > 0 && len(calls) == 0
+		return result
+	}
 	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
@@ -163,6 +194,18 @@ func parseToolCallsPayload(payload string) []ParsedToolCall {
 		return parseToolCallList(v)
 	}
 	return nil
+}
+
+func isLikelyJSONToolPayloadCandidate(candidate string) bool {
+	trimmed := strings.TrimSpace(candidate)
+	if trimmed == "" {
+		return false
+	}
+	if !(strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return strings.Contains(lower, "tool_calls") || strings.Contains(lower, "\"function\"")
 }
 
 func isLikelyChatMessageEnvelope(v map[string]any) bool {

@@ -104,6 +104,34 @@ func parseSingleXMLToolCall(block string) (ParsedToolCall, bool) {
 				}
 			case "parameters":
 				inParams = true
+				var node struct {
+					Inner string `xml:",innerxml"`
+				}
+				if err := dec.DecodeElement(&node, &t); err == nil {
+					inner := strings.TrimSpace(node.Inner)
+					if inner != "" {
+						if parsed := parseToolCallInput(inner); len(parsed) > 0 {
+							if len(parsed) == 1 {
+								if _, onlyRaw := parsed["_raw"]; onlyRaw {
+									if kv := parseMarkupKVObject(inner); len(kv) > 0 {
+										for k, vv := range kv {
+											params[k] = vv
+										}
+										break
+									}
+								}
+							}
+							for k, vv := range parsed {
+								params[k] = vv
+							}
+						} else if kv := parseMarkupKVObject(inner); len(kv) > 0 {
+							for k, vv := range kv {
+								params[k] = vv
+							}
+						}
+					}
+				}
+				inParams = false
 			case "tool_name", "name":
 				var v string
 				if err := dec.DecodeElement(&v, &t); err == nil && strings.TrimSpace(v) != "" {
