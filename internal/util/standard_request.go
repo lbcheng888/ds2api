@@ -1,6 +1,8 @@
 package util
 
 import (
+	"strings"
+
 	"ds2api/internal/config"
 	"ds2api/internal/toolcall"
 )
@@ -86,6 +88,11 @@ func (r StandardRequest) CompletionPayload(sessionID string) map[string]any {
 		"ref_file_ids":      refFileIDs,
 		"thinking_enabled":  r.Thinking,
 		"search_enabled":    r.Search,
+	}
+	if r.Thinking {
+		if effort := strings.TrimSpace(r.ReasoningEffort); effort != "" {
+			payload["reasoning_effort"] = effort
+		}
 	}
 	for k, v := range r.PassThrough {
 		payload[k] = v

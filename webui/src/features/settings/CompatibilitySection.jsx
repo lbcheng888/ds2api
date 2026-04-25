@@ -12,6 +12,13 @@ export default function CompatibilitySection({ t, form, setForm }) {
         enabled ? 'bg-primary' : 'bg-muted'
     }`
 
+    const setDefaultReasoningEffort = (value) => {
+        setForm((prev) => ({
+            ...prev,
+            compat: { ...prev.compat, default_reasoning_effort: value },
+        }))
+    }
+
     return (
         <div className="bg-card border border-border rounded-xl p-5 space-y-4">
             <div className="flex items-center gap-2">
@@ -19,6 +26,23 @@ export default function CompatibilitySection({ t, form, setForm }) {
                 <h3 className="font-semibold">{t('settings.compatibilityTitle')}</h3>
             </div>
             <p className="text-sm text-muted-foreground">{t('settings.compatibilityDesc')}</p>
+            <div className="flex items-center justify-between gap-4">
+                <div className="space-y-1">
+                    <label className="text-sm font-medium">{t('settings.defaultReasoningEffort')}</label>
+                    <p className="text-xs text-muted-foreground">{t('settings.defaultReasoningEffortDesc')}</p>
+                </div>
+                <select
+                    value={form.compat?.default_reasoning_effort || ''}
+                    onChange={(event) => setDefaultReasoningEffort(event.target.value)}
+                    className="h-9 min-w-28 rounded-md border border-input bg-background px-3 text-sm"
+                >
+                    <option value="">{t('settings.reasoningEffortUnset')}</option>
+                    <option value="low">{t('settings.reasoningEffortLow')}</option>
+                    <option value="medium">{t('settings.reasoningEffortMedium')}</option>
+                    <option value="high">{t('settings.reasoningEffortHigh')}</option>
+                    <option value="max">{t('settings.reasoningEffortMax')}</option>
+                </select>
+            </div>
             <div className="flex items-center justify-between gap-4">
                 <label className="text-sm font-medium">{t('settings.stripReferenceMarkers')}</label>
                 <button

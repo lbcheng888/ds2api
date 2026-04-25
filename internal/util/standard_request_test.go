@@ -55,3 +55,31 @@ func TestStandardRequestCompletionPayloadSetsModelTypeFromResolvedModel(t *testi
 		})
 	}
 }
+
+func TestStandardRequestCompletionPayloadIncludesReasoningEffortForThinking(t *testing.T) {
+	req := StandardRequest{
+		ResolvedModel:   "deepseek-v4-pro[1m]",
+		FinalPrompt:     "hello",
+		Thinking:        true,
+		ReasoningEffort: "max",
+	}
+
+	payload := req.CompletionPayload("session-123")
+	if got := payload["reasoning_effort"]; got != "max" {
+		t.Fatalf("expected reasoning_effort=max, got %#v", got)
+	}
+}
+
+func TestStandardRequestCompletionPayloadOmitsReasoningEffortWithoutThinking(t *testing.T) {
+	req := StandardRequest{
+		ResolvedModel:   "deepseek-chat",
+		FinalPrompt:     "hello",
+		Thinking:        false,
+		ReasoningEffort: "max",
+	}
+
+	payload := req.CompletionPayload("session-123")
+	if _, ok := payload["reasoning_effort"]; ok {
+		t.Fatalf("did not expect reasoning_effort for non-thinking payload: %#v", payload)
+	}
+}

@@ -46,6 +46,8 @@ func loadStore() (*Store, error) {
 	cfg.NormalizeCredentials()
 	if validateErr := ValidateConfig(cfg); validateErr != nil {
 		err = errors.Join(err, validateErr)
+	} else {
+		cfg.NormalizeCompat()
 	}
 	return &Store{cfg: cfg, path: ConfigPath(), fromEnv: fromEnv}, err
 }

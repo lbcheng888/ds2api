@@ -711,7 +711,7 @@ data: {"type":"message_stop"}
 - `success`
 - `admin`（`has_password_hash`、`jwt_expire_hours`、`jwt_valid_after_unix`、`default_password_warning`）
 - `runtime`（`account_max_inflight`、`account_max_queue`、`global_max_inflight`、`token_refresh_interval_hours`）
-- `compat`（`wide_input_strict_output`、`strip_reference_markers`）
+- `compat`（`wide_input_strict_output`、`strip_reference_markers`、`allow_meta_agent_tools`、`default_reasoning_effort`）
 - `responses` / `embeddings`
 - `auto_delete`（`mode`：`none` / `single` / `all`；旧配置 `sessions=true` 仍按 `all` 处理）
 - `claude_mapping` / `model_aliases`
@@ -724,7 +724,7 @@ data: {"type":"message_stop"}
 
 - `admin.jwt_expire_hours`
 - `runtime.account_max_inflight` / `runtime.account_max_queue` / `runtime.global_max_inflight` / `runtime.token_refresh_interval_hours`
-- `compat.wide_input_strict_output` / `compat.strip_reference_markers`
+- `compat.wide_input_strict_output` / `compat.strip_reference_markers` / `compat.allow_meta_agent_tools` / `compat.default_reasoning_effort`
 - `responses.store_ttl_seconds`
 - `embeddings.provider`
 - `auto_delete.mode`

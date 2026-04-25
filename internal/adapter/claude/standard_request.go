@@ -58,11 +58,53 @@ func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNorma
 			ToolNames:           toolNames,
 			Stream:              util.ToBool(req["stream"]),
 			Thinking:            thinkingEnabled,
+			ReasoningEffort:     claudeReasoningEffort(store, req, thinkingEnabled),
 			Search:              searchEnabled,
 			AllowMetaAgentTools: allowMetaAgentTools,
 		},
 		NormalizedMessages: normalizedMessages,
 	}, nil
+}
+
+func claudeReasoningEffort(store ConfigReader, req map[string]any, thinkingEnabled bool) string {
+	if !thinkingEnabled {
+		return ""
+	}
+	for _, raw := range []any{
+		req["reasoning_effort"],
+		mapField(req["output_config"], "reasoning_effort"),
+		mapField(req["output_config"], "effort"),
+		mapField(req["thinking"], "reasoning_effort"),
+		mapField(req["thinking"], "effort"),
+	} {
+		if effort := config.NormalizeReasoningEffort(anyString(raw)); effort != "" {
+			return effort
+		}
+	}
+	if store == nil {
+		return ""
+	}
+	return store.CompatDefaultReasoningEffort()
+}
+
+func mapField(raw any, key string) any {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return m[key]
+}
+
+func anyString(raw any) string {
+	switch v := raw.(type) {
+	case string:
+		return v
+	default:
+		if raw == nil {
+			return ""
+		}
+		return fmt.Sprintf("%v", raw)
+	}
 }
 
 func injectClaudeToolPrompt(payload map[string]any, normalizedMessages []any, tools []any, allowMetaAgentTools bool) []any {

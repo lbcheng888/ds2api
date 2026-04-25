@@ -29,6 +29,7 @@ type ConfigReader interface {
 	CompatWideInputStrictOutput() bool
 	CompatStripReferenceMarkers() bool
 	CompatAllowMetaAgentTools() bool
+	CompatDefaultReasoningEffort() string
 	ToolcallMode() string
 	ToolcallEarlyEmitConfidence() string
 	ResponsesStoreTTLSeconds() int

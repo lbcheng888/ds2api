@@ -304,7 +304,8 @@ go run ./cmd/ds2api
   "compat": {
     "wide_input_strict_output": true,
     "strip_reference_markers": true,
-    "allow_meta_agent_tools": false
+    "allow_meta_agent_tools": false,
+    "default_reasoning_effort": "max"
   },
   "responses": {
     "store_ttl_seconds": 900
@@ -339,6 +340,7 @@ go run ./cmd/ds2api
 - `compat.wide_input_strict_output`：建议保持 `true`（当前实现默认宽进严出）
 - `compat.strip_reference_markers`：建议保持 `true`，用于清理可见输出中的引用/标记
 - `compat.allow_meta_agent_tools`：ClaudeCode 需要原生 Agent/subagent 时设为 `true`；普通 DeepSeek 工具调用兼容场景建议保持 `false`
+- `compat.default_reasoning_effort`：thinking 模型的默认推理强度，支持 `low` / `medium` / `high` / `max`；DeepSeek V4 Pro 建议 `max`
 - `toolcall`：旧字段，当前实现已固定为特征匹配 + 高置信早发；即使保留在配置里也会被忽略
 - `responses.store_ttl_seconds`：`/v1/responses/{id}` 的内存缓存 TTL
 - `embeddings.provider`：embedding 提供方（当前内置 `deterministic/mock/builtin`）

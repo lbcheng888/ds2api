@@ -15,6 +15,9 @@ func ValidateConfig(c Config) error {
 	if err := ValidateRuntimeConfig(c.Runtime); err != nil {
 		return err
 	}
+	if err := ValidateCompatConfig(c.Compat); err != nil {
+		return err
+	}
 	if err := ValidateResponsesConfig(c.Responses); err != nil {
 		return err
 	}
@@ -107,6 +110,20 @@ func ValidateRuntimeConfig(runtime RuntimeConfig) error {
 	}
 	if runtime.AccountMaxInflight > 0 && runtime.GlobalMaxInflight > 0 && runtime.GlobalMaxInflight < runtime.AccountMaxInflight {
 		return fmt.Errorf("runtime.global_max_inflight must be >= runtime.account_max_inflight")
+	}
+	return nil
+}
+
+func ValidateCompatConfig(compat CompatConfig) error {
+	if compat.DefaultReasoningEffort == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(*compat.DefaultReasoningEffort)
+	if raw == "" {
+		return nil
+	}
+	if NormalizeReasoningEffort(raw) == "" {
+		return fmt.Errorf("compat.default_reasoning_effort must be one of low, medium, high, max")
 	}
 	return nil
 }

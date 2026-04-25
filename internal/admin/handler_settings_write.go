@@ -68,6 +68,15 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 			if compatCfg.AllowMetaAgentTools != nil {
 				c.Compat.AllowMetaAgentTools = compatCfg.AllowMetaAgentTools
 			}
+			if compatCfg.DefaultReasoningEffort != nil {
+				effort := strings.TrimSpace(*compatCfg.DefaultReasoningEffort)
+				if effort == "" {
+					c.Compat.DefaultReasoningEffort = nil
+				} else {
+					normalized := config.NormalizeReasoningEffort(effort)
+					c.Compat.DefaultReasoningEffort = &normalized
+				}
+			}
 		}
 		if responsesCfg != nil && responsesCfg.StoreTTLSeconds > 0 {
 			c.Responses.StoreTTLSeconds = responsesCfg.StoreTTLSeconds

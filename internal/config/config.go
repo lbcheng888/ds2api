@@ -102,6 +102,19 @@ func (c *Config) NormalizeCredentials() {
 	}
 }
 
+func (c *Config) NormalizeCompat() {
+	if c == nil || c.Compat.DefaultReasoningEffort == nil {
+		return
+	}
+	raw := strings.TrimSpace(*c.Compat.DefaultReasoningEffort)
+	if raw == "" {
+		c.Compat.DefaultReasoningEffort = nil
+		return
+	}
+	normalized := NormalizeReasoningEffort(raw)
+	c.Compat.DefaultReasoningEffort = &normalized
+}
+
 // DropInvalidAccounts removes accounts that cannot be addressed by admin APIs
 // (no email and no normalizable mobile). This prevents legacy token-only
 // records from becoming orphaned empty entries after token stripping.
@@ -120,9 +133,21 @@ func (c *Config) DropInvalidAccounts() {
 }
 
 type CompatConfig struct {
-	WideInputStrictOutput *bool `json:"wide_input_strict_output,omitempty"`
-	StripReferenceMarkers *bool `json:"strip_reference_markers,omitempty"`
-	AllowMetaAgentTools   *bool `json:"allow_meta_agent_tools,omitempty"`
+	WideInputStrictOutput  *bool   `json:"wide_input_strict_output,omitempty"`
+	StripReferenceMarkers  *bool   `json:"strip_reference_markers,omitempty"`
+	AllowMetaAgentTools    *bool   `json:"allow_meta_agent_tools,omitempty"`
+	DefaultReasoningEffort *string `json:"default_reasoning_effort,omitempty"`
+}
+
+func NormalizeReasoningEffort(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(raw))
+	case "xhigh", "max":
+		return "max"
+	default:
+		return ""
+	}
 }
 
 type AdminConfig struct {

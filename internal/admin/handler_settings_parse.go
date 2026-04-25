@@ -117,6 +117,18 @@ func parseSettingsUpdateRequest(req map[string]any) (*config.AdminConfig, *confi
 			b := boolFrom(v)
 			cfg.AllowMetaAgentTools = &b
 		}
+		if v, exists := raw["default_reasoning_effort"]; exists {
+			rawEffort := strings.TrimSpace(fmt.Sprintf("%v", v))
+			if rawEffort == "" {
+				cfg.DefaultReasoningEffort = &rawEffort
+			} else {
+				effort := config.NormalizeReasoningEffort(rawEffort)
+				if effort == "" {
+					return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("compat.default_reasoning_effort must be one of low, medium, high, max")
+				}
+				cfg.DefaultReasoningEffort = &effort
+			}
+		}
 		compatCfg = cfg
 	}
 

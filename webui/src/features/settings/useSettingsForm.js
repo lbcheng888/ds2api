@@ -21,7 +21,7 @@ const DEFAULT_FORM = {
         stream_max_duration_seconds: 900,
         buffered_tool_content_max_bytes: 262144,
     },
-    compat: { strip_reference_markers: true, allow_meta_agent_tools: false },
+    compat: { strip_reference_markers: true, allow_meta_agent_tools: false, default_reasoning_effort: '' },
     responses: { store_ttl_seconds: 900 },
     embeddings: { provider: '' },
     auto_delete: { mode: 'none' },
@@ -73,6 +73,7 @@ function fromServerForm(data) {
         compat: {
             strip_reference_markers: data.compat?.strip_reference_markers ?? true,
             allow_meta_agent_tools: Boolean(data.compat?.allow_meta_agent_tools ?? false),
+            default_reasoning_effort: data.compat?.default_reasoning_effort || '',
         },
         responses: {
             store_ttl_seconds: Number(data.responses?.store_ttl_seconds || 900),
@@ -107,6 +108,7 @@ function toServerPayload(form) {
         compat: {
             strip_reference_markers: Boolean(form.compat?.strip_reference_markers ?? true),
             allow_meta_agent_tools: Boolean(form.compat?.allow_meta_agent_tools ?? false),
+            default_reasoning_effort: String(form.compat?.default_reasoning_effort || '').trim(),
         },
         responses: { store_ttl_seconds: Number(form.responses.store_ttl_seconds) },
         embeddings: { provider: String(form.embeddings.provider || '').trim() },

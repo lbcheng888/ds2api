@@ -19,6 +19,9 @@ func (s claudeProxyStoreStub) ClaudeMapping() map[string]string {
 func (claudeProxyStoreStub) CompatStripReferenceMarkers() bool { return true }
 func (claudeProxyStoreStub) ModelAliases() map[string]string   { return nil }
 func (claudeProxyStoreStub) CompatAllowMetaAgentTools() bool   { return false }
+func (claudeProxyStoreStub) CompatDefaultReasoningEffort() string {
+	return ""
+}
 
 type openAIProxyStub struct {
 	status int

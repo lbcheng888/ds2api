@@ -13,18 +13,20 @@ type mockOpenAIConfig struct {
 	historySplitEnabled bool
 	historySplitTurns   int
 	allowMetaAgentTools bool
+	reasoningEffort     string
 }
 
 func (m mockOpenAIConfig) ModelAliases() map[string]string { return m.aliases }
 func (m mockOpenAIConfig) CompatWideInputStrictOutput() bool {
 	return m.wideInput
 }
-func (m mockOpenAIConfig) CompatStripReferenceMarkers() bool   { return true }
-func (m mockOpenAIConfig) CompatAllowMetaAgentTools() bool     { return m.allowMetaAgentTools }
-func (m mockOpenAIConfig) ToolcallMode() string                { return m.toolMode }
-func (m mockOpenAIConfig) ToolcallEarlyEmitConfidence() string { return m.earlyEmit }
-func (m mockOpenAIConfig) ResponsesStoreTTLSeconds() int       { return m.responsesTTL }
-func (m mockOpenAIConfig) EmbeddingsProvider() string          { return m.embedProv }
+func (m mockOpenAIConfig) CompatStripReferenceMarkers() bool    { return true }
+func (m mockOpenAIConfig) CompatAllowMetaAgentTools() bool      { return m.allowMetaAgentTools }
+func (m mockOpenAIConfig) CompatDefaultReasoningEffort() string { return m.reasoningEffort }
+func (m mockOpenAIConfig) ToolcallMode() string                 { return m.toolMode }
+func (m mockOpenAIConfig) ToolcallEarlyEmitConfidence() string  { return m.earlyEmit }
+func (m mockOpenAIConfig) ResponsesStoreTTLSeconds() int        { return m.responsesTTL }
+func (m mockOpenAIConfig) EmbeddingsProvider() string           { return m.embedProv }
 func (m mockOpenAIConfig) AutoDeleteMode() string {
 	if m.autoDeleteMode == "" {
 		return "none"

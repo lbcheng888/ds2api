@@ -531,6 +531,31 @@ func TestStoreCompatStripReferenceMarkersCanDisable(t *testing.T) {
 	}
 }
 
+func TestStoreCompatDefaultReasoningEffort(t *testing.T) {
+	t.Setenv("DS2API_CONFIG_JSON", `{"keys":["k1"],"accounts":[],"compat":{"default_reasoning_effort":"xhigh"}}`)
+	store := LoadStore()
+	if got := store.CompatDefaultReasoningEffort(); got != "max" {
+		t.Fatalf("expected default reasoning effort max, got %q", got)
+	}
+
+	snap := store.Snapshot()
+	data, err := snap.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	rawCompat, ok := out["compat"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected compat in marshaled output, got %#v", out)
+	}
+	if rawCompat["default_reasoning_effort"] != "max" {
+		t.Fatalf("expected explicit default_reasoning_effort preserved, got %#v", rawCompat)
+	}
+}
+
 func TestStoreIsEnvBacked(t *testing.T) {
 	t.Setenv("DS2API_CONFIG_JSON", `{"keys":["k1"],"accounts":[]}`)
 	store := LoadStore()

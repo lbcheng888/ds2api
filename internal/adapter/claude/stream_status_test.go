@@ -31,6 +31,9 @@ func (streamStatusClaudeStoreStub) ClaudeMapping() map[string]string {
 func (streamStatusClaudeStoreStub) CompatStripReferenceMarkers() bool { return true }
 func (streamStatusClaudeStoreStub) ModelAliases() map[string]string   { return nil }
 func (streamStatusClaudeStoreStub) CompatAllowMetaAgentTools() bool   { return false }
+func (streamStatusClaudeStoreStub) CompatDefaultReasoningEffort() string {
+	return ""
+}
 
 func captureClaudeStatusMiddleware(statuses *[]int) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

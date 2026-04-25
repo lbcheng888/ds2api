@@ -37,6 +37,45 @@ func TestNormalizeClaudeRequest(t *testing.T) {
 	}
 }
 
+func TestNormalizeClaudeRequestUsesDefaultReasoningEffort(t *testing.T) {
+	t.Setenv("DS2API_CONFIG_JSON", `{"compat":{"default_reasoning_effort":"max"}}`)
+	store := config.LoadStore()
+	req := map[string]any{
+		"model": "deepseek-v4-pro",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+	}
+	norm, err := normalizeClaudeRequest(store, req)
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if got := norm.Standard.ReasoningEffort; got != "max" {
+		t.Fatalf("expected default reasoning effort max, got %q", got)
+	}
+}
+
+func TestNormalizeClaudeRequestExplicitReasoningEffortOverridesDefault(t *testing.T) {
+	t.Setenv("DS2API_CONFIG_JSON", `{"compat":{"default_reasoning_effort":"max"}}`)
+	store := config.LoadStore()
+	req := map[string]any{
+		"model": "deepseek-v4-pro",
+		"output_config": map[string]any{
+			"effort": "high",
+		},
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+	}
+	norm, err := normalizeClaudeRequest(store, req)
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if got := norm.Standard.ReasoningEffort; got != "high" {
+		t.Fatalf("expected explicit reasoning effort high, got %q", got)
+	}
+}
+
 func TestNormalizeClaudeRequestInjectsToolsIntoExistingSystemMessage(t *testing.T) {
 	t.Setenv("DS2API_CONFIG_JSON", `{}`)
 	store := config.LoadStore()

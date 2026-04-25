@@ -25,6 +25,7 @@ type ConfigReader interface {
 	ModelAliases() map[string]string
 	CompatStripReferenceMarkers() bool
 	CompatAllowMetaAgentTools() bool
+	CompatDefaultReasoningEffort() string
 }
 
 type OpenAIChatRunner interface {

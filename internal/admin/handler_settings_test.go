@@ -219,6 +219,43 @@ func TestUpdateSettingsCompatAllowMetaAgentTools(t *testing.T) {
 	}
 }
 
+func TestUpdateSettingsCompatDefaultReasoningEffort(t *testing.T) {
+	h := newAdminTestHandler(t, `{"keys":["k1"],"compat":{"default_reasoning_effort":"medium"}}`)
+	payload := map[string]any{
+		"compat": map[string]any{
+			"default_reasoning_effort": "xhigh",
+		},
+	}
+	b, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPut, "/admin/settings", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	h.updateSettings(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	snap := h.Store.Snapshot()
+	if snap.Compat.DefaultReasoningEffort == nil || *snap.Compat.DefaultReasoningEffort != "max" {
+		t.Fatalf("expected compat.default_reasoning_effort=max, got %#v", snap.Compat.DefaultReasoningEffort)
+	}
+}
+
+func TestUpdateSettingsCompatDefaultReasoningEffortRejectsInvalid(t *testing.T) {
+	h := newAdminTestHandler(t, `{"keys":["k1"]}`)
+	payload := map[string]any{
+		"compat": map[string]any{
+			"default_reasoning_effort": "extreme",
+		},
+	}
+	b, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPut, "/admin/settings", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	h.updateSettings(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestUpdateSettingsAutoDeleteMode(t *testing.T) {
 	h := newAdminTestHandler(t, `{"keys":["k1"],"auto_delete":{"sessions":true}}`)
 

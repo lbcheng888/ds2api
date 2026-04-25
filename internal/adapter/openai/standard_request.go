@@ -64,7 +64,7 @@ func normalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID 
 		Stream:              util.ToBool(req["stream"]),
 		StreamIncludeUsage:  streamIncludeUsage(req["stream_options"]),
 		Thinking:            thinkingEnabled,
-		ReasoningEffort:     openAIReasoningEffort(req["thinking"], req["reasoning_effort"]),
+		ReasoningEffort:     openAIReasoningEffort(store, thinkingEnabled, req["thinking"], req["reasoning_effort"]),
 		Search:              searchEnabled,
 		RefFileIDs:          refFileIDs,
 		PassThrough:         passThrough,
@@ -137,7 +137,7 @@ func normalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 		Stream:              util.ToBool(req["stream"]),
 		StreamIncludeUsage:  streamIncludeUsage(req["stream_options"]),
 		Thinking:            thinkingEnabled,
-		ReasoningEffort:     openAIReasoningEffort(req["thinking"], req["reasoning_effort"]),
+		ReasoningEffort:     openAIReasoningEffort(store, thinkingEnabled, req["thinking"], req["reasoning_effort"]),
 		Search:              searchEnabled,
 		RefFileIDs:          refFileIDs,
 		PassThrough:         passThrough,
@@ -233,25 +233,22 @@ func openAIThinkingIgnoredParam(key string) bool {
 	}
 }
 
-func openAIReasoningEffort(thinkingRaw any, topLevel any) string {
-	if s := strings.TrimSpace(asString(topLevel)); s != "" {
-		return normalizeOpenAIReasoningEffort(s)
-	}
-	if m, ok := thinkingRaw.(map[string]any); ok {
-		return normalizeOpenAIReasoningEffort(asString(m["reasoning_effort"]))
-	}
-	return ""
-}
-
-func normalizeOpenAIReasoningEffort(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "low", "medium", "high":
-		return strings.ToLower(strings.TrimSpace(raw))
-	case "xhigh", "max":
-		return "max"
-	default:
+func openAIReasoningEffort(store ConfigReader, thinkingEnabled bool, thinkingRaw any, topLevel any) string {
+	if !thinkingEnabled {
 		return ""
 	}
+	if s := strings.TrimSpace(asString(topLevel)); s != "" {
+		return config.NormalizeReasoningEffort(s)
+	}
+	if m, ok := thinkingRaw.(map[string]any); ok {
+		if effort := config.NormalizeReasoningEffort(asString(m["reasoning_effort"])); effort != "" {
+			return effort
+		}
+	}
+	if store == nil {
+		return ""
+	}
+	return store.CompatDefaultReasoningEffort()
 }
 
 func streamIncludeUsage(raw any) bool {

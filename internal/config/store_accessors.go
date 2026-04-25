@@ -57,6 +57,15 @@ func (s *Store) CompatAllowMetaAgentTools() bool {
 	return s.cfg.Compat.AllowMetaAgentTools != nil && *s.cfg.Compat.AllowMetaAgentTools
 }
 
+func (s *Store) CompatDefaultReasoningEffort() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cfg.Compat.DefaultReasoningEffort == nil {
+		return ""
+	}
+	return NormalizeReasoningEffort(*s.cfg.Compat.DefaultReasoningEffort)
+}
+
 func (s *Store) ToolcallMode() string {
 	return "feature_match"
 }

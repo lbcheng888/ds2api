@@ -6,12 +6,14 @@ type mockClaudeConfig struct {
 	m         map[string]string
 	aliases   map[string]string
 	allowMeta bool
+	effort    string
 }
 
-func (m mockClaudeConfig) ClaudeMapping() map[string]string { return m.m }
-func (m mockClaudeConfig) ModelAliases() map[string]string  { return m.aliases }
-func (mockClaudeConfig) CompatStripReferenceMarkers() bool  { return true }
-func (m mockClaudeConfig) CompatAllowMetaAgentTools() bool  { return m.allowMeta }
+func (m mockClaudeConfig) ClaudeMapping() map[string]string     { return m.m }
+func (m mockClaudeConfig) ModelAliases() map[string]string      { return m.aliases }
+func (mockClaudeConfig) CompatStripReferenceMarkers() bool      { return true }
+func (m mockClaudeConfig) CompatAllowMetaAgentTools() bool      { return m.allowMeta }
+func (m mockClaudeConfig) CompatDefaultReasoningEffort() string { return m.effort }
 
 func TestNormalizeClaudeRequestUsesConfigInterfaceMapping(t *testing.T) {
 	req := map[string]any{

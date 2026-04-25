@@ -46,6 +46,13 @@ func TestValidateConfigRejectsInvalidValues(t *testing.T) {
 			}},
 			want: "history_split.trigger_after_turns",
 		},
+		{
+			name: "default reasoning effort",
+			cfg: Config{Compat: CompatConfig{
+				DefaultReasoningEffort: stringPtr("extreme"),
+			}},
+			want: "compat.default_reasoning_effort",
+		},
 	}
 
 	for _, tc := range tests {
@@ -67,4 +74,5 @@ func TestValidateConfigAcceptsLegacyAutoDeleteSessions(t *testing.T) {
 	}
 }
 
-func intPtr(v int) *int { return &v }
+func intPtr(v int) *int          { return &v }
+func stringPtr(v string) *string { return &v }

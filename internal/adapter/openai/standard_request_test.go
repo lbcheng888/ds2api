@@ -42,6 +42,43 @@ func TestNormalizeOpenAIChatRequest(t *testing.T) {
 	}
 }
 
+func TestNormalizeOpenAIChatRequestUsesDefaultReasoningEffort(t *testing.T) {
+	t.Setenv("DS2API_CONFIG_JSON", `{"compat":{"default_reasoning_effort":"max"}}`)
+	store := config.LoadStore()
+	req := map[string]any{
+		"model": "deepseek-v4-pro[1m]",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+	}
+	n, err := normalizeOpenAIChatRequest(store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if got := n.ReasoningEffort; got != "max" {
+		t.Fatalf("expected default reasoning effort max, got %q", got)
+	}
+}
+
+func TestNormalizeOpenAIChatRequestExplicitReasoningEffortOverridesDefault(t *testing.T) {
+	t.Setenv("DS2API_CONFIG_JSON", `{"compat":{"default_reasoning_effort":"max"}}`)
+	store := config.LoadStore()
+	req := map[string]any{
+		"model":            "deepseek-v4-pro[1m]",
+		"reasoning_effort": "high",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+	}
+	n, err := normalizeOpenAIChatRequest(store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if got := n.ReasoningEffort; got != "high" {
+		t.Fatalf("expected explicit reasoning effort high, got %q", got)
+	}
+}
+
 func TestNormalizeOpenAIChatRequestCollectsRefFileIDs(t *testing.T) {
 	store := newEmptyStoreForNormalizeTest(t)
 	req := map[string]any{
