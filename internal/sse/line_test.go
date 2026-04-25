@@ -4,7 +4,7 @@ import "testing"
 
 func TestParseDeepSeekContentLineDone(t *testing.T) {
 	res := ParseDeepSeekContentLine([]byte("data: [DONE]"), false, "text")
-	if !res.Parsed || !res.Stop {
+	if !res.Parsed || !res.Stop || !res.Done {
 		t.Fatalf("expected parsed stop result: %#v", res)
 	}
 }
@@ -71,6 +71,21 @@ func TestParseDeepSeekContentLineContent(t *testing.T) {
 	}
 	if len(res.Parts) != 1 || res.Parts[0].Text != "hi" || res.Parts[0].Type != "text" {
 		t.Fatalf("unexpected parts: %#v", res.Parts)
+	}
+}
+
+func TestParseDeepSeekContentLineWithEventExtractsToolTitle(t *testing.T) {
+	res := ParseDeepSeekContentLineWithEvent(
+		[]byte(`data: {"content":"tool_calls\n<tool_call>\n<tool_name>Read</tool_name>"}`),
+		"title",
+		false,
+		"text",
+	)
+	if !res.Parsed || !res.LateToolTitle {
+		t.Fatalf("expected late tool title result: %#v", res)
+	}
+	if len(res.Parts) != 1 || res.Parts[0].Type != "text" || res.Parts[0].Text == "" {
+		t.Fatalf("unexpected title parts: %#v", res.Parts)
 	}
 }
 

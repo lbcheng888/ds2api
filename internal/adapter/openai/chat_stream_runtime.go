@@ -315,6 +315,9 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 		return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReason("content_filter")}
 	}
 	if parsed.Stop {
+		if parsed.Finished && s.bufferToolContent && hasCallableTools(s.toolNames) && !s.toolCallsEmitted {
+			return streamengine.ParsedDecision{}
+		}
 		return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReasonHandlerRequested}
 	}
 

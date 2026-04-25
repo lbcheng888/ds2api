@@ -47,6 +47,20 @@ func TestParseToolCallsSupportsCanonicalParameterNameAttributes(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsRepairsTruncatedTitleToolCall(t *testing.T) {
+	text := "tool_calls\n<tool_call>\n<tool_name>Read</tool_name>\n<parameter name=\"file_path\" type=\"string\">/tmp/a.txt</parameter>\n<parameter name=\"limit\" type=\"number\">150</parameter>\n"
+	calls := ParseToolCalls(text, []string{"Read"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one repaired title tool call, got %#v", calls)
+	}
+	if calls[0].Name != "Read" {
+		t.Fatalf("unexpected tool name: %#v", calls[0])
+	}
+	if calls[0].Input["file_path"] != "/tmp/a.txt" {
+		t.Fatalf("unexpected input: %#v", calls[0].Input)
+	}
+}
+
 func TestParseToolCallsSupportsToolCallNameTagWithNamedParameters(t *testing.T) {
 	text := `<tool_calls>
 <tool_call>

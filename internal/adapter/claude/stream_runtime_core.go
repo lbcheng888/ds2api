@@ -74,6 +74,9 @@ func (s *claudeStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 		return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReason("upstream_error")}
 	}
 	if parsed.Stop {
+		if parsed.Finished && s.bufferToolContent && len(s.toolNames) > 0 {
+			return streamengine.ParsedDecision{}
+		}
 		return streamengine.ParsedDecision{Stop: true}
 	}
 

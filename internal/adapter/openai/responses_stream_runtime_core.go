@@ -226,7 +226,13 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 	if !parsed.Parsed {
 		return streamengine.ParsedDecision{}
 	}
-	if parsed.ContentFilter || parsed.ErrorMessage != "" || parsed.Stop {
+	if parsed.ContentFilter || parsed.ErrorMessage != "" {
+		return streamengine.ParsedDecision{Stop: true}
+	}
+	if parsed.Stop {
+		if parsed.Finished && s.bufferToolContent && hasCallableTools(s.toolNames) && !s.toolCallsEmitted {
+			return streamengine.ParsedDecision{}
+		}
 		return streamengine.ParsedDecision{Stop: true}
 	}
 

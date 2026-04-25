@@ -35,7 +35,13 @@ func CollectStream(resp *http.Response, thinkingEnabled bool, closeBody bool) Co
 	if thinkingEnabled {
 		currentType = "thinking"
 	}
+	eventName := ""
 	_ = deepseek.ScanSSELines(resp, func(line []byte) bool {
+		trimmedLine := strings.TrimSpace(string(line))
+		if strings.HasPrefix(trimmedLine, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(trimmedLine, "event:"))
+			return true
+		}
 		chunk, done, parsed := ParseDeepSeekSSELine(line)
 		if parsed && !done {
 			collector.ingestChunk(chunk)
@@ -43,12 +49,18 @@ func CollectStream(resp *http.Response, thinkingEnabled bool, closeBody bool) Co
 		if done {
 			return false
 		}
-		if stopped {
-			return true
+		result := ParseDeepSeekContentLineWithEvent(line, eventName, thinkingEnabled, currentType)
+		if result.Parsed {
+			eventName = ""
 		}
-		result := ParseDeepSeekContentLine(line, thinkingEnabled, currentType)
 		currentType = result.NextType
 		if !result.Parsed {
+			return true
+		}
+		if stopped {
+			if result.LateToolTitle {
+				appendCollectParts(&text, &thinking, result.Parts)
+			}
 			return true
 		}
 		if result.Stop {
@@ -62,13 +74,7 @@ func CollectStream(resp *http.Response, thinkingEnabled bool, closeBody bool) Co
 			return true
 		}
 		for _, p := range result.Parts {
-			if p.Type == "thinking" {
-				trimmed := TrimContinuationOverlap(thinking.String(), p.Text)
-				thinking.WriteString(trimmed)
-			} else {
-				trimmed := TrimContinuationOverlap(text.String(), p.Text)
-				text.WriteString(trimmed)
-			}
+			appendCollectPart(&text, &thinking, p)
 		}
 		return true
 	})
@@ -78,4 +84,20 @@ func CollectStream(resp *http.Response, thinkingEnabled bool, closeBody bool) Co
 		ContentFilter: contentFilter,
 		CitationLinks: collector.build(),
 	}
+}
+
+func appendCollectParts(text, thinking *strings.Builder, parts []ContentPart) {
+	for _, p := range parts {
+		appendCollectPart(text, thinking, p)
+	}
+}
+
+func appendCollectPart(text, thinking *strings.Builder, p ContentPart) {
+	if p.Type == "thinking" {
+		trimmed := TrimContinuationOverlap(thinking.String(), p.Text)
+		thinking.WriteString(trimmed)
+		return
+	}
+	trimmed := TrimContinuationOverlap(text.String(), p.Text)
+	text.WriteString(trimmed)
 }

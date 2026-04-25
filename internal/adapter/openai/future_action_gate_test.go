@@ -100,6 +100,35 @@ func sseContentLine(text string) string {
 	return "data: " + string(b)
 }
 
+func sseTitleLine(text string) string {
+	b, _ := json.Marshal(map[string]any{"content": text})
+	return "data: " + string(b)
+}
+
+func TestChatStreamUsesLateTitleToolCallAfterFinished(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		sseContentLine("Let me start by reading the key files."),
+		`data: {"p":"response/status","v":"FINISHED"}`,
+		`event: title`,
+		sseTitleLine("tool_calls\n<tool_call>\n<tool_name>Read</tool_name>\n<parameter name=\"file_path\" type=\"string\">/tmp/a.txt</parameter>\n<parameter name=\"limit\" type=\"number\">150</parameter>\n"),
+		`event: close`,
+		`data: {"click_behavior":"none","auto_resume":false}`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h.handleStream(rec, req, resp, "cid-late-title-tool", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, util.DefaultToolChoicePolicy(), false, false, nil)
+
+	body := rec.Body.String()
+	if strings.Contains(body, upstreamMissingToolCallCode) {
+		t.Fatalf("late title tool call should prevent missing-tool error, body=%s", body)
+	}
+	if !strings.Contains(body, `"tool_calls"`) || !strings.Contains(body, `"Read"`) {
+		t.Fatalf("expected Read tool call from late title, body=%s", body)
+	}
+}
+
 func TestChatStreamRejectsMalformedToolCallBlock(t *testing.T) {
 	rec := httptest.NewRecorder()
 	runtime := newChatStreamRuntime(

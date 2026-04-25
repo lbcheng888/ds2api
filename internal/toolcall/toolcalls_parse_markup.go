@@ -117,7 +117,8 @@ func repairMissingToolCallClose(text string) string {
 	for i := 0; i < missing; i++ {
 		loc := xmlToolCallsClosePattern.FindStringIndex(out)
 		if loc == nil {
-			return out
+			out += "</tool_call>"
+			continue
 		}
 		out = out[:loc[0]] + "</tool_call>" + out[loc[0]:]
 	}

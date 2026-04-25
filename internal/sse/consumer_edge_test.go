@@ -204,6 +204,25 @@ func TestCollectStreamCollectsCitationLinksAfterFinished(t *testing.T) {
 	}
 }
 
+func TestCollectStreamCollectsLateToolTitleAfterFinished(t *testing.T) {
+	resp := makeHTTPResponse(
+		"data: {\"p\":\"response/content\",\"v\":\"Let me read the file.\"}\n" +
+			"data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n" +
+			"event: title\n" +
+			"data: {\"content\":\"tool_calls\\n<tool_call>\\n<tool_name>Read</tool_name>\\n<parameter name=\\\"file_path\\\">/tmp/a.txt</parameter>\"}\n" +
+			"data: {\"p\":\"response/content\",\"v\":\"should-not-append\"}\n" +
+			"data: [DONE]\n",
+	)
+
+	result := CollectStream(resp, false, false)
+	if !strings.Contains(result.Text, "<tool_call>") {
+		t.Fatalf("expected late title tool call to be collected, got %q", result.Text)
+	}
+	if strings.Contains(result.Text, "should-not-append") {
+		t.Fatalf("regular content after finished should stay ignored, got %q", result.Text)
+	}
+}
+
 func TestCollectStreamMultipleThinkingChunks(t *testing.T) {
 	resp := makeHTTPResponse(
 		"data: {\"p\":\"response/thinking_content\",\"v\":\"part1\"}\n" +

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"strings"
 )
 
 const (
@@ -23,9 +24,18 @@ func StartParsedLinePump(ctx context.Context, body io.Reader, thinkingEnabled bo
 		scanner := bufio.NewScanner(body)
 		scanner.Buffer(make([]byte, 0, scannerBufferSize), maxScannerLineSize)
 		currentType := initialType
+		eventName := ""
 		for scanner.Scan() {
 			line := append([]byte{}, scanner.Bytes()...)
-			result := ParseDeepSeekContentLine(line, thinkingEnabled, currentType)
+			trimmed := strings.TrimSpace(string(line))
+			if strings.HasPrefix(trimmed, "event:") {
+				eventName = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+				continue
+			}
+			result := ParseDeepSeekContentLineWithEvent(line, eventName, thinkingEnabled, currentType)
+			if result.Parsed {
+				eventName = ""
+			}
 			currentType = result.NextType
 			select {
 			case out <- result:

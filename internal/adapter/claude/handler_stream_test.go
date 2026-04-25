@@ -240,6 +240,35 @@ func TestCollectDeepSeekRegression(t *testing.T) {
 	}
 }
 
+func TestHandleClaudeStreamRealtimeUsesLateTitleToolCallAfterFinished(t *testing.T) {
+	h := &Handler{}
+	resp := makeClaudeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"Let me start by reading the key files."}`,
+		`data: {"p":"response/status","v":"FINISHED"}`,
+		`event: title`,
+		`data: {"content":"tool_calls\n<tool_call>\n<tool_name>Read</tool_name>\n<parameter name=\"file_path\" type=\"string\">/tmp/a.txt</parameter>\n<parameter name=\"limit\" type=\"number\">150</parameter>\n"}`,
+		`event: close`,
+		`data: {"click_behavior":"none","auto_resume":false}`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "use tool"}}, false, false, []string{"Read"})
+
+	frames := parseClaudeFrames(t, rec.Body.String())
+	foundToolUse := false
+	for _, f := range findClaudeFrames(frames, "content_block_start") {
+		contentBlock, _ := f.Payload["content_block"].(map[string]any)
+		if contentBlock["type"] == "tool_use" && contentBlock["name"] == "Read" {
+			foundToolUse = true
+			break
+		}
+	}
+	if !foundToolUse {
+		t.Fatalf("expected Read tool_use from late title, body=%s", rec.Body.String())
+	}
+}
+
 func asString(v any) string {
 	s, _ := v.(string)
 	return s
