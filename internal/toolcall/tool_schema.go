@@ -38,6 +38,7 @@ func NormalizeCallsForSchemasWithMeta(calls []ParsedToolCall, schemas ParameterS
 		return nil
 	}
 	out := make([]ParsedToolCall, 0, len(calls))
+	backgroundAgentCalls := 0
 	for _, call := range calls {
 		name := strings.TrimSpace(call.Name)
 		if name == "" {
@@ -49,6 +50,12 @@ func NormalizeCallsForSchemasWithMeta(calls []ParsedToolCall, schemas ParameterS
 		}
 		if !allowMetaAgentTools && IsMetaAgentToolName(name) {
 			continue
+		}
+		if allowMetaAgentTools && IsBackgroundAgentToolName(name) {
+			backgroundAgentCalls++
+			if backgroundAgentCalls > 4 {
+				continue
+			}
 		}
 		input := call.Input
 		if input == nil {

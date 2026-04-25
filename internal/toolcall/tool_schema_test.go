@@ -86,6 +86,38 @@ func TestNormalizeCallsForSchemasKeepsKnownRequiredFieldsWithoutSchema(t *testin
 	}
 }
 
+func TestNormalizeCallsForSchemasLimitsBackgroundAgentConcurrency(t *testing.T) {
+	calls := make([]ParsedToolCall, 0, 6)
+	for i := 0; i < 6; i++ {
+		calls = append(calls, ParsedToolCall{
+			Name:  "Agent",
+			Input: map[string]any{"description": "Explore", "prompt": "Inspect files"},
+		})
+	}
+	calls = append(calls, ParsedToolCall{
+		Name:  "TaskOutput",
+		Input: map[string]any{"task_id": "task_123"},
+	})
+
+	got := NormalizeCallsForSchemasWithMeta(calls, nil, true)
+	agentCount := 0
+	taskOutputCount := 0
+	for _, call := range got {
+		switch call.Name {
+		case "Agent":
+			agentCount++
+		case "TaskOutput":
+			taskOutputCount++
+		}
+	}
+	if agentCount != 4 {
+		t.Fatalf("expected 4 Agent calls after concurrency gate, got %d in %#v", agentCount, got)
+	}
+	if taskOutputCount != 1 {
+		t.Fatalf("expected TaskOutput not to be counted as background Agent, got %#v", got)
+	}
+}
+
 func TestNormalizeCallsForSchemasKeepsUnknownNoArgToolWithoutSchema(t *testing.T) {
 	calls := []ParsedToolCall{{Name: "get_time", Input: map[string]any{}}}
 	got := NormalizeCallsForSchemas(calls, nil)

@@ -41,6 +41,9 @@ func (s *responsesStreamRuntime) sendDone() {
 
 func (s *responsesStreamRuntime) processToolStreamEvents(events []toolStreamEvent, emitContent bool, resetAfterToolCalls bool) {
 	for _, evt := range events {
+		if s.failed {
+			return
+		}
 		if emitContent && evt.Content != "" {
 			s.emitTextDelta(evt.Content)
 		}
@@ -55,6 +58,11 @@ func (s *responsesStreamRuntime) processToolStreamEvents(events []toolStreamEven
 			s.emitFunctionCallDeltaEvents(filtered)
 		}
 		if len(evt.ToolCalls) > 0 {
+			if normalizedToolCallsExceedInputBytes(evt.ToolCalls, nil, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
+				_, message, code := toolCallTooLargeError()
+				s.failResponse(message, code)
+				return
+			}
 			s.emitFunctionCallDoneEvents(evt.ToolCalls)
 			if resetAfterToolCalls {
 				s.resetStreamToolCallState()

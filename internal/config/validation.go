@@ -96,6 +96,15 @@ func ValidateRuntimeConfig(runtime RuntimeConfig) error {
 	if err := ValidateIntRange("runtime.token_refresh_interval_hours", runtime.TokenRefreshIntervalHours, 1, 720, false); err != nil {
 		return err
 	}
+	if err := ValidateIntRange("runtime.account_failure_cooldown_seconds", runtime.AccountFailureCooldownSeconds, 1, 3600, false); err != nil {
+		return err
+	}
+	if err := ValidateIntRange("runtime.stream_max_duration_seconds", runtime.StreamMaxDurationSeconds, 30, 3600, false); err != nil {
+		return err
+	}
+	if err := ValidateIntRange("runtime.buffered_tool_content_max_bytes", runtime.BufferedToolContentMaxBytes, 32768, 10485760, false); err != nil {
+		return err
+	}
 	if runtime.AccountMaxInflight > 0 && runtime.GlobalMaxInflight > 0 && runtime.GlobalMaxInflight < runtime.AccountMaxInflight {
 		return fmt.Errorf("runtime.global_max_inflight must be >= runtime.account_max_inflight")
 	}

@@ -24,6 +24,16 @@ func IsTaskTrackingToolName(name string) bool {
 	}
 }
 
+func IsBackgroundAgentToolName(name string) bool {
+	key := canonicalToolPolicyName(name)
+	switch key {
+	case "agent", "task", "subagent", "newtask":
+		return true
+	default:
+		return false
+	}
+}
+
 func MetaAgentToolBlockedMessage() string {
 	return metaAgentToolBlockedMessage
 }

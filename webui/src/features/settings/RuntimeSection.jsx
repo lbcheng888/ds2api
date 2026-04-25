@@ -57,6 +57,51 @@ export default function RuntimeSection({ t, form, setForm }) {
                         className="w-full bg-background border border-border rounded-lg px-3 py-2"
                     />
                 </label>
+                <label className="text-sm space-y-2">
+                    <span className="text-muted-foreground">{t('settings.accountFailureCooldownSeconds')}</span>
+                    <input
+                        type="number"
+                        min={1}
+                        max={3600}
+                        step={1}
+                        value={form.runtime.account_failure_cooldown_seconds}
+                        onChange={(e) => setForm((prev) => ({
+                            ...prev,
+                            runtime: { ...prev.runtime, account_failure_cooldown_seconds: Number(e.target.value || 1) },
+                        }))}
+                        className="w-full bg-background border border-border rounded-lg px-3 py-2"
+                    />
+                </label>
+                <label className="text-sm space-y-2">
+                    <span className="text-muted-foreground">{t('settings.streamMaxDurationSeconds')}</span>
+                    <input
+                        type="number"
+                        min={30}
+                        max={3600}
+                        step={1}
+                        value={form.runtime.stream_max_duration_seconds}
+                        onChange={(e) => setForm((prev) => ({
+                            ...prev,
+                            runtime: { ...prev.runtime, stream_max_duration_seconds: Number(e.target.value || 30) },
+                        }))}
+                        className="w-full bg-background border border-border rounded-lg px-3 py-2"
+                    />
+                </label>
+                <label className="text-sm space-y-2">
+                    <span className="text-muted-foreground">{t('settings.bufferedToolContentMaxBytes')}</span>
+                    <input
+                        type="number"
+                        min={32768}
+                        max={10485760}
+                        step={1024}
+                        value={form.runtime.buffered_tool_content_max_bytes}
+                        onChange={(e) => setForm((prev) => ({
+                            ...prev,
+                            runtime: { ...prev.runtime, buffered_tool_content_max_bytes: Number(e.target.value || 32768) },
+                        }))}
+                        className="w-full bg-background border border-border rounded-lg px-3 py-2"
+                    />
+                </label>
             </div>
         </div>
     )

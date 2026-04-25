@@ -132,10 +132,13 @@ type AdminConfig struct {
 }
 
 type RuntimeConfig struct {
-	AccountMaxInflight        int `json:"account_max_inflight,omitempty"`
-	AccountMaxQueue           int `json:"account_max_queue,omitempty"`
-	GlobalMaxInflight         int `json:"global_max_inflight,omitempty"`
-	TokenRefreshIntervalHours int `json:"token_refresh_interval_hours,omitempty"`
+	AccountMaxInflight            int `json:"account_max_inflight,omitempty"`
+	AccountMaxQueue               int `json:"account_max_queue,omitempty"`
+	GlobalMaxInflight             int `json:"global_max_inflight,omitempty"`
+	TokenRefreshIntervalHours     int `json:"token_refresh_interval_hours,omitempty"`
+	AccountFailureCooldownSeconds int `json:"account_failure_cooldown_seconds,omitempty"`
+	StreamMaxDurationSeconds      int `json:"stream_max_duration_seconds,omitempty"`
+	BufferedToolContentMaxBytes   int `json:"buffered_tool_content_max_bytes,omitempty"`
 }
 
 type ResponsesConfig struct {

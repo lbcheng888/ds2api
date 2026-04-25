@@ -12,7 +12,15 @@ const MAX_AUTO_FETCH_FAILURES = 3
 
 const DEFAULT_FORM = {
     admin: { jwt_expire_hours: 24 },
-    runtime: { account_max_inflight: 2, account_max_queue: 10, global_max_inflight: 10, token_refresh_interval_hours: 6 },
+    runtime: {
+        account_max_inflight: 2,
+        account_max_queue: 10,
+        global_max_inflight: 10,
+        token_refresh_interval_hours: 6,
+        account_failure_cooldown_seconds: 120,
+        stream_max_duration_seconds: 900,
+        buffered_tool_content_max_bytes: 262144,
+    },
     compat: { strip_reference_markers: true, allow_meta_agent_tools: false },
     responses: { store_ttl_seconds: 900 },
     embeddings: { provider: '' },
@@ -58,6 +66,9 @@ function fromServerForm(data) {
             account_max_queue: Number(data.runtime?.account_max_queue || 10),
             global_max_inflight: Number(data.runtime?.global_max_inflight || 10),
             token_refresh_interval_hours: Number(data.runtime?.token_refresh_interval_hours || 6),
+            account_failure_cooldown_seconds: Number(data.runtime?.account_failure_cooldown_seconds || 120),
+            stream_max_duration_seconds: Number(data.runtime?.stream_max_duration_seconds || 900),
+            buffered_tool_content_max_bytes: Number(data.runtime?.buffered_tool_content_max_bytes || 262144),
         },
         compat: {
             strip_reference_markers: data.compat?.strip_reference_markers ?? true,
@@ -89,6 +100,9 @@ function toServerPayload(form) {
             account_max_queue: Number(form.runtime.account_max_queue),
             global_max_inflight: Number(form.runtime.global_max_inflight),
             token_refresh_interval_hours: Number(form.runtime.token_refresh_interval_hours),
+            account_failure_cooldown_seconds: Number(form.runtime.account_failure_cooldown_seconds),
+            stream_max_duration_seconds: Number(form.runtime.stream_max_duration_seconds),
+            buffered_tool_content_max_bytes: Number(form.runtime.buffered_tool_content_max_bytes),
         },
         compat: {
             strip_reference_markers: Boolean(form.compat?.strip_reference_markers ?? true),

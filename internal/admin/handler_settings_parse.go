@@ -76,6 +76,27 @@ func parseSettingsUpdateRequest(req map[string]any) (*config.AdminConfig, *confi
 			}
 			cfg.TokenRefreshIntervalHours = n
 		}
+		if v, exists := raw["account_failure_cooldown_seconds"]; exists {
+			n := intFrom(v)
+			if err := config.ValidateIntRange("runtime.account_failure_cooldown_seconds", n, 1, 3600, true); err != nil {
+				return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			}
+			cfg.AccountFailureCooldownSeconds = n
+		}
+		if v, exists := raw["stream_max_duration_seconds"]; exists {
+			n := intFrom(v)
+			if err := config.ValidateIntRange("runtime.stream_max_duration_seconds", n, 30, 3600, true); err != nil {
+				return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			}
+			cfg.StreamMaxDurationSeconds = n
+		}
+		if v, exists := raw["buffered_tool_content_max_bytes"]; exists {
+			n := intFrom(v)
+			if err := config.ValidateIntRange("runtime.buffered_tool_content_max_bytes", n, 32768, 10485760, true); err != nil {
+				return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			}
+			cfg.BufferedToolContentMaxBytes = n
+		}
 		if cfg.AccountMaxInflight > 0 && cfg.GlobalMaxInflight > 0 && cfg.GlobalMaxInflight < cfg.AccountMaxInflight {
 			return nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("runtime.global_max_inflight must be >= runtime.account_max_inflight")
 		}

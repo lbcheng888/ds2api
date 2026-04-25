@@ -11,9 +11,20 @@ import (
 var taskNotificationBlockPattern = regexp.MustCompile(`(?is)<task-notification\b[^>]*>(.*?)</task-notification>`)
 var taskIDTagPattern = regexp.MustCompile(`(?is)<task[-_]?id\b[^>]*>(.*?)</task[-_]?id>`)
 var taskIDAttrPattern = regexp.MustCompile(`(?is)\btask[-_]?id\s*=\s*["']([^"']+)["']`)
+var taskIDJSONPattern = regexp.MustCompile(`(?is)["']task[-_]?id["']\s*:\s*["']([^"']+)["']`)
+var taskOutputLineIDPattern = regexp.MustCompile(`(?is)\bTask\s+Output(?:\s*\([^)]*\))?\s+([a-z0-9_-]{8,})\b`)
+var prefixedTaskIDPattern = regexp.MustCompile(`(?is)\b(task[_-][a-z0-9_-]{4,})\b`)
 
 func synthesizeTaskOutputToolCallTextFromTaskNotification(finalPrompt string, toolNames []string, allowMetaAgentTools bool) string {
 	calls := synthesizeTaskOutputToolCallsFromTaskNotification(finalPrompt, toolNames, allowMetaAgentTools)
+	if len(calls) == 0 {
+		return ""
+	}
+	return formatParsedToolCallsAsPromptXML(calls)
+}
+
+func synthesizeTaskOutputToolCallTextFromAgentWaiting(finalPrompt, finalText string, toolNames []string, allowMetaAgentTools bool) string {
+	calls := synthesizeTaskOutputToolCallsFromAgentWaiting(finalPrompt, finalText, toolNames, allowMetaAgentTools)
 	if len(calls) == 0 {
 		return ""
 	}
@@ -48,6 +59,69 @@ func synthesizeTaskOutputToolCallsFromTaskNotification(finalPrompt string, toolN
 		})
 	}
 	return calls
+}
+
+func synthesizeTaskOutputToolCallsFromAgentWaiting(finalPrompt, finalText string, toolNames []string, allowMetaAgentTools bool) []toolcall.ParsedToolCall {
+	if !allowMetaAgentTools || !looksLikeAgentWaitingText(finalText) {
+		return nil
+	}
+	if toolcall.LooksLikeToolCallSyntax(finalText) {
+		return nil
+	}
+	toolName, ok := findTaskOutputToolName(toolNames)
+	if !ok {
+		return nil
+	}
+	ids := extractAllTaskIDs(finalPrompt)
+	if len(ids) == 0 {
+		return nil
+	}
+	if len(ids) > 4 {
+		ids = ids[len(ids)-4:]
+	}
+	calls := make([]toolcall.ParsedToolCall, 0, len(ids))
+	for _, id := range ids {
+		calls = append(calls, toolcall.ParsedToolCall{
+			Name: toolName,
+			Input: map[string]any{
+				"task_id": id,
+				"block":   false,
+				"timeout": 5000,
+			},
+		})
+	}
+	return calls
+}
+
+func looksLikeAgentWaitingText(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || len([]rune(trimmed)) > 800 {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "agent") {
+		for _, phrase := range []string{
+			"still running",
+			"still in progress",
+			"wait for",
+			"waiting for",
+			"after they complete",
+			"after all agents",
+			"background agents",
+			"local agents",
+		} {
+			if strings.Contains(lower, phrase) {
+				return true
+			}
+		}
+	}
+	if strings.Contains(trimmed, "代理") {
+		return strings.Contains(trimmed, "等待") ||
+			strings.Contains(trimmed, "完成后") ||
+			strings.Contains(trimmed, "汇总") ||
+			strings.Contains(trimmed, "仍在运行")
+	}
+	return false
 }
 
 func findTaskOutputToolName(toolNames []string) (string, bool) {
@@ -117,6 +191,33 @@ func extractTaskNotificationIDs(text string) []string {
 		for _, tagMatch := range taskIDTagPattern.FindAllStringSubmatch(block, -1) {
 			if len(tagMatch) >= 2 {
 				addID(tagMatch[1])
+			}
+		}
+	}
+	return out
+}
+
+func extractAllTaskIDs(text string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	addID := func(raw string) {
+		id := cleanSyntheticTaskID(raw)
+		if id == "" {
+			return
+		}
+		if _, exists := seen[id]; exists {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, id := range extractTaskNotificationIDs(text) {
+		addID(id)
+	}
+	for _, pattern := range []*regexp.Regexp{taskIDAttrPattern, taskIDTagPattern, taskIDJSONPattern, taskOutputLineIDPattern, prefixedTaskIDPattern} {
+		for _, match := range pattern.FindAllStringSubmatch(text, -1) {
+			if len(match) >= 2 {
+				addID(match[1])
 			}
 		}
 	}

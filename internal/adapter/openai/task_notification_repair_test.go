@@ -53,6 +53,29 @@ func TestSynthesizeTaskOutputRequiresMetaAgentToolsAllowed(t *testing.T) {
 	}
 }
 
+func TestSynthesizeTaskOutputFromAgentWaitingText(t *testing.T) {
+	prompt := `<｜Assistant｜>Task Output(non-blocking) a43c25c4d63ec3d42
+Task is still running.
+Task Output(non-blocking) ac595bbc81cb03cef
+Task is still running.<｜Assistant｜>`
+	got := synthesizeTaskOutputToolCallsFromAgentWaiting(prompt, "等待剩余全部代理完成后汇总全部审查结果。", []string{"TaskOutput"}, true)
+	if len(got) != 2 {
+		t.Fatalf("expected two TaskOutput calls, got %#v", got)
+	}
+	if got[0].Input["task_id"] != "a43c25c4d63ec3d42" || got[1].Input["task_id"] != "ac595bbc81cb03cef" {
+		t.Fatalf("unexpected task ids: %#v", got)
+	}
+}
+
+func TestSynthesizeTaskOutputFromAgentWaitingDoesNotHideMalformedToolCall(t *testing.T) {
+	prompt := `Task Output(non-blocking) a43c25c4d63ec3d42`
+	text := "3 of 4 background agents completed.\n\n<tool_calls>\n<tool_calls>"
+	got := synthesizeTaskOutputToolCallsFromAgentWaiting(prompt, text, []string{"TaskOutput"}, true)
+	if len(got) != 0 {
+		t.Fatalf("expected malformed tool syntax to remain visible to invalid-tool gate, got %#v", got)
+	}
+}
+
 func TestHandleNonStreamConvertsTaskNotificationThinkingOnlyToTaskOutput(t *testing.T) {
 	h := &Handler{}
 	resp := makeSSEHTTPResponse(
@@ -114,6 +137,7 @@ func TestChatStreamConvertsTaskNotificationThinkingOnlyToTaskOutput(t *testing.T
 		false,
 		true,
 		false,
+		262144,
 	)
 	runtime.thinking.WriteString("The task completed; retrieve its output.")
 
@@ -181,6 +205,7 @@ func TestChatStreamPromotesThinkingToolCalls(t *testing.T) {
 		false,
 		true,
 		false,
+		262144,
 	)
 	runtime.thinking.WriteString("<tool_calls><tool_call><tool_name>Read</tool_name><parameters><file_path>/tmp/a.txt</file_path></parameters></tool_call></tool_calls>")
 

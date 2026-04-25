@@ -48,6 +48,15 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 			if runtimeCfg.TokenRefreshIntervalHours > 0 {
 				c.Runtime.TokenRefreshIntervalHours = runtimeCfg.TokenRefreshIntervalHours
 			}
+			if runtimeCfg.AccountFailureCooldownSeconds > 0 {
+				c.Runtime.AccountFailureCooldownSeconds = runtimeCfg.AccountFailureCooldownSeconds
+			}
+			if runtimeCfg.StreamMaxDurationSeconds > 0 {
+				c.Runtime.StreamMaxDurationSeconds = runtimeCfg.StreamMaxDurationSeconds
+			}
+			if runtimeCfg.BufferedToolContentMaxBytes > 0 {
+				c.Runtime.BufferedToolContentMaxBytes = runtimeCfg.BufferedToolContentMaxBytes
+			}
 		}
 		if compatCfg != nil {
 			if compatCfg.WideInputStrictOutput != nil {

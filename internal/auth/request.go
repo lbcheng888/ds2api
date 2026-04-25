@@ -42,6 +42,7 @@ type Resolver struct {
 
 	mu               sync.Mutex
 	tokenRefreshedAt map[string]time.Time
+	accountCooldowns map[string]time.Time
 }
 
 func NewResolver(store *config.Store, pool *account.Pool, login LoginFunc) *Resolver {
@@ -50,6 +51,7 @@ func NewResolver(store *config.Store, pool *account.Pool, login LoginFunc) *Reso
 		Pool:             pool,
 		Login:            login,
 		tokenRefreshedAt: map[string]time.Time{},
+		accountCooldowns: map[string]time.Time{},
 	}
 }
 
@@ -81,6 +83,7 @@ func (r *Resolver) acquireManagedRequestAuth(ctx context.Context, callerID, targ
 	tried := map[string]bool{}
 	var lastEnsureErr error
 	for {
+		r.applyAccountCooldowns(tried)
 		if target == "" && len(tried) >= len(r.Store.Accounts()) {
 			if lastEnsureErr != nil {
 				return nil, lastEnsureErr
@@ -193,6 +196,7 @@ func (r *Resolver) SwitchAccount(ctx context.Context, a *RequestAuth) bool {
 		r.Pool.Release(a.AccountID)
 	}
 	for {
+		r.applyAccountCooldowns(a.TriedAccounts)
 		acc, ok := r.Pool.Acquire("", a.TriedAccounts)
 		if !ok {
 			return false
@@ -213,6 +217,41 @@ func (r *Resolver) Release(a *RequestAuth) {
 		return
 	}
 	r.Pool.Release(a.AccountID)
+}
+
+func (r *Resolver) MarkAccountFailure(a *RequestAuth) {
+	if r == nil || a == nil || !a.UseConfigToken {
+		return
+	}
+	accountID := strings.TrimSpace(a.AccountID)
+	if accountID == "" {
+		return
+	}
+	cooldown := time.Duration(r.accountFailureCooldownSeconds()) * time.Second
+	if cooldown <= 0 {
+		return
+	}
+	until := time.Now().Add(cooldown)
+	r.mu.Lock()
+	if r.accountCooldowns == nil {
+		r.accountCooldowns = map[string]time.Time{}
+	}
+	r.accountCooldowns[accountID] = until
+	r.mu.Unlock()
+	config.Logger.Warn("[account_health] account cooldown started", "account", accountID, "cooldown_seconds", int(cooldown.Seconds()))
+}
+
+func (r *Resolver) MarkAccountSuccess(a *RequestAuth) {
+	if r == nil || a == nil || !a.UseConfigToken {
+		return
+	}
+	accountID := strings.TrimSpace(a.AccountID)
+	if accountID == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.accountCooldowns, accountID)
+	r.mu.Unlock()
 }
 
 func extractCallerToken(req *http.Request) string {
@@ -299,4 +338,27 @@ func (r *Resolver) clearTokenRefreshMark(accountID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tokenRefreshedAt, accountID)
+}
+
+func (r *Resolver) applyAccountCooldowns(exclude map[string]bool) {
+	if r == nil || exclude == nil {
+		return
+	}
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for accountID, until := range r.accountCooldowns {
+		if now.Before(until) {
+			exclude[accountID] = true
+			continue
+		}
+		delete(r.accountCooldowns, accountID)
+	}
+}
+
+func (r *Resolver) accountFailureCooldownSeconds() int {
+	if r == nil || r.Store == nil {
+		return 120
+	}
+	return r.Store.RuntimeAccountFailureCooldownSeconds()
 }

@@ -68,7 +68,10 @@
     "account_max_inflight": 2,
     "account_max_queue": 0,
     "global_max_inflight": 0,
-    "token_refresh_interval_hours": 6
+    "token_refresh_interval_hours": 6,
+    "account_failure_cooldown_seconds": 120,
+    "stream_max_duration_seconds": 900,
+    "buffered_tool_content_max_bytes": 262144
   },
   "auto_delete": {
     "mode": "none"

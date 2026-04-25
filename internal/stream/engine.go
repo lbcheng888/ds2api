@@ -15,6 +15,7 @@ const (
 	StopReasonContextCancelled  StopReason = "context_cancelled"
 	StopReasonNoContentTimeout  StopReason = "no_content_timeout"
 	StopReasonIdleTimeout       StopReason = "idle_timeout"
+	StopReasonMaxDuration       StopReason = "max_duration"
 	StopReasonUpstreamCompleted StopReason = "upstream_completed"
 	StopReasonHandlerRequested  StopReason = "handler_requested"
 )
@@ -26,6 +27,7 @@ type ConsumeConfig struct {
 	InitialType         string
 	KeepAliveInterval   time.Duration
 	IdleTimeout         time.Duration
+	MaxDuration         time.Duration
 	MaxKeepAliveNoInput int
 }
 
@@ -61,6 +63,13 @@ func ConsumeSSE(cfg ConsumeConfig, hooks ConsumeHooks) {
 		ticker = time.NewTicker(cfg.KeepAliveInterval)
 		defer ticker.Stop()
 	}
+	var maxTimer *time.Timer
+	var maxDurationCh <-chan time.Time
+	if cfg.MaxDuration > 0 {
+		maxTimer = time.NewTimer(cfg.MaxDuration)
+		maxDurationCh = maxTimer.C
+		defer maxTimer.Stop()
+	}
 
 	hasContent := false
 	lastContent := time.Now()
@@ -78,6 +87,9 @@ func ConsumeSSE(cfg ConsumeConfig, hooks ConsumeHooks) {
 			if hooks.OnContextDone != nil {
 				hooks.OnContextDone()
 			}
+			return
+		case <-maxDurationCh:
+			finalize(StopReasonMaxDuration, nil)
 			return
 		case <-tickCh(ticker):
 			if !hasContent {

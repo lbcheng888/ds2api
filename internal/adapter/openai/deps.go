@@ -35,6 +35,9 @@ type ConfigReader interface {
 	EmbeddingsProvider() string
 	AutoDeleteMode() string
 	AutoDeleteSessions() bool
+	RuntimeAccountFailureCooldownSeconds() int
+	RuntimeStreamMaxDurationSeconds() int
+	RuntimeBufferedToolContentMaxBytes() int
 	HistorySplitEnabled() bool
 	HistorySplitTriggerAfterTurns() int
 }

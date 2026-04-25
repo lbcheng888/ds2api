@@ -17,6 +17,15 @@ func validateMergedRuntimeSettings(current config.RuntimeConfig, incoming *confi
 		if incoming.TokenRefreshIntervalHours > 0 {
 			merged.TokenRefreshIntervalHours = incoming.TokenRefreshIntervalHours
 		}
+		if incoming.AccountFailureCooldownSeconds > 0 {
+			merged.AccountFailureCooldownSeconds = incoming.AccountFailureCooldownSeconds
+		}
+		if incoming.StreamMaxDurationSeconds > 0 {
+			merged.StreamMaxDurationSeconds = incoming.StreamMaxDurationSeconds
+		}
+		if incoming.BufferedToolContentMaxBytes > 0 {
+			merged.BufferedToolContentMaxBytes = incoming.BufferedToolContentMaxBytes
+		}
 	}
 	return validateRuntimeSettings(merged)
 }

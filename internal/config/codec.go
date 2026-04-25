@@ -38,10 +38,10 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	if strings.TrimSpace(c.Admin.PasswordHash) != "" || c.Admin.JWTExpireHours > 0 || c.Admin.JWTValidAfterUnix > 0 {
 		m["admin"] = c.Admin
 	}
-	if c.Runtime.AccountMaxInflight > 0 || c.Runtime.AccountMaxQueue > 0 || c.Runtime.GlobalMaxInflight > 0 || c.Runtime.TokenRefreshIntervalHours > 0 {
+	if c.Runtime.AccountMaxInflight > 0 || c.Runtime.AccountMaxQueue > 0 || c.Runtime.GlobalMaxInflight > 0 || c.Runtime.TokenRefreshIntervalHours > 0 || c.Runtime.AccountFailureCooldownSeconds > 0 || c.Runtime.StreamMaxDurationSeconds > 0 || c.Runtime.BufferedToolContentMaxBytes > 0 {
 		m["runtime"] = c.Runtime
 	}
-	if c.Compat.WideInputStrictOutput != nil || c.Compat.StripReferenceMarkers != nil {
+	if c.Compat.WideInputStrictOutput != nil || c.Compat.StripReferenceMarkers != nil || c.Compat.AllowMetaAgentTools != nil {
 		m["compat"] = c.Compat
 	}
 	if c.Responses.StoreTTLSeconds > 0 {

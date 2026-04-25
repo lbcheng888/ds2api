@@ -69,6 +69,43 @@ func TestDetermineWithXAPIKeyManagedKeyAcquiresAccount(t *testing.T) {
 	}
 }
 
+func TestDetermineManagedAccountSkipsFailedCooldownAccount(t *testing.T) {
+	t.Setenv("DS2API_CONFIG_JSON", `{
+		"keys":["managed-key"],
+		"accounts":[
+			{"email":"acc1@test.com","password":"pwd"},
+			{"email":"acc2@test.com","password":"pwd"}
+		],
+		"runtime":{"account_failure_cooldown_seconds":60}
+	}`)
+	store := config.LoadStore()
+	pool := account.NewPool(store)
+	r := NewResolver(store, pool, func(_ context.Context, acc config.Account) (string, error) {
+		return "token-" + acc.Identifier(), nil
+	})
+	req, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("x-api-key", "managed-key")
+
+	first, err := r.Determine(req)
+	if err != nil {
+		t.Fatalf("first determine failed: %v", err)
+	}
+	if first.AccountID != "acc1@test.com" {
+		t.Fatalf("expected first account, got %q", first.AccountID)
+	}
+	r.MarkAccountFailure(first)
+	r.Release(first)
+
+	second, err := r.Determine(req)
+	if err != nil {
+		t.Fatalf("second determine failed: %v", err)
+	}
+	defer r.Release(second)
+	if second.AccountID != "acc2@test.com" {
+		t.Fatalf("expected cooldown skip to second account, got %q", second.AccountID)
+	}
+}
+
 func TestDetermineCallerWithManagedKeySkipsAccountAcquire(t *testing.T) {
 	r := newTestResolver(t)
 	req, _ := http.NewRequest(http.MethodGet, "/v1/responses/resp_1", nil)

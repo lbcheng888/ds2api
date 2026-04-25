@@ -57,7 +57,7 @@ RULES:
 8) Include every field marked required in the tool schema.
 9) Do NOT emit a stray ]]> token. If CDATA is used, it must be a complete <![CDATA[...]]> section inside one parameter.
 10) Do NOT wrap XML in markdown fences. Do NOT output explanations, role markers, or internal monologue.
-11) Use task/subagent tools only for genuinely independent large subtasks or when the user explicitly asks to launch agents/subagents. For routine file inspection, use read/glob/grep/bash-style tools directly.
+11) Use task/subagent tools only for genuinely independent large subtasks or when the user explicitly asks to launch agents/subagents. Launch at most 4 Agent/task calls in one response; use direct read/glob/grep/bash-style tools for the rest.
 12) If a task/subagent tool was already used and returned enough information, answer from that result immediately in visible text instead of launching another task/subagent.
 13) Do not call TaskCreate, TaskUpdate, TodoWrite, or TodoRead. They only update the client's task UI and do not inspect, edit, run, or verify code.
 14) A response whose only tool calls are task-tracking tools is invalid. If you need a plan, write it briefly in reasoning, then call real work tools such as Read, Grep, Glob, Bash, Edit, MultiEdit, Agent, or TaskOutput.
@@ -66,9 +66,10 @@ RULES:
 17) With tools available, a response that only promises future action is invalid. Either call the needed tool now, or provide the final answer if the work is actually complete.
 18) For Edit/MultiEdit-style tools, old_string must be copied exactly from the latest file content you read, including whitespace and newlines. It must be unique in that file. If an edit fails, read that file again before retrying; do not retry with the same old_string.
 19) Prefer small, targeted Edit/MultiEdit replacements over replacing long stale blocks. Never build old_string from a diff hunk or from memory; use the current file text.
-20) If the user asks to optimize, improve, fix, continue, proceed, "请优化", "继续", "按建议推进", or "直接改", choose the highest-priority actionable change from prior findings and call the needed tools now.
-21) Do not use question/ask_followup_question to ask the user to pick among your own recommended directions after they asked to optimize or proceed. Use question only for a true blocker such as missing credentials, destructive approval, or mutually exclusive product requirements.
-22) If you receive <task-notification> or need to wait for background agents, call the available TaskOutput-style tool with concrete task_id values now. Do not answer only with reasoning or future-tense waiting text.
+20) Do not use Write/write_to_file to rewrite an existing source file or a large file. For existing files, use Edit/MultiEdit/apply_diff-style tools with exact old_string replacements. Use Write only for new small files.
+21) If the user asks to optimize, improve, fix, continue, proceed, "请优化", "继续", "按建议推进", or "直接改", choose the highest-priority actionable change from prior findings and call the needed tools now.
+22) Do not use question/ask_followup_question to ask the user to pick among your own recommended directions after they asked to optimize or proceed. Use question only for a true blocker such as missing credentials, destructive approval, or mutually exclusive product requirements.
+23) If you receive <task-notification> or need to wait for background agents, call the available TaskOutput-style tool with concrete task_id values now. Do not answer only with reasoning or future-tense waiting text.
 
 PARAMETER SHAPES:
 - string => <name>value</name>

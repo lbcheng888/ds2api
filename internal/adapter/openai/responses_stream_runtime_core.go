@@ -31,6 +31,7 @@ type responsesStreamRuntime struct {
 
 	bufferToolContent    bool
 	emitEarlyToolDeltas  bool
+	bufferedToolMaxBytes int
 	toolCallsEmitted     bool
 	toolCallsDoneEmitted bool
 
@@ -69,6 +70,7 @@ func newResponsesStreamRuntime(
 	toolNames []string,
 	bufferToolContent bool,
 	emitEarlyToolDeltas bool,
+	bufferedToolMaxBytes int,
 	toolChoice util.ToolChoicePolicy,
 	allowMetaAgentTools bool,
 	traceID string,
@@ -87,6 +89,7 @@ func newResponsesStreamRuntime(
 		toolNames:             toolNames,
 		bufferToolContent:     bufferToolContent,
 		emitEarlyToolDeltas:   emitEarlyToolDeltas,
+		bufferedToolMaxBytes:  bufferedToolMaxBytes,
 		streamToolCallIDs:     map[int]string{},
 		functionItemIDs:       map[int]string{},
 		functionOutputIDs:     map[int]int{},
@@ -127,8 +130,14 @@ func (s *responsesStreamRuntime) failResponse(message, code string) {
 }
 
 func (s *responsesStreamRuntime) finalize() {
+	if s.failed {
+		return
+	}
 	finalThinking := s.thinking.String()
 	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
+	if repaired := synthesizeTaskOutputToolCallTextFromAgentWaiting(s.finalPrompt, finalText, s.toolNames, s.allowMetaAgentTools); repaired != "" {
+		finalText = repaired
+	}
 	if strings.TrimSpace(finalText) == "" {
 		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(s.finalPrompt, s.toolNames, s.allowMetaAgentTools); repaired != "" {
 			finalText = repaired
@@ -138,10 +147,15 @@ func (s *responsesStreamRuntime) finalize() {
 	}
 
 	if s.bufferToolContent {
-		s.processToolStreamEvents(flushToolSieveWithMeta(&s.sieve, s.toolNames, s.allowMetaAgentTools), true, true)
+		s.processToolStreamEvents(flushToolSieveWithMeta(&s.sieve, s.toolNames, s.allowMetaAgentTools), false, true)
 	}
 
 	textParsed := toolcall.ParseStandaloneToolCallsDetailed(finalText, s.toolNames)
+	if normalizedToolCallsExceedInputBytes(textParsed.Calls, nil, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
+		_, message, code := toolCallTooLargeError()
+		s.failResponse(message, code)
+		return
+	}
 	detected := toolcall.NormalizeCallsForSchemasWithMeta(textParsed.Calls, nil, s.allowMetaAgentTools)
 	s.logToolPolicyRejections(textParsed)
 
@@ -152,12 +166,21 @@ func (s *responsesStreamRuntime) finalize() {
 		}
 	}
 
-	s.closeMessageItem()
-
 	if s.toolChoice.IsRequired() && len(detected) == 0 {
 		s.failResponse("tool_choice requires at least one valid tool call.", "tool_choice_violation")
 		return
 	}
+	if len(detected) == 0 && !s.toolCallsEmitted {
+		if _, message, code, ok := futureActionMissingToolCallDetail(finalText, s.toolNames, nil, s.allowMetaAgentTools); ok {
+			s.failResponse(message, code)
+			return
+		}
+		if strings.TrimSpace(s.visibleText.String()) == "" && strings.TrimSpace(finalText) != "" {
+			s.emitTextDelta(finalText)
+		}
+	}
+	s.closeMessageItem()
+
 	if len(detected) == 0 && strings.TrimSpace(finalText) == "" {
 		code := "upstream_empty_output"
 		message := "Upstream model returned empty output."
@@ -234,7 +257,15 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 			s.emitTextDelta(trimmed)
 			continue
 		}
-		s.processToolStreamEvents(processToolSieveChunkWithMeta(&s.sieve, trimmed, s.toolNames, s.allowMetaAgentTools), true, true)
+		s.processToolStreamEvents(processToolSieveChunkWithMeta(&s.sieve, trimmed, s.toolNames, s.allowMetaAgentTools), false, true)
+		if s.failed {
+			return streamengine.ParsedDecision{Stop: true}
+		}
+		if s.bufferedToolMaxBytes > 0 && s.text.Len() > s.bufferedToolMaxBytes && !s.toolCallsEmitted {
+			_, message, code := toolCallTooLargeError()
+			s.failResponse(message, code)
+			return streamengine.ParsedDecision{Stop: true}
+		}
 	}
 
 	return streamengine.ParsedDecision{ContentSeen: contentSeen}

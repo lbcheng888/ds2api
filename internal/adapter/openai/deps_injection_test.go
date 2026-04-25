@@ -33,6 +33,15 @@ func (m mockOpenAIConfig) AutoDeleteMode() string {
 }
 func (m mockOpenAIConfig) AutoDeleteSessions() bool  { return false }
 func (m mockOpenAIConfig) HistorySplitEnabled() bool { return m.historySplitEnabled }
+func (m mockOpenAIConfig) RuntimeAccountFailureCooldownSeconds() int {
+	return 120
+}
+func (m mockOpenAIConfig) RuntimeStreamMaxDurationSeconds() int {
+	return 900
+}
+func (m mockOpenAIConfig) RuntimeBufferedToolContentMaxBytes() int {
+	return 262144
+}
 func (m mockOpenAIConfig) HistorySplitTriggerAfterTurns() int {
 	if m.historySplitTurns <= 0 {
 		return 1

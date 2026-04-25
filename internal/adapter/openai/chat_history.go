@@ -3,6 +3,7 @@ package openai
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 
 const adminWebUISourceHeader = "X-Ds2-Source"
 const adminWebUISourceValue = "admin-webui-api-tester"
+const chatHistoryMaxFieldRunes = 200000
 
 type chatHistorySession struct {
 	store       *chathistory.Store
@@ -214,9 +216,27 @@ func (s *chatHistorySession) persistUpdate(params chathistory.UpdateParams) {
 	if s == nil || s.store == nil || s.disabled {
 		return
 	}
+	params.ReasoningContent = compactChatHistoryField(params.ReasoningContent)
+	params.Content = compactChatHistoryField(params.Content)
+	params.Error = compactChatHistoryField(params.Error)
 	if _, err := s.store.Update(s.entryID, params); err != nil {
 		s.handlePersistError(params, err)
 	}
+}
+
+func compactChatHistoryField(text string) string {
+	if text == "" {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= chatHistoryMaxFieldRunes {
+		return text
+	}
+	half := chatHistoryMaxFieldRunes / 2
+	omitted := len(runes) - chatHistoryMaxFieldRunes
+	return string(runes[:half]) +
+		"\n\n[ds2api chat history truncated " + strconv.Itoa(omitted) + " runes]\n\n" +
+		string(runes[len(runes)-half:])
 }
 
 func (s *chatHistorySession) handlePersistError(params chathistory.UpdateParams, err error) {

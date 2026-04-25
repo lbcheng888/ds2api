@@ -29,9 +29,11 @@ type chatStreamRuntime struct {
 	stripReferenceMarkers bool
 
 	firstChunkSent       bool
+	visibleContentSent   bool
 	streamIncludeUsage   bool
 	bufferToolContent    bool
 	emitEarlyToolDeltas  bool
+	bufferedToolMaxBytes int
 	toolCallsEmitted     bool
 	toolCallsDoneEmitted bool
 
@@ -67,6 +69,7 @@ func newChatStreamRuntime(
 	streamIncludeUsage bool,
 	bufferToolContent bool,
 	emitEarlyToolDeltas bool,
+	bufferedToolMaxBytes int,
 ) *chatStreamRuntime {
 	return &chatStreamRuntime{
 		w:                     w,
@@ -85,6 +88,7 @@ func newChatStreamRuntime(
 		streamIncludeUsage:    streamIncludeUsage,
 		bufferToolContent:     bufferToolContent,
 		emitEarlyToolDeltas:   emitEarlyToolDeltas,
+		bufferedToolMaxBytes:  bufferedToolMaxBytes,
 		streamToolCallIDs:     map[int]string{},
 		streamToolNames:       map[int]string{},
 	}
@@ -137,8 +141,14 @@ func (s *chatStreamRuntime) resetStreamToolCallState() {
 }
 
 func (s *chatStreamRuntime) finalize(finishReason string) {
+	if s.finalErrorMessage != "" {
+		return
+	}
 	finalThinking := s.thinking.String()
 	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
+	if repaired := synthesizeTaskOutputToolCallTextFromAgentWaiting(s.finalPrompt, finalText, s.toolNames, s.allowMetaAgentTools); repaired != "" {
+		finalText = repaired
+	}
 	if finishReason != "content_filter" && strings.TrimSpace(finalText) == "" {
 		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(s.finalPrompt, s.toolNames, s.allowMetaAgentTools); repaired != "" {
 			finalText = repaired
@@ -149,6 +159,11 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 	s.finalThinking = finalThinking
 	s.finalText = finalText
 	detected := toolcall.ParseStandaloneToolCallsDetailed(finalText, s.toolNames)
+	if normalizedToolCallsExceedInputBytes(detected.Calls, s.toolSchemas, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
+		status, message, code := toolCallTooLargeError()
+		s.sendFailedChunk(status, message, code)
+		return
+	}
 	formattedDetected := formatFinalStreamToolCallsWithStableIDs(detected.Calls, s.streamToolCallIDs, s.toolSchemas, s.allowMetaAgentTools)
 	if len(formattedDetected) > 0 && !s.toolCallsDoneEmitted {
 		finishReason = "tool_calls"
@@ -170,6 +185,11 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 		s.toolCallsDoneEmitted = true
 	} else if s.bufferToolContent {
 		for _, evt := range flushToolSieveWithMeta(&s.toolSieve, s.toolNames, s.allowMetaAgentTools) {
+			if normalizedToolCallsExceedInputBytes(evt.ToolCalls, s.toolSchemas, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
+				status, message, code := toolCallTooLargeError()
+				s.sendFailedChunk(status, message, code)
+				return
+			}
 			formattedToolCalls := formatFinalStreamToolCallsWithStableIDs(evt.ToolCalls, s.streamToolCallIDs, s.toolSchemas, s.allowMetaAgentTools)
 			if len(formattedToolCalls) > 0 {
 				finishReason = "tool_calls"
@@ -191,15 +211,23 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 				))
 				s.resetStreamToolCallState()
 			}
-			if evt.Content == "" {
+			if evt.Content != "" {
 				continue
 			}
-			cleaned := cleanVisibleOutput(evt.Content, s.stripReferenceMarkers)
-			if cleaned == "" {
-				continue
-			}
+		}
+	}
+
+	if len(formattedDetected) > 0 || s.toolCallsEmitted {
+		finishReason = "tool_calls"
+	}
+	if len(formattedDetected) == 0 && !s.toolCallsEmitted {
+		if status, message, code, ok := futureActionMissingToolCallDetail(finalText, s.toolNames, s.toolSchemas, s.allowMetaAgentTools); ok {
+			s.sendFailedChunk(status, message, code)
+			return
+		}
+		if !s.visibleContentSent && strings.TrimSpace(finalText) != "" {
 			delta := map[string]any{
-				"content": cleaned,
+				"content": finalText,
 			}
 			if !s.firstChunkSent {
 				delta["role"] = "assistant"
@@ -212,11 +240,8 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 				[]map[string]any{openaifmt.BuildChatStreamDeltaChoice(0, delta)},
 				nil,
 			))
+			s.visibleContentSent = true
 		}
-	}
-
-	if len(formattedDetected) > 0 || s.toolCallsEmitted {
-		finishReason = "tool_calls"
 	}
 	if len(formattedDetected) == 0 && !s.toolCallsEmitted && strings.TrimSpace(finalText) == "" {
 		status := http.StatusTooManyRequests
@@ -299,6 +324,7 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 			s.text.WriteString(trimmed)
 			if !s.bufferToolContent {
 				delta["content"] = trimmed
+				s.visibleContentSent = true
 			} else {
 				events := processToolSieveChunkWithMeta(&s.toolSieve, trimmed, s.toolNames, s.allowMetaAgentTools)
 				for _, evt := range events {
@@ -325,6 +351,11 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 						newChoices = append(newChoices, openaifmt.BuildChatStreamDeltaChoice(0, tcDelta))
 						continue
 					}
+					if normalizedToolCallsExceedInputBytes(evt.ToolCalls, s.toolSchemas, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
+						status, message, code := toolCallTooLargeError()
+						s.sendFailedChunk(status, message, code)
+						return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReasonHandlerRequested}
+					}
 					formattedToolCalls := formatFinalStreamToolCallsWithStableIDs(evt.ToolCalls, s.streamToolCallIDs, s.toolSchemas, s.allowMetaAgentTools)
 					if len(formattedToolCalls) > 0 {
 						s.toolCallsEmitted = true
@@ -341,19 +372,13 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 						continue
 					}
 					if evt.Content != "" {
-						cleaned := cleanVisibleOutput(evt.Content, s.stripReferenceMarkers)
-						if cleaned == "" {
-							continue
-						}
-						contentDelta := map[string]any{
-							"content": cleaned,
-						}
-						if !s.firstChunkSent {
-							contentDelta["role"] = "assistant"
-							s.firstChunkSent = true
-						}
-						newChoices = append(newChoices, openaifmt.BuildChatStreamDeltaChoice(0, contentDelta))
+						continue
 					}
+				}
+				if s.bufferedToolMaxBytes > 0 && s.text.Len() > s.bufferedToolMaxBytes && !s.toolCallsEmitted {
+					status, message, code := toolCallTooLargeError()
+					s.sendFailedChunk(status, message, code)
+					return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReasonHandlerRequested}
 				}
 			}
 		}

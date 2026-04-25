@@ -177,6 +177,48 @@ func (s *Store) RuntimeTokenRefreshIntervalHours() int {
 	return 6
 }
 
+func (s *Store) RuntimeAccountFailureCooldownSeconds() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cfg.Runtime.AccountFailureCooldownSeconds > 0 {
+		return s.cfg.Runtime.AccountFailureCooldownSeconds
+	}
+	if raw := strings.TrimSpace(os.Getenv("DS2API_ACCOUNT_FAILURE_COOLDOWN_SECONDS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 120
+}
+
+func (s *Store) RuntimeStreamMaxDurationSeconds() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cfg.Runtime.StreamMaxDurationSeconds > 0 {
+		return s.cfg.Runtime.StreamMaxDurationSeconds
+	}
+	if raw := strings.TrimSpace(os.Getenv("DS2API_STREAM_MAX_DURATION_SECONDS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 900
+}
+
+func (s *Store) RuntimeBufferedToolContentMaxBytes() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cfg.Runtime.BufferedToolContentMaxBytes > 0 {
+		return s.cfg.Runtime.BufferedToolContentMaxBytes
+	}
+	if raw := strings.TrimSpace(os.Getenv("DS2API_BUFFERED_TOOL_CONTENT_MAX_BYTES")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 262144
+}
+
 func (s *Store) AutoDeleteSessions() bool {
 	return s.AutoDeleteMode() != "none"
 }

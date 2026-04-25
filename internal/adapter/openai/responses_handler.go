@@ -91,26 +91,12 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID, err := h.DS.CreateSession(r.Context(), a, 3)
+	sessionID, resp, stage, err := h.callCompletionWithFailover(r.Context(), a, stdReq)
 	if err != nil {
-		if a.UseConfigToken {
-			writeOpenAIError(w, http.StatusUnauthorized, "Account token is invalid. Please re-login the account in admin.")
-		} else {
-			writeOpenAIError(w, http.StatusUnauthorized, "Invalid token. If this should be a DS2API key, add it to config.keys first.")
-		}
+		h.writeCompletionAttemptError(w, a, stage)
 		return
 	}
-	pow, err := h.DS.GetPow(r.Context(), a, 3)
-	if err != nil {
-		writeOpenAIError(w, http.StatusUnauthorized, "Failed to get PoW (invalid token or unknown error).")
-		return
-	}
-	payload := stdReq.CompletionPayload(sessionID)
-	resp, err := h.DS.CallCompletion(r.Context(), a, payload, pow, 3)
-	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "Failed to get completion.")
-		return
-	}
+	defer h.autoDeleteRemoteSession(r.Context(), a, sessionID)
 
 	responseID := "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	if stdReq.Stream {
@@ -134,6 +120,9 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	if searchEnabled {
 		sanitizedText = replaceCitationMarkersWithLinks(sanitizedText, result.CitationLinks)
 	}
+	if repaired := synthesizeTaskOutputToolCallTextFromAgentWaiting(finalPrompt, sanitizedText, toolNames, allowMetaAgentTools); repaired != "" {
+		sanitizedText = repaired
+	}
 	if !result.ContentFilter && strings.TrimSpace(sanitizedText) == "" {
 		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(finalPrompt, toolNames, allowMetaAgentTools); repaired != "" {
 			sanitizedText = repaired
@@ -144,7 +133,16 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	if writeUpstreamEmptyOutputError(w, sanitizedText, result.ContentFilter) {
 		return
 	}
+	if status, message, code, ok := futureActionMissingToolCallDetail(sanitizedText, toolNames, nil, allowMetaAgentTools); ok {
+		writeOpenAIErrorWithCode(w, status, message, code)
+		return
+	}
 	textParsed := toolcall.ParseStandaloneToolCallsDetailed(sanitizedText, toolNames)
+	if normalizedToolCallsExceedInputBytes(textParsed.Calls, nil, allowMetaAgentTools, runtimeBufferedToolContentMaxBytes(h.Store)) {
+		status, message, code := toolCallTooLargeError()
+		writeOpenAIErrorWithCode(w, status, message, code)
+		return
+	}
 	logResponsesToolPolicyRejection(traceID, toolChoice, textParsed, "text")
 
 	callCount := len(textParsed.Calls)
@@ -193,6 +191,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		toolNames,
 		bufferToolContent,
 		emitEarlyToolDeltas,
+		runtimeBufferedToolContentMaxBytes(h.Store),
 		toolChoice,
 		allowMetaAgentTools,
 		traceID,
@@ -209,10 +208,15 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		InitialType:         initialType,
 		KeepAliveInterval:   time.Duration(deepseek.KeepAliveTimeout) * time.Second,
 		IdleTimeout:         time.Duration(deepseek.StreamIdleTimeout) * time.Second,
+		MaxDuration:         time.Duration(runtimeStreamMaxDurationSeconds(h.Store)) * time.Second,
 		MaxKeepAliveNoInput: deepseek.MaxKeepaliveCount,
 	}, streamengine.ConsumeHooks{
 		OnParsed: streamRuntime.onParsed,
-		OnFinalize: func(_ streamengine.StopReason, _ error) {
+		OnFinalize: func(reason streamengine.StopReason, _ error) {
+			if reason == streamengine.StopReasonMaxDuration {
+				streamRuntime.failResponse("Upstream stream exceeded max duration before completing.", "upstream_stream_timeout")
+				return
+			}
 			streamRuntime.finalize()
 		},
 	})

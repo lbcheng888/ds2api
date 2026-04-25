@@ -38,7 +38,7 @@ func parseToolCallsDetailedXMLOnly(text string, availableToolNames []string) Too
 	if trimmed == "" {
 		return result
 	}
-	result.SawToolCallSyntax = looksLikeToolCallSyntax(trimmed)
+	result.SawToolCallSyntax = LooksLikeToolCallSyntax(trimmed)
 	trimmed = stripFencedCodeBlocks(trimmed)
 	trimmed = strings.TrimSpace(trimmed)
 	if trimmed == "" {
@@ -136,6 +136,19 @@ func looksLikeToolCallSyntax(text string) bool {
 		strings.Contains(lower, "<ask_followup_question") ||
 		strings.Contains(lower, "<new_task") ||
 		strings.Contains(lower, "<result")
+}
+
+func LooksLikeToolCallSyntax(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	trimmed = stripFencedCodeBlocks(trimmed)
+	trimmed = strings.TrimSpace(trimmed)
+	if trimmed == "" {
+		return false
+	}
+	return looksLikeToolCallSyntax(trimmed)
 }
 
 func stripFencedCodeBlocks(text string) string {

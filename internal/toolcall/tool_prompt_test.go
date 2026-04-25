@@ -46,6 +46,7 @@ func TestBuildToolCallInstructions_OpenCodeLowercaseToolExamples(t *testing.T) {
 		`<tool_name>bash</tool_name>`,
 		`Include every field marked required in the tool schema.`,
 		`Use task/subagent tools only for genuinely independent large subtasks`,
+		`Launch at most 4 Agent/task calls`,
 		`Do not end with future-tense text`,
 		`If you receive <task-notification>`,
 	} {
@@ -133,6 +134,7 @@ func TestBuildToolCallInstructions_EditToolsRequireExactOldString(t *testing.T) 
 		`old_string must be copied exactly from the latest file content you read`,
 		`If an edit fails, read that file again before retrying`,
 		`Never build old_string from a diff hunk or from memory`,
+		`Do not use Write/write_to_file to rewrite an existing source file`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected edit safety instruction %q, got: %s", want, out)

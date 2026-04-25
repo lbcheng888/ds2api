@@ -71,36 +71,11 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	historySession := startChatHistory(h.ChatHistory, r, a, stdReq)
 
-	sessionID, err = h.DS.CreateSession(r.Context(), a, 3)
+	var resp *http.Response
+	var stage string
+	sessionID, resp, stage, err = h.callCompletionWithFailover(r.Context(), a, stdReq)
 	if err != nil {
-		if a.UseConfigToken {
-			if historySession != nil {
-				historySession.error(http.StatusUnauthorized, "Account token is invalid. Please re-login the account in admin.", "error", "", "")
-			}
-			writeOpenAIError(w, http.StatusUnauthorized, "Account token is invalid. Please re-login the account in admin.")
-		} else {
-			if historySession != nil {
-				historySession.error(http.StatusUnauthorized, "Invalid token. If this should be a DS2API key, add it to config.keys first.", "error", "", "")
-			}
-			writeOpenAIError(w, http.StatusUnauthorized, "Invalid token. If this should be a DS2API key, add it to config.keys first.")
-		}
-		return
-	}
-	pow, err := h.DS.GetPow(r.Context(), a, 3)
-	if err != nil {
-		if historySession != nil {
-			historySession.error(http.StatusUnauthorized, "Failed to get PoW (invalid token or unknown error).", "error", "", "")
-		}
-		writeOpenAIError(w, http.StatusUnauthorized, "Failed to get PoW (invalid token or unknown error).")
-		return
-	}
-	payload := stdReq.CompletionPayload(sessionID)
-	resp, err := h.DS.CallCompletion(r.Context(), a, payload, pow, 3)
-	if err != nil {
-		if historySession != nil {
-			historySession.error(http.StatusInternalServerError, "Failed to get completion.", "error", "", "")
-		}
-		writeOpenAIError(w, http.StatusInternalServerError, "Failed to get completion.")
+		h.writeChatCompletionAttemptError(w, a, stage, historySession)
 		return
 	}
 	if stdReq.Stream {
@@ -161,6 +136,9 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 	if searchEnabled {
 		finalText = replaceCitationMarkersWithLinks(finalText, result.CitationLinks)
 	}
+	if repaired := synthesizeTaskOutputToolCallTextFromAgentWaiting(finalPrompt, finalText, toolNames, allowMetaAgentTools); repaired != "" {
+		finalText = repaired
+	}
 	if !result.ContentFilter && strings.TrimSpace(finalText) == "" {
 		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(finalPrompt, toolNames, allowMetaAgentTools); repaired != "" {
 			finalText = repaired
@@ -174,6 +152,22 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 			historySession.error(status, message, code, finalThinking, finalText)
 		}
 		writeUpstreamEmptyOutputError(w, finalText, result.ContentFilter)
+		return
+	}
+	if status, message, code, ok := futureActionMissingToolCallDetail(finalText, toolNames, toolSchemas, allowMetaAgentTools); ok {
+		if historySession != nil {
+			historySession.error(status, message, code, finalThinking, finalText)
+		}
+		writeOpenAIErrorWithCode(w, status, message, code)
+		return
+	}
+	detectedToolCalls := toolcall.ParseStandaloneToolCallsDetailed(finalText, toolNames)
+	if normalizedToolCallsExceedInputBytes(detectedToolCalls.Calls, toolSchemas, allowMetaAgentTools, runtimeBufferedToolContentMaxBytes(h.Store)) {
+		status, message, code := toolCallTooLargeError()
+		if historySession != nil {
+			historySession.error(status, message, code, finalThinking, finalText)
+		}
+		writeOpenAIErrorWithCode(w, status, message, code)
 		return
 	}
 	respBody := openaifmt.BuildChatCompletion(completionID, model, finalPrompt, finalThinking, finalText, toolNames, toolSchemas, allowMetaAgentTools)
@@ -235,6 +229,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 		streamIncludeUsage,
 		bufferToolContent,
 		emitEarlyToolDeltas,
+		runtimeBufferedToolContentMaxBytes(h.Store),
 	)
 
 	streamengine.ConsumeSSE(streamengine.ConsumeConfig{
@@ -244,6 +239,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 		InitialType:         initialType,
 		KeepAliveInterval:   time.Duration(deepseek.KeepAliveTimeout) * time.Second,
 		IdleTimeout:         time.Duration(deepseek.StreamIdleTimeout) * time.Second,
+		MaxDuration:         time.Duration(runtimeStreamMaxDurationSeconds(h.Store)) * time.Second,
 		MaxKeepAliveNoInput: deepseek.MaxKeepaliveCount,
 	}, streamengine.ConsumeHooks{
 		OnKeepAlive: func() {
@@ -257,7 +253,10 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 			return decision
 		},
 		OnFinalize: func(reason streamengine.StopReason, _ error) {
-			if string(reason) == "content_filter" {
+			if reason == streamengine.StopReasonMaxDuration {
+				status, message, code := http.StatusBadGateway, "Upstream stream exceeded max duration before completing.", "upstream_stream_timeout"
+				streamRuntime.sendFailedChunk(status, message, code)
+			} else if string(reason) == "content_filter" {
 				streamRuntime.finalize("content_filter")
 			} else {
 				streamRuntime.finalize("stop")

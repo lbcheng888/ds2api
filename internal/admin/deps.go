@@ -32,6 +32,9 @@ type ConfigStore interface {
 	RuntimeAccountMaxQueue(defaultSize int) int
 	RuntimeGlobalMaxInflight(defaultSize int) int
 	RuntimeTokenRefreshIntervalHours() int
+	RuntimeAccountFailureCooldownSeconds() int
+	RuntimeStreamMaxDurationSeconds() int
+	RuntimeBufferedToolContentMaxBytes() int
 	AutoDeleteMode() string
 	HistorySplitEnabled() bool
 	HistorySplitTriggerAfterTurns() int
