@@ -21,6 +21,10 @@
             "label": "Conversations",
             "desc": "Browse server-side external chat history"
         },
+        "diagnostics": {
+            "label": "Diagnostics",
+            "desc": "Inspect failure samples, capture chains, and account health"
+        },
         "import": {
             "label": "Batch Import",
             "desc": "Bulk import account configuration"
@@ -50,6 +54,28 @@
     },
     "errors": {
         "fetchConfig": "Failed to fetch configuration: {error}"
+    },
+    "diagnostics": {
+        "description": "Inspect ClaudeCode/OpenCode failure samples, upstream captures, and account cooldowns in one place.",
+        "refresh": "Refresh diagnostics",
+        "loadFailed": "Failed to load diagnostics.",
+        "failureSamples": "Failure samples",
+        "failureSamplesDesc": "Automatically persisted upstream failure replay samples",
+        "noFailureSamples": "No automatically saved failure samples.",
+        "captureChains": "Capture chains",
+        "coolingAccounts": "Cooling accounts",
+        "devCapture": "Dev capture",
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "copied": "Copied",
+        "copyReplay": "Copy replay command",
+        "replayCommand": "Replay command",
+        "metaPath": "Metadata",
+        "upstreamPath": "Upstream stream",
+        "recentCaptures": "Recent capture chains",
+        "recentCapturesDesc": "Completion/continue chains grouped by chat_session_id",
+        "noCaptures": "No in-memory captures.",
+        "rounds": "rounds"
     },
     "actions": {
         "cancel": "Cancel",

@@ -21,6 +21,10 @@
             "label": "对话记录",
             "desc": "查看服务器保存的外部对话历史"
         },
+        "diagnostics": {
+            "label": "诊断中心",
+            "desc": "查看失败样本、抓包链和账号健康"
+        },
         "import": {
             "label": "批量导入",
             "desc": "批量导入账号配置"
@@ -50,6 +54,28 @@
     },
     "errors": {
         "fetchConfig": "获取配置失败: {error}"
+    },
+    "diagnostics": {
+        "description": "集中查看 ClaudeCode/OpenCode 失败样本、上游抓包和账号冷却状态。",
+        "refresh": "刷新诊断",
+        "loadFailed": "加载诊断信息失败",
+        "failureSamples": "失败样本",
+        "failureSamplesDesc": "自动落盘的上游失败回放样本",
+        "noFailureSamples": "暂无自动保存的失败样本",
+        "captureChains": "抓包链",
+        "coolingAccounts": "冷却账号",
+        "devCapture": "开发抓包",
+        "enabled": "已开启",
+        "disabled": "已关闭",
+        "copied": "已复制",
+        "copyReplay": "复制回放命令",
+        "replayCommand": "回放命令",
+        "metaPath": "元数据",
+        "upstreamPath": "上游流",
+        "recentCaptures": "最近抓包链",
+        "recentCapturesDesc": "按 chat_session_id 归并的 completion/continue 链路",
+        "noCaptures": "暂无内存抓包",
+        "rounds": "轮"
     },
     "actions": {
         "cancel": "取消",

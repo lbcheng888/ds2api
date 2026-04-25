@@ -277,6 +277,7 @@ POST /admin/dev/raw-samples/save
 - `query` 会按 `chat_session_id` 把 `completion + continue` 归并成一条链，适合定位接续思考问题。
 - `save` 支持用 `query`、`chain_key` 或 `capture_id` 选中目标。
 - 兼容层错误响应带 `X-Ds2-Capture-Chain` 时，可以直接把这个值作为 `chain_key` 保存复现样本；带 `X-Ds2-Failure-Sample-Id` 时表示失败样本已经自动落盘。
+- WebUI 的“诊断中心”使用 `/admin/dev/diagnostics` 汇总失败样本、内存抓包链和回放命令。
 - 生成的样本目录仍然是 `tests/raw_stream_samples/<sample-id>/`，可以直接喂给回放脚本。
 
 ### 指定输出目录和超时

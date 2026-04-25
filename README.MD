@@ -445,6 +445,7 @@ go run ./cmd/ds2api
 - `DELETE /admin/dev/captures`：清空抓包
 - `GET /admin/dev/raw-samples/query?q=关键词&limit=20`：按问题关键词查询当前内存抓包，并按 `chat_session_id` 归并 `completion + continue` 链
 - `POST /admin/dev/raw-samples/save`：把命中的某条抓包链保存为 `tests/raw_stream_samples/<sample-id>/` 回放样本
+- `GET /admin/dev/diagnostics`：诊断中心数据源，汇总失败样本、抓包链、账号冷却与回放命令
 
 当兼容层返回上游空输出、无可见输出、工具调用格式错误等错误时，响应头会尽量附带：
 
