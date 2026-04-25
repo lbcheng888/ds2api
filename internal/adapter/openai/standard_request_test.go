@@ -210,6 +210,66 @@ func TestNormalizeOpenAIResponsesRequestToolChoiceNoneKeepsToolDetectionEnabled(
 	}
 }
 
+func TestNormalizeOpenAIChatRequestToolChoiceRequired(t *testing.T) {
+	store := newEmptyStoreForNormalizeTest(t)
+	req := map[string]any{
+		"model": "deepseek-chat",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hi"},
+		},
+		"tools": []any{
+			map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": "search",
+				},
+			},
+		},
+		"tool_choice": "required",
+	}
+	n, err := normalizeOpenAIChatRequest(store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if n.ToolChoice.Mode != util.ToolChoiceRequired {
+		t.Fatalf("expected required tool choice, got %q", n.ToolChoice.Mode)
+	}
+	if len(n.ToolNames) != 1 || n.ToolNames[0] != "search" {
+		t.Fatalf("unexpected tool names: %#v", n.ToolNames)
+	}
+}
+
+func TestNormalizeOpenAIChatRequestToolChoiceForcedFiltersPromptTools(t *testing.T) {
+	store := newEmptyStoreForNormalizeTest(t)
+	req := map[string]any{
+		"model": "deepseek-chat",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hi"},
+		},
+		"tools": []any{
+			map[string]any{"type": "function", "function": map[string]any{"name": "search"}},
+			map[string]any{"type": "function", "function": map[string]any{"name": "read_file"}},
+		},
+		"tool_choice": map[string]any{
+			"type": "function",
+			"name": "read_file",
+		},
+	}
+	n, err := normalizeOpenAIChatRequest(store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if n.ToolChoice.Mode != util.ToolChoiceForced || n.ToolChoice.ForcedName != "read_file" {
+		t.Fatalf("unexpected tool choice: %#v", n.ToolChoice)
+	}
+	if len(n.ToolNames) != 1 || n.ToolNames[0] != "read_file" {
+		t.Fatalf("expected forced tool prompt to keep only read_file, got %#v", n.ToolNames)
+	}
+	if strings.Contains(n.FinalPrompt, "Tool: search") {
+		t.Fatalf("forced tool prompt should omit search, got %q", n.FinalPrompt)
+	}
+}
+
 func TestNormalizeOpenAIChatRequestThinkingDisabledKeepsSamplingParams(t *testing.T) {
 	store := newEmptyStoreForNormalizeTest(t)
 	req := map[string]any{

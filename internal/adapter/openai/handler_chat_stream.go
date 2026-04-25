@@ -30,6 +30,7 @@ func (h *Handler) handleStreamWithRetry(w http.ResponseWriter, r *http.Request, 
 			stdReq.Search,
 			stdReq.ToolNames,
 			stdReq.ToolSchemas,
+			stdReq.ToolChoice,
 			stdReq.AllowMetaAgentTools,
 			stdReq.StreamIncludeUsage,
 			allowEmptyRetry,
@@ -60,11 +61,11 @@ func (h *Handler) shouldRetryEmptyStreamOutput(a *auth.RequestAuth) bool {
 	return a != nil && a.UseConfigToken
 }
 
-func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, allowMetaAgentTools bool, streamIncludeUsage bool, historySession *chatHistorySession) {
-	h.handleStreamAttempt(w, r, resp, completionID, model, finalPrompt, thinkingEnabled, searchEnabled, toolNames, toolSchemas, allowMetaAgentTools, streamIncludeUsage, false, historySession)
+func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, streamIncludeUsage bool, historySession *chatHistorySession) {
+	h.handleStreamAttempt(w, r, resp, completionID, model, finalPrompt, thinkingEnabled, searchEnabled, toolNames, toolSchemas, toolChoice, allowMetaAgentTools, streamIncludeUsage, false, historySession)
 }
 
-func (h *Handler) handleStreamAttempt(w http.ResponseWriter, r *http.Request, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, allowMetaAgentTools bool, streamIncludeUsage bool, deferEmptyOutputFailure bool, historySession *chatHistorySession) *chatStreamRuntime {
+func (h *Handler) handleStreamAttempt(w http.ResponseWriter, r *http.Request, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, streamIncludeUsage bool, deferEmptyOutputFailure bool, historySession *chatHistorySession) *chatStreamRuntime {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -112,6 +113,7 @@ func (h *Handler) handleStreamAttempt(w http.ResponseWriter, r *http.Request, re
 		emitEarlyToolDeltas,
 		runtimeBufferedToolContentMaxBytes(h.Store),
 	)
+	streamRuntime.toolChoice = toolChoice
 	streamRuntime.deferEmptyOutputFailure = deferEmptyOutputFailure
 
 	streamengine.ConsumeSSE(streamengine.ConsumeConfig{

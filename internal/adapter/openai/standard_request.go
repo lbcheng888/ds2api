@@ -35,11 +35,17 @@ func normalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID 
 	if responseModel == "" {
 		responseModel = resolvedModel
 	}
-	toolPolicy := util.DefaultToolChoicePolicy()
+	toolPolicy, err := parseToolChoicePolicy(req["tool_choice"], req["tools"])
+	if err != nil {
+		return util.StandardRequest{}, err
+	}
 	allowMetaAgentTools := store != nil && store.CompatAllowMetaAgentTools()
 	messagesRaw = appendOpenAIResponseFormatInstruction(messagesRaw, req["response_format"])
 	finalPrompt, toolNames := buildOpenAIFinalPromptWithPolicy(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled, allowMetaAgentTools)
 	toolNames = ensureToolDetectionEnabled(toolNames, req["tools"])
+	if !toolPolicy.IsNone() {
+		toolPolicy.Allowed = namesToSet(toolNames)
+	}
 	passThrough := collectOpenAIChatPassThrough(req, thinkingEnabled)
 	refFileIDs := collectOpenAIRefFileIDs(req)
 

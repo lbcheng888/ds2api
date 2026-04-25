@@ -72,7 +72,10 @@ func synthesizeTaskOutputToolCallsFromAgentWaiting(finalPrompt, finalText string
 	if !ok {
 		return nil
 	}
-	ids := extractAllTaskIDs(finalPrompt)
+	ids := extractRunningTaskOutputIDs(finalPrompt)
+	if len(ids) == 0 {
+		ids = extractAllTaskIDs(recentTaskPromptWindow(finalPrompt))
+	}
 	if len(ids) == 0 {
 		return nil
 	}
@@ -222,6 +225,66 @@ func extractAllTaskIDs(text string) []string {
 		}
 	}
 	return out
+}
+
+func extractRunningTaskOutputIDs(text string) []string {
+	text = recentTaskPromptWindow(text)
+	seen := map[string]struct{}{}
+	out := []string{}
+	matches := taskOutputLineIDPattern.FindAllStringSubmatchIndex(text, -1)
+	for i, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		windowStart := match[1]
+		windowEnd := len(text)
+		if i+1 < len(matches) {
+			windowEnd = matches[i+1][0]
+		}
+		if windowEnd-windowStart > 800 {
+			windowEnd = windowStart + 800
+		}
+		if !taskOutputWindowStillRunning(text[windowStart:windowEnd]) {
+			continue
+		}
+		id := cleanSyntheticTaskID(text[match[2]:match[3]])
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func taskOutputWindowStillRunning(text string) bool {
+	lower := strings.ToLower(text)
+	for _, phrase := range []string{
+		"still running",
+		"still in progress",
+		"task is running",
+		"not done",
+		"not completed",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return strings.Contains(text, "仍在运行") ||
+		strings.Contains(text, "正在运行") ||
+		strings.Contains(text, "尚未完成") ||
+		strings.Contains(text, "未完成")
+}
+
+func recentTaskPromptWindow(text string) string {
+	const max = 20000
+	if len(text) <= max {
+		return text
+	}
+	return text[len(text)-max:]
 }
 
 func cleanSyntheticTaskID(raw string) string {

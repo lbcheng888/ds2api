@@ -4,6 +4,7 @@ import (
 	"ds2api/internal/toolcall"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -56,6 +57,23 @@ func injectToolPrompt(messages []map[string]any, tools []any, policy util.ToolCh
 		}
 		b, _ := json.Marshal(schema)
 		toolSchemas = append(toolSchemas, fmt.Sprintf("Tool: %s\nDescription: %s\nParameters: %s", name, desc, string(b)))
+	}
+	if len(toolSchemas) > 1 {
+		type toolPromptEntry struct {
+			name   string
+			schema string
+		}
+		entries := make([]toolPromptEntry, 0, len(toolSchemas))
+		for i := range toolSchemas {
+			entries = append(entries, toolPromptEntry{name: names[i], schema: toolSchemas[i]})
+		}
+		sort.SliceStable(entries, func(i, j int) bool {
+			return strings.ToLower(entries[i].name) < strings.ToLower(entries[j].name)
+		})
+		for i, entry := range entries {
+			names[i] = entry.name
+			toolSchemas[i] = entry.schema
+		}
 	}
 	if len(toolSchemas) == 0 {
 		return messages, names

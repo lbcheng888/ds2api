@@ -139,6 +139,21 @@ func TestInjectToolPromptAllowsMetaAgentToolsWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestInjectToolPromptSortsToolsForStableCachePrefix(t *testing.T) {
+	tools := []any{
+		map[string]any{"type": "function", "function": map[string]any{"name": "zeta", "description": "Z", "parameters": map[string]any{"type": "object"}}},
+		map[string]any{"type": "function", "function": map[string]any{"name": "alpha", "description": "A", "parameters": map[string]any{"type": "object"}}},
+	}
+	messages, names := injectToolPrompt([]map[string]any{{"role": "user", "content": "hi"}}, tools, util.ToolChoicePolicy{}, false)
+	if len(names) != 2 || names[0] != "alpha" || names[1] != "zeta" {
+		t.Fatalf("expected stable sorted tool names, got %#v", names)
+	}
+	system, _ := messages[0]["content"].(string)
+	if strings.Index(system, "Tool: alpha") > strings.Index(system, "Tool: zeta") {
+		t.Fatalf("expected alpha before zeta in prompt, got %q", system)
+	}
+}
+
 func decodeJSONBody(t *testing.T, body string) map[string]any {
 	t.Helper()
 	var out map[string]any
@@ -211,7 +226,7 @@ func TestHandleNonStreamReturns429WhenUpstreamOutputEmpty(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-empty", "deepseek-chat", "prompt", false, false, nil, nil, false, nil)
+	h.handleNonStream(rec, resp, "cid-empty", "deepseek-chat", "prompt", false, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected status 429 for empty upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -242,7 +257,7 @@ func TestHandleNonStreamFailureAnnotatesCaptureChain(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-empty-capture", "deepseek-chat", "prompt", false, false, nil, nil, false, nil)
+	h.handleNonStream(rec, resp, "cid-empty-capture", "deepseek-chat", "prompt", false, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected status 429 for empty upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -268,7 +283,7 @@ func TestHandleNonStreamReturnsContentFilterErrorWhenUpstreamFilteredWithoutOutp
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-empty-filtered", "deepseek-chat", "prompt", false, false, nil, nil, false, nil)
+	h.handleNonStream(rec, resp, "cid-empty-filtered", "deepseek-chat", "prompt", false, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400 for filtered upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -287,7 +302,7 @@ func TestHandleNonStreamReturns429WhenUpstreamHasOnlyThinking(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-thinking-only", "deepseek-reasoner", "prompt", true, false, nil, nil, false, nil)
+	h.handleNonStream(rec, resp, "cid-thinking-only", "deepseek-reasoner", "prompt", true, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected status 429 for thinking-only upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -306,7 +321,7 @@ func TestHandleNonStreamPromotesVisibleTextAfterReasoningClose(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-reasoning-close", "deepseek-reasoner", "prompt", true, false, nil, nil, false, nil)
+	h.handleNonStream(rec, resp, "cid-reasoning-close", "deepseek-reasoner", "prompt", true, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200 when visible text follows reasoning close, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -322,6 +337,65 @@ func TestHandleNonStreamPromotesVisibleTextAfterReasoningClose(t *testing.T) {
 	}
 }
 
+func TestHandleNonStreamRequiredToolChoiceFailure(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"plain text only"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	policy := util.ToolChoicePolicy{
+		Mode:    util.ToolChoiceRequired,
+		Allowed: map[string]struct{}{"Read": {}},
+	}
+
+	h.handleNonStream(rec, resp, "cid-required-tool", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, policy, false, nil)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "tool_choice_violation") {
+		t.Fatalf("expected tool_choice violation body, got %s", rec.Body.String())
+	}
+}
+
+func TestChatStreamRequiredToolChoiceFailure(t *testing.T) {
+	rec := httptest.NewRecorder()
+	runtime := newChatStreamRuntime(
+		rec,
+		http.NewResponseController(rec),
+		false,
+		"cid-stream-required-tool",
+		1,
+		"deepseek-chat",
+		"prompt",
+		false,
+		false,
+		false,
+		[]string{"Read"},
+		readToolTestSchemas,
+		false,
+		false,
+		true,
+		false,
+		262144,
+	)
+	runtime.toolChoice = util.ToolChoicePolicy{
+		Mode:    util.ToolChoiceRequired,
+		Allowed: map[string]struct{}{"Read": {}},
+	}
+	runtime.text.WriteString("plain text only")
+
+	runtime.finalize("stop")
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "tool_choice_violation") {
+		t.Fatalf("expected tool_choice violation, body=%s", body)
+	}
+	if !strings.Contains(body, "[DONE]") {
+		t.Fatalf("expected stream to close, body=%s", body)
+	}
+}
+
 func TestHandleStreamToolsPlainTextStreamsBeforeFinish(t *testing.T) {
 	h := &Handler{}
 	resp := makeSSEHTTPResponse(
@@ -332,7 +406,7 @@ func TestHandleStreamToolsPlainTextStreamsBeforeFinish(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	h.handleStream(rec, req, resp, "cid6", "deepseek-chat", "prompt", false, false, []string{"search"}, nil, false, false, nil)
+	h.handleStream(rec, req, resp, "cid6", "deepseek-chat", "prompt", false, false, []string{"search"}, nil, util.DefaultToolChoicePolicy(), false, false, nil)
 
 	frames, done := parseSSEDataFrames(t, rec.Body.String())
 	if !done {
@@ -369,7 +443,7 @@ func TestHandleStreamIncompleteCapturedToolJSONFlushesAsTextOnFinalize(t *testin
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	h.handleStream(rec, req, resp, "cid10", "deepseek-chat", "prompt", false, false, []string{"search"}, nil, false, false, nil)
+	h.handleStream(rec, req, resp, "cid10", "deepseek-chat", "prompt", false, false, []string{"search"}, nil, util.DefaultToolChoicePolicy(), false, false, nil)
 
 	frames, done := parseSSEDataFrames(t, rec.Body.String())
 	if !done {
@@ -404,7 +478,7 @@ func TestHandleStreamEmitsDistinctToolCallIDsAcrossSeparateToolBlocks(t *testing
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	h.handleStream(rec, req, resp, "cid-multi", "deepseek-chat", "prompt", false, false, []string{"read_file", "search"}, nil, false, false, nil)
+	h.handleStream(rec, req, resp, "cid-multi", "deepseek-chat", "prompt", false, false, []string{"read_file", "search"}, nil, util.DefaultToolChoicePolicy(), false, false, nil)
 
 	frames, done := parseSSEDataFrames(t, rec.Body.String())
 	if !done {

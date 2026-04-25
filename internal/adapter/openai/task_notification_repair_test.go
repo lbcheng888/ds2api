@@ -2,6 +2,7 @@ package openai
 
 import (
 	"ds2api/internal/toolcall"
+	"ds2api/internal/util"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -67,6 +68,22 @@ Task is still running.<｜Assistant｜>`
 	}
 }
 
+func TestSynthesizeTaskOutputFromAgentWaitingPrefersRunningTaskIDs(t *testing.T) {
+	prompt := `Task Output(non-blocking) completed_task_1
+Done.
+Task Output(non-blocking) running_task_2
+Task is still running.
+Task Output(non-blocking) running_task_3
+仍在运行。`
+	got := synthesizeTaskOutputToolCallsFromAgentWaiting(prompt, "等待剩余代理完成后汇总。", []string{"TaskOutput"}, true)
+	if len(got) != 2 {
+		t.Fatalf("expected two running TaskOutput calls, got %#v", got)
+	}
+	if got[0].Input["task_id"] != "running_task_2" || got[1].Input["task_id"] != "running_task_3" {
+		t.Fatalf("unexpected running task ids: %#v", got)
+	}
+}
+
 func TestSynthesizeTaskOutputFromAgentWaitingDoesNotHideMalformedToolCall(t *testing.T) {
 	prompt := `Task Output(non-blocking) a43c25c4d63ec3d42`
 	text := "3 of 4 background agents completed.\n\n<tool_calls>\n<tool_calls>"
@@ -85,7 +102,7 @@ func TestHandleNonStreamConvertsTaskNotificationThinkingOnlyToTaskOutput(t *test
 	prompt := "<｜User｜><task-notification><task-id>task_done</task-id><status>completed</status></task-notification><｜Assistant｜>"
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-task-output", "deepseek-reasoner", prompt, true, false, []string{"TaskOutput"}, taskOutputTestSchemas, true, nil)
+	h.handleNonStream(rec, resp, "cid-task-output", "deepseek-reasoner", prompt, true, false, []string{"TaskOutput"}, taskOutputTestSchemas, util.DefaultToolChoicePolicy(), true, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -166,7 +183,7 @@ func TestHandleNonStreamPromotesThinkingToolCalls(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-thinking-tool", "deepseek-reasoner", "<｜User｜>continue<｜Assistant｜>", true, false, []string{"Read"}, readToolTestSchemas, false, nil)
+	h.handleNonStream(rec, resp, "cid-thinking-tool", "deepseek-reasoner", "<｜User｜>continue<｜Assistant｜>", true, false, []string{"Read"}, readToolTestSchemas, util.DefaultToolChoicePolicy(), false, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}

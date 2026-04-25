@@ -13,6 +13,7 @@ import (
 	openaifmt "ds2api/internal/format/openai"
 	"ds2api/internal/sse"
 	"ds2api/internal/toolcall"
+	"ds2api/internal/util"
 )
 
 func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +81,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		sessionID = h.handleStreamWithRetry(w, r, a, resp, sessionID, stdReq, historySession)
 		return
 	}
-	h.handleNonStream(w, resp, sessionID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.AllowMetaAgentTools, historySession)
+	h.handleNonStream(w, resp, sessionID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, historySession)
 }
 
 func (h *Handler) autoDeleteRemoteSession(ctx context.Context, a *auth.RequestAuth, sessionID string) {
@@ -116,7 +117,7 @@ func (h *Handler) autoDeleteRemoteSession(ctx context.Context, a *auth.RequestAu
 	}
 }
 
-func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, allowMetaAgentTools bool, historySession *chatHistorySession) {
+func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, historySession *chatHistorySession) {
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(resp.Body)
@@ -166,6 +167,14 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 			historySession.error(status, message, code, finalThinking, finalText)
 		}
 		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, completionID)
+		return
+	}
+	normalizedToolCalls := toolcall.NormalizeCallsForSchemasWithMeta(detectedToolCalls.Calls, toolSchemas, allowMetaAgentTools)
+	if toolChoice.IsRequired() && len(normalizedToolCalls) == 0 {
+		if historySession != nil {
+			historySession.error(http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation", finalThinking, finalText)
+		}
+		writeOpenAIErrorWithCodeAndFailureCapture(w, http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation", completionID)
 		return
 	}
 	respBody := openaifmt.BuildChatCompletion(completionID, model, finalPrompt, finalThinking, finalText, toolNames, toolSchemas, allowMetaAgentTools)

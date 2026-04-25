@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"ds2api/internal/util"
 )
 
 func TestHandleNonStreamRejectsFutureActionWithoutToolCall(t *testing.T) {
@@ -16,7 +18,7 @@ func TestHandleNonStreamRejectsFutureActionWithoutToolCall(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-future-no-tool", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, false, nil)
+	h.handleNonStream(rec, resp, "cid-future-no-tool", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, util.DefaultToolChoicePolicy(), false, nil)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected status 502, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -82,7 +84,7 @@ func TestHandleNonStreamRejectsMalformedToolCallBlock(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-invalid-tool", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, false, nil)
+	h.handleNonStream(rec, resp, "cid-invalid-tool", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, util.DefaultToolChoicePolicy(), false, nil)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected status 502, got %d body=%s", rec.Code, rec.Body.String())
 	}

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"ds2api/internal/toolcall"
+	"ds2api/internal/util"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -22,6 +23,7 @@ type chatStreamRuntime struct {
 	finalPrompt         string
 	toolNames           []string
 	toolSchemas         toolcall.ParameterSchemas
+	toolChoice          util.ToolChoicePolicy
 	allowMetaAgentTools bool
 
 	thinkingEnabled       bool
@@ -169,6 +171,10 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 		return
 	}
 	formattedDetected := formatFinalStreamToolCallsWithStableIDs(detected.Calls, s.streamToolCallIDs, s.toolSchemas, s.allowMetaAgentTools)
+	if s.toolChoice.IsRequired() && len(formattedDetected) == 0 && !s.toolCallsEmitted {
+		s.sendFailedChunk(http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation")
+		return
+	}
 	if len(formattedDetected) > 0 && !s.toolCallsDoneEmitted {
 		finishReason = "tool_calls"
 		delta := map[string]any{
