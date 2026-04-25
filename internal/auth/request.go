@@ -64,7 +64,7 @@ func NewResolver(store *config.Store, pool *account.Pool, login LoginFunc) *Reso
 }
 
 func (r *Resolver) Determine(req *http.Request) (*RequestAuth, error) {
-	callerKey := extractCallerToken(req)
+	callerKey := r.selectCallerToken(req)
 	if callerKey == "" {
 		return nil, ErrUnauthorized
 	}
@@ -131,7 +131,7 @@ func (r *Resolver) acquireManagedRequestAuth(ctx context.Context, callerID, targ
 // DetermineCaller resolves caller identity without acquiring any pooled account.
 // Use this for local-cache lookup routes that only need tenant isolation.
 func (r *Resolver) DetermineCaller(req *http.Request) (*RequestAuth, error) {
-	callerKey := extractCallerToken(req)
+	callerKey := r.selectCallerToken(req)
 	if callerKey == "" {
 		return nil, ErrUnauthorized
 	}
@@ -313,6 +313,35 @@ func extractCallerToken(req *http.Request) string {
 		return key
 	}
 	return strings.TrimSpace(req.URL.Query().Get("api_key"))
+}
+
+func (r *Resolver) selectCallerToken(req *http.Request) string {
+	if r != nil && r.Store != nil {
+		for _, token := range callerTokenCandidates(req) {
+			if token != "" && r.Store.HasAPIKey(token) {
+				return token
+			}
+		}
+	}
+	return extractCallerToken(req)
+}
+
+func callerTokenCandidates(req *http.Request) []string {
+	if req == nil {
+		return nil
+	}
+	out := make([]string, 0, 5)
+	authHeader := strings.TrimSpace(req.Header.Get("Authorization"))
+	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		out = append(out, strings.TrimSpace(authHeader[7:]))
+	}
+	out = append(out,
+		strings.TrimSpace(req.Header.Get("x-api-key")),
+		strings.TrimSpace(req.Header.Get("x-goog-api-key")),
+		strings.TrimSpace(req.URL.Query().Get("key")),
+		strings.TrimSpace(req.URL.Query().Get("api_key")),
+	)
+	return out
 }
 
 func callerTokenID(token string) string {

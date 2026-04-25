@@ -254,6 +254,65 @@ func TestDetermineHeaderTokenPrecedenceOverQueryKey(t *testing.T) {
 	}
 }
 
+func TestDeterminePrefersConfiguredKeyOverDirectBearer(t *testing.T) {
+	r := newTestResolver(t)
+	req, _ := http.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer direct-token")
+	req.Header.Set("x-api-key", "managed-key")
+
+	a, err := r.Determine(req)
+	if err != nil {
+		t.Fatalf("determine failed: %v", err)
+	}
+	defer r.Release(a)
+	if !a.UseConfigToken {
+		t.Fatalf("expected configured x-api-key to use managed account")
+	}
+	if a.DeepSeekToken != "fresh-token" {
+		t.Fatalf("unexpected managed token: %q", a.DeepSeekToken)
+	}
+}
+
+func TestDeterminePrefersConfiguredBearerOverDirectXAPIKey(t *testing.T) {
+	r := newTestResolver(t)
+	req, _ := http.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer managed-key")
+	req.Header.Set("x-api-key", "direct-token")
+
+	a, err := r.Determine(req)
+	if err != nil {
+		t.Fatalf("determine failed: %v", err)
+	}
+	defer r.Release(a)
+	if !a.UseConfigToken {
+		t.Fatalf("expected configured bearer to use managed account")
+	}
+	if a.AccountID != "acc@example.com" {
+		t.Fatalf("unexpected account id: %q", a.AccountID)
+	}
+}
+
+func TestDetermineCallerPrefersConfiguredKeyOverDirectBearer(t *testing.T) {
+	r := newTestResolver(t)
+	req, _ := http.NewRequest(http.MethodGet, "/v1/responses/resp_1", nil)
+	req.Header.Set("Authorization", "Bearer direct-token")
+	req.Header.Set("x-api-key", "managed-key")
+
+	a, err := r.DetermineCaller(req)
+	if err != nil {
+		t.Fatalf("determine caller failed: %v", err)
+	}
+	if a.UseConfigToken {
+		t.Fatalf("expected caller-only auth to avoid account acquire")
+	}
+	if a.DeepSeekToken != "" {
+		t.Fatalf("expected configured key to avoid direct token forwarding, got %q", a.DeepSeekToken)
+	}
+	if a.CallerID == "" {
+		t.Fatalf("expected caller id")
+	}
+}
+
 func TestDetermineCallerMissingToken(t *testing.T) {
 	r := newTestResolver(t)
 	req, _ := http.NewRequest(http.MethodGet, "/v1/responses/resp_1", nil)
