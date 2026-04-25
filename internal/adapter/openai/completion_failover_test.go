@@ -133,3 +133,67 @@ func TestChatCompletionsFailsOverOnRetriableCompletionStatus(t *testing.T) {
 		t.Fatalf("expected completion attempts on acct-1 then acct-2, got %s", got)
 	}
 }
+
+type emptyStreamRetryDSStub struct {
+	callCount int
+	accounts  []string
+}
+
+func (d *emptyStreamRetryDSStub) CreateSession(_ context.Context, a *auth.RequestAuth, _ int) (string, error) {
+	return "session-" + a.AccountID, nil
+}
+
+func (d *emptyStreamRetryDSStub) GetPow(_ context.Context, _ *auth.RequestAuth, _ int) (string, error) {
+	return "pow", nil
+}
+
+func (d *emptyStreamRetryDSStub) UploadFile(_ context.Context, _ *auth.RequestAuth, _ deepseek.UploadFileRequest, _ int) (*deepseek.UploadFileResult, error) {
+	return &deepseek.UploadFileResult{ID: "file-id", Filename: "file.txt", Bytes: 1, Status: "uploaded"}, nil
+}
+
+func (d *emptyStreamRetryDSStub) CallCompletion(_ context.Context, a *auth.RequestAuth, _ map[string]any, _ string, _ int) (*http.Response, error) {
+	d.callCount++
+	d.accounts = append(d.accounts, a.AccountID)
+	if d.callCount == 1 {
+		return makeSSEHTTPResponse(`data: [DONE]`), nil
+	}
+	return makeSSEHTTPResponse(`data: {"p":"response/content","v":"ok after retry"}`, `data: [DONE]`), nil
+}
+
+func (d *emptyStreamRetryDSStub) DeleteSessionForToken(_ context.Context, _ string, _ string) (*deepseek.DeleteSessionResult, error) {
+	return &deepseek.DeleteSessionResult{Success: true}, nil
+}
+
+func (d *emptyStreamRetryDSStub) DeleteAllSessionsForToken(_ context.Context, _ string) error {
+	return nil
+}
+
+func TestChatCompletionsStreamRetriesEmptyOutputOnManagedAccount(t *testing.T) {
+	authStub := &failoverAuthStub{}
+	dsStub := &emptyStreamRetryDSStub{}
+	h := &Handler{
+		Store: mockOpenAIConfig{wideInput: true},
+		Auth:  authStub,
+		DS:    dsStub,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	req.Header.Set("Authorization", "Bearer ds2api-key")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 after empty-output stream retry, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "upstream_empty_output") {
+		t.Fatalf("expected empty output to be retried before reporting an error, got %s", body)
+	}
+	if !strings.Contains(body, "ok after retry") {
+		t.Fatalf("expected successful retry content, got %s", body)
+	}
+	if got := strings.Join(dsStub.accounts, ","); got != "acct-1,acct-2" {
+		t.Fatalf("expected stream attempts on acct-1 then acct-2, got %s", got)
+	}
+}

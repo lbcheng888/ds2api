@@ -50,6 +50,8 @@ type chatStreamRuntime struct {
 	finalErrorStatus  int
 	finalErrorMessage string
 	finalErrorCode    string
+
+	deferEmptyOutputFailure bool
 }
 
 func newChatStreamRuntime(
@@ -257,6 +259,12 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 			message = "Upstream content filtered the response and returned no output."
 			code = "content_filter"
 		}
+		s.finalErrorStatus = status
+		s.finalErrorMessage = message
+		s.finalErrorCode = code
+		if s.deferEmptyOutputFailure && s.retryableEmptyOutputFailure() {
+			return
+		}
 		s.sendFailedChunk(status, message, code)
 		return
 	}
@@ -274,6 +282,17 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 		s.sendChunk(openaifmt.BuildChatStreamUsageChunk(s.completionID, s.created, s.model, usage))
 	}
 	s.sendDone()
+}
+
+func (s *chatStreamRuntime) retryableEmptyOutputFailure() bool {
+	if s == nil {
+		return false
+	}
+	return s.finalErrorCode == "upstream_empty_output" &&
+		!s.firstChunkSent &&
+		!s.visibleContentSent &&
+		!s.toolCallsEmitted &&
+		!s.toolCallsDoneEmitted
 }
 
 func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedDecision {
