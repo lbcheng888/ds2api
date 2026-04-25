@@ -1,14 +1,16 @@
 package openai
 
 import (
-	"ds2api/internal/toolcall"
-	"ds2api/internal/util"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"ds2api/internal/devcapture"
+	"ds2api/internal/toolcall"
+	"ds2api/internal/util"
 )
 
 func makeSSEHTTPResponse(lines ...string) *http.Response {
@@ -217,6 +219,37 @@ func TestHandleNonStreamReturns429WhenUpstreamOutputEmpty(t *testing.T) {
 	errObj, _ := out["error"].(map[string]any)
 	if asString(errObj["code"]) != "upstream_empty_output" {
 		t.Fatalf("expected code=upstream_empty_output, got %#v", out)
+	}
+}
+
+func TestHandleNonStreamFailureAnnotatesCaptureChain(t *testing.T) {
+	store := devcapture.Global()
+	store.Clear()
+	defer store.Clear()
+	session := store.Start("deepseek_completion", "http://upstream.test/completion", "acc1", map[string]any{"chat_session_id": "cid-empty-capture"})
+	if session == nil {
+		t.Skip("dev capture disabled")
+	}
+	body := session.WrapBody(io.NopCloser(strings.NewReader("data: [DONE]\n")), http.StatusOK)
+	_, _ = io.ReadAll(body)
+	_ = body.Close()
+
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/content","v":""}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+
+	h.handleNonStream(rec, resp, "cid-empty-capture", "deepseek-chat", "prompt", false, false, nil, nil, false, nil)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected status 429 for empty upstream output, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Ds2-Capture-Chain"); got != "session:cid-empty-capture" {
+		t.Fatalf("expected capture chain header, got %q", got)
+	}
+	if got := rec.Header().Get("X-Ds2-Capture-Ids"); got == "" {
+		t.Fatalf("expected capture ids header")
 	}
 }
 

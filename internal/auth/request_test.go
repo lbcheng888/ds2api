@@ -106,6 +106,39 @@ func TestDetermineManagedAccountSkipsFailedCooldownAccount(t *testing.T) {
 	}
 }
 
+func TestAccountHealthStatusReportsCooldowns(t *testing.T) {
+	t.Setenv("DS2API_CONFIG_JSON", `{
+		"keys":["managed-key"],
+		"accounts":[{"email":"acc1@test.com","password":"pwd"}],
+		"runtime":{"account_failure_cooldown_seconds":60}
+	}`)
+	store := config.LoadStore()
+	pool := account.NewPool(store)
+	r := NewResolver(store, pool, func(_ context.Context, acc config.Account) (string, error) {
+		return "token-" + acc.Identifier(), nil
+	})
+	req, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("x-api-key", "managed-key")
+
+	a, err := r.Determine(req)
+	if err != nil {
+		t.Fatalf("determine failed: %v", err)
+	}
+	r.MarkAccountFailure(a)
+	r.Release(a)
+
+	health := r.AccountHealthStatus()
+	if len(health) != 1 {
+		t.Fatalf("expected one cooldown account, got %#v", health)
+	}
+	if health[0].AccountID != "acc1@test.com" || health[0].Status != "cooldown" {
+		t.Fatalf("unexpected health entry: %#v", health[0])
+	}
+	if health[0].CooldownRemainingSeconds <= 0 {
+		t.Fatalf("expected positive remaining cooldown, got %#v", health[0])
+	}
+}
+
 func TestDetermineCallerWithManagedKeySkipsAccountAcquire(t *testing.T) {
 	r := newTestResolver(t)
 	req, _ := http.NewRequest(http.MethodGet, "/v1/responses/resp_1", nil)

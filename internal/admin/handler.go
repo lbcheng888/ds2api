@@ -7,11 +7,12 @@ import (
 )
 
 type Handler struct {
-	Store       ConfigStore
-	Pool        PoolController
-	DS          DeepSeekCaller
-	OpenAI      OpenAIChatCaller
-	ChatHistory *chathistory.Store
+	Store         ConfigStore
+	Pool          PoolController
+	AccountHealth AccountHealthReader
+	DS            DeepSeekCaller
+	OpenAI        OpenAIChatCaller
+	ChatHistory   *chathistory.Store
 }
 
 func RegisterRoutes(r chi.Router, h *Handler) {

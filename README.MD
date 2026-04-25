@@ -411,7 +411,7 @@ Gemini 路由还可以使用 `x-goog-api-key`，或在没有认证头时使用 `
 
 - 当 in-flight 槽位满时，请求进入等待队列，**不会立即 429**
 - 超出总承载上限后才返回 `429 Too Many Requests`
-- `GET /admin/queue/status` 返回实时并发状态
+- `GET /admin/queue/status` 返回实时并发状态，`account_health` 会列出正在冷却的账号和剩余秒数
 
 ## Tool Call 适配
 
@@ -445,6 +445,12 @@ go run ./cmd/ds2api
 - `DELETE /admin/dev/captures`：清空抓包
 - `GET /admin/dev/raw-samples/query?q=关键词&limit=20`：按问题关键词查询当前内存抓包，并按 `chat_session_id` 归并 `completion + continue` 链
 - `POST /admin/dev/raw-samples/save`：把命中的某条抓包链保存为 `tests/raw_stream_samples/<sample-id>/` 回放样本
+
+当兼容层返回上游空输出、无可见输出、工具调用格式错误等错误时，响应头会尽量附带：
+
+- `X-Ds2-Capture-Chain`：可直接传给 `/admin/dev/raw-samples/save` 的 `chain_key`
+- `X-Ds2-Capture-Ids`：本次链路内的抓包 ID
+- `X-Ds2-Capture-Save`：保存抓包链的接口提示
 
 返回字段包含：
 

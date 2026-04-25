@@ -123,6 +123,7 @@ func (s *chatStreamRuntime) sendFailedChunk(status int, message, code string) {
 	s.finalErrorStatus = status
 	s.finalErrorMessage = message
 	s.finalErrorCode = code
+	annotateFailureCaptureHeaders(s.w, s.completionID)
 	s.sendChunk(map[string]any{
 		"status_code": status,
 		"error": map[string]any{

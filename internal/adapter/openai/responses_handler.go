@@ -100,16 +100,17 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 
 	responseID := "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	if stdReq.Stream {
-		h.handleResponsesStream(w, r, resp, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
+		h.handleResponsesStream(w, r, resp, owner, sessionID, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
 		return
 	}
-	h.handleResponsesNonStream(w, resp, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
+	h.handleResponsesNonStream(w, resp, owner, sessionID, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
 }
 
-func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
+func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, sessionID, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		annotateFailureCaptureHeaders(w, sessionID)
 		writeOpenAIError(w, resp.StatusCode, strings.TrimSpace(string(body)))
 		return
 	}
@@ -130,16 +131,20 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 			sanitizedText = promoted
 		}
 	}
-	if writeUpstreamEmptyOutputError(w, sanitizedText, result.ContentFilter) {
+	if shouldWriteUpstreamEmptyOutputError(sanitizedText) {
+		annotateFailureCaptureHeaders(w, sessionID)
+		writeUpstreamEmptyOutputError(w, sanitizedText, result.ContentFilter)
 		return
 	}
 	if status, message, code, ok := futureActionMissingToolCallDetail(sanitizedText, toolNames, nil, allowMetaAgentTools); ok {
+		annotateFailureCaptureHeaders(w, sessionID)
 		writeOpenAIErrorWithCode(w, status, message, code)
 		return
 	}
 	textParsed := toolcall.ParseStandaloneToolCallsDetailed(sanitizedText, toolNames)
 	if normalizedToolCallsExceedInputBytes(textParsed.Calls, nil, allowMetaAgentTools, runtimeBufferedToolContentMaxBytes(h.Store)) {
 		status, message, code := toolCallTooLargeError()
+		annotateFailureCaptureHeaders(w, sessionID)
 		writeOpenAIErrorWithCode(w, status, message, code)
 		return
 	}
@@ -147,6 +152,7 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 
 	callCount := len(textParsed.Calls)
 	if toolChoice.IsRequired() && callCount == 0 {
+		annotateFailureCaptureHeaders(w, sessionID)
 		writeOpenAIErrorWithCode(w, http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation")
 		return
 	}
@@ -156,10 +162,11 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	writeJSON(w, http.StatusOK, responseObj)
 }
 
-func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
+func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, resp *http.Response, owner, sessionID, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		annotateFailureCaptureHeaders(w, sessionID)
 		writeOpenAIError(w, resp.StatusCode, strings.TrimSpace(string(body)))
 		return
 	}
@@ -182,6 +189,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		w,
 		rc,
 		canFlush,
+		sessionID,
 		responseID,
 		model,
 		finalPrompt,

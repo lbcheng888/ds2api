@@ -17,6 +17,7 @@ type responsesStreamRuntime struct {
 	rc       *http.ResponseController
 	canFlush bool
 
+	sessionID           string
 	responseID          string
 	model               string
 	finalPrompt         string
@@ -61,6 +62,7 @@ func newResponsesStreamRuntime(
 	w http.ResponseWriter,
 	rc *http.ResponseController,
 	canFlush bool,
+	sessionID string,
 	responseID string,
 	model string,
 	finalPrompt string,
@@ -80,6 +82,7 @@ func newResponsesStreamRuntime(
 		w:                     w,
 		rc:                    rc,
 		canFlush:              canFlush,
+		sessionID:             sessionID,
 		responseID:            responseID,
 		model:                 model,
 		finalPrompt:           finalPrompt,
@@ -107,6 +110,7 @@ func newResponsesStreamRuntime(
 
 func (s *responsesStreamRuntime) failResponse(message, code string) {
 	s.failed = true
+	annotateFailureCaptureHeaders(s.w, s.sessionID)
 	failedResp := map[string]any{
 		"id":          s.responseID,
 		"type":        "response",

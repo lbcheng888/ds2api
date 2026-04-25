@@ -31,6 +31,11 @@ type Entry struct {
 	ResponseTruncated bool   `json:"response_truncated"`
 }
 
+type Chain struct {
+	Key     string  `json:"key"`
+	Entries []Entry `json:"entries"`
+}
+
 type Store struct {
 	mu           sync.Mutex
 	enabled      bool
@@ -128,6 +133,38 @@ func (s *Store) Snapshot() []Entry {
 	out := make([]Entry, len(s.items))
 	copy(out, s.items)
 	return out
+}
+
+func (s *Store) LatestChainBySession(sessionID string) (Chain, bool) {
+	sessionID = strings.TrimSpace(sessionID)
+	if s == nil || sessionID == "" {
+		return Chain{}, false
+	}
+	key := "session:" + sessionID
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries := make([]Entry, 0)
+	for i := len(s.items) - 1; i >= 0; i-- {
+		entry := s.items[i]
+		if captureChainKey(entry) == key {
+			entries = append(entries, entry)
+		}
+	}
+	if len(entries) == 0 {
+		return Chain{}, false
+	}
+	return Chain{Key: key, Entries: entries}, true
+}
+
+func (c Chain) IDs() []string {
+	ids := make([]string, 0, len(c.Entries))
+	for _, entry := range c.Entries {
+		id := strings.TrimSpace(entry.ID)
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 func (s *Store) Clear() {
@@ -235,6 +272,19 @@ func marshalPayload(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(b)
+}
+
+func captureChainKey(entry Entry) string {
+	var req map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(entry.RequestBody)), &req); err != nil {
+		return "capture:" + entry.ID
+	}
+	sessionID, _ := req["chat_session_id"].(string)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "capture:" + entry.ID
+	}
+	return "session:" + sessionID
 }
 
 func parseBool(v string) bool {

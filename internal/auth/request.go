@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,13 @@ type RequestAuth struct {
 }
 
 type LoginFunc func(ctx context.Context, acc config.Account) (string, error)
+
+type AccountHealth struct {
+	AccountID                string `json:"account_id"`
+	Status                   string `json:"status"`
+	CooldownUntilUnix        int64  `json:"cooldown_until_unix,omitempty"`
+	CooldownRemainingSeconds int    `json:"cooldown_remaining_seconds,omitempty"`
+}
 
 type Resolver struct {
 	Store *config.Store
@@ -252,6 +260,36 @@ func (r *Resolver) MarkAccountSuccess(a *RequestAuth) {
 	r.mu.Lock()
 	delete(r.accountCooldowns, accountID)
 	r.mu.Unlock()
+}
+
+func (r *Resolver) AccountHealthStatus() []AccountHealth {
+	if r == nil {
+		return nil
+	}
+	now := time.Now()
+	out := []AccountHealth{}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for accountID, until := range r.accountCooldowns {
+		if !now.Before(until) {
+			delete(r.accountCooldowns, accountID)
+			continue
+		}
+		remaining := int(time.Until(until).Seconds())
+		if remaining < 1 {
+			remaining = 1
+		}
+		out = append(out, AccountHealth{
+			AccountID:                accountID,
+			Status:                   "cooldown",
+			CooldownUntilUnix:        until.Unix(),
+			CooldownRemainingSeconds: remaining,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].AccountID < out[j].AccountID
+	})
+	return out
 }
 
 func extractCallerToken(req *http.Request) string {

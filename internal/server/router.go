@@ -58,7 +58,7 @@ func NewApp() (*App, error) {
 	openaiHandler := &openai.Handler{Store: store, Auth: resolver, DS: dsClient, ChatHistory: chatHistoryStore}
 	claudeHandler := &claude.Handler{Store: store, Auth: resolver, DS: dsClient, OpenAI: openaiHandler}
 	geminiHandler := &gemini.Handler{Store: store, Auth: resolver, DS: dsClient, OpenAI: openaiHandler}
-	adminHandler := &admin.Handler{Store: store, Pool: pool, DS: dsClient, OpenAI: openaiHandler, ChatHistory: chatHistoryStore}
+	adminHandler := &admin.Handler{Store: store, Pool: pool, AccountHealth: resolver, DS: dsClient, OpenAI: openaiHandler, ChatHistory: chatHistoryStore}
 	webuiHandler := webui.NewHandler()
 
 	r := chi.NewRouter()

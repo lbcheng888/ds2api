@@ -109,6 +109,8 @@
         "available": "Available",
         "inUse": "In use",
         "totalPool": "Total pool",
+        "cooldown": "Cooldown",
+        "cooldownRemaining": "Max remaining {seconds}s",
         "accountsUnit": "accounts",
         "threadsUnit": "threads",
         "apiKeysTitle": "API Keys",

@@ -125,6 +125,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		if historySession != nil {
 			historySession.error(resp.StatusCode, string(body), "error", "", "")
 		}
+		annotateFailureCaptureHeaders(w, completionID)
 		writeOpenAIError(w, resp.StatusCode, string(body))
 		return
 	}
@@ -151,6 +152,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		if historySession != nil {
 			historySession.error(status, message, code, finalThinking, finalText)
 		}
+		annotateFailureCaptureHeaders(w, completionID)
 		writeUpstreamEmptyOutputError(w, finalText, result.ContentFilter)
 		return
 	}
@@ -158,6 +160,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		if historySession != nil {
 			historySession.error(status, message, code, finalThinking, finalText)
 		}
+		annotateFailureCaptureHeaders(w, completionID)
 		writeOpenAIErrorWithCode(w, status, message, code)
 		return
 	}
@@ -167,6 +170,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		if historySession != nil {
 			historySession.error(status, message, code, finalThinking, finalText)
 		}
+		annotateFailureCaptureHeaders(w, completionID)
 		writeOpenAIErrorWithCode(w, status, message, code)
 		return
 	}
@@ -190,6 +194,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 		if historySession != nil {
 			historySession.error(resp.StatusCode, string(body), "error", "", "")
 		}
+		annotateFailureCaptureHeaders(w, completionID)
 		writeOpenAIError(w, resp.StatusCode, string(body))
 		return
 	}

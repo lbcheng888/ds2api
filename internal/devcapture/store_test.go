@@ -82,3 +82,39 @@ func TestWrapBodyTruncatesByLimit(t *testing.T) {
 		t.Fatalf("expected account id, got %q", items[0].AccountID)
 	}
 }
+
+func TestLatestChainBySessionReturnsOrderedEntries(t *testing.T) {
+	s := &Store{enabled: true, limit: 5, maxBodyBytes: 1024}
+
+	first := s.Start("deepseek_completion", "http://x/completion", "acc1", map[string]any{"chat_session_id": "session-1"})
+	firstBody := first.WrapBody(io.NopCloser(strings.NewReader("first")), 200)
+	_, _ = io.ReadAll(firstBody)
+	_ = firstBody.Close()
+
+	other := s.Start("deepseek_completion", "http://x/completion", "acc2", map[string]any{"chat_session_id": "session-2"})
+	otherBody := other.WrapBody(io.NopCloser(strings.NewReader("other")), 200)
+	_, _ = io.ReadAll(otherBody)
+	_ = otherBody.Close()
+
+	second := s.Start("deepseek_continue", "http://x/continue", "acc1", map[string]any{"chat_session_id": "session-1"})
+	secondBody := second.WrapBody(io.NopCloser(strings.NewReader("second")), 200)
+	_, _ = io.ReadAll(secondBody)
+	_ = secondBody.Close()
+
+	chain, ok := s.LatestChainBySession("session-1")
+	if !ok {
+		t.Fatal("expected chain")
+	}
+	if chain.Key != "session:session-1" {
+		t.Fatalf("unexpected chain key: %s", chain.Key)
+	}
+	if len(chain.Entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(chain.Entries))
+	}
+	if chain.Entries[0].ResponseBody != "first" || chain.Entries[1].ResponseBody != "second" {
+		t.Fatalf("expected ordered matching entries, got %#v", chain.Entries)
+	}
+	if len(chain.IDs()) != 2 {
+		t.Fatalf("expected 2 ids, got %#v", chain.IDs())
+	}
+}

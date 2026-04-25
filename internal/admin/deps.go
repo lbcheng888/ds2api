@@ -48,6 +48,10 @@ type PoolController interface {
 	ApplyRuntimeLimits(maxInflightPerAccount, maxQueueSize, globalMaxInflight int)
 }
 
+type AccountHealthReader interface {
+	AccountHealthStatus() []auth.AccountHealth
+}
+
 type OpenAIChatCaller interface {
 	ChatCompletions(w http.ResponseWriter, r *http.Request)
 }
