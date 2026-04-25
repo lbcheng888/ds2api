@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"ds2api/internal/util"
+
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
@@ -26,6 +28,7 @@ type OpenAIStreamTranslatorWriter struct {
 
 	claudeMessageStarted bool
 	claudeToolBuffers    map[int]*bufferedClaudeToolCall
+	observedOutput       strings.Builder
 }
 
 type bufferedClaudeToolCall struct {
@@ -93,6 +96,18 @@ func (w *OpenAIStreamTranslatorWriter) Write(p []byte) (int, error) {
 		if w.writeTranslatedErrorIfPresent(trimmed) {
 			continue
 		}
+		usage, hasUsage := extractOpenAIUsage(trimmed)
+		w.observeOpenAIStreamOutput(trimmed)
+		lineForTranslate := trimmed
+		if w.target == sdktranslator.FormatClaude && !hasUsage && isOpenAIStreamFinishLine(trimmed) {
+			if estimatedUsage, ok := w.estimateOpenAIStreamUsage(); ok {
+				if withUsage, ok := addOpenAIUsageToStreamLine(trimmed, estimatedUsage); ok {
+					lineForTranslate = withUsage
+					usage = estimatedUsage
+					hasUsage = true
+				}
+			}
+		}
 		if w.target == sdktranslator.FormatClaude {
 			if w.bufferClaudeToolCallChunk(trimmed) {
 				continue
@@ -103,11 +118,14 @@ func (w *OpenAIStreamTranslatorWriter) Write(p []byte) (int, error) {
 				}
 			}
 		}
-		usage, hasUsage := extractOpenAIUsage(trimmed)
-		chunks := sdktranslator.TranslateStream(context.Background(), sdktranslator.FormatOpenAI, w.target, w.model, w.originalReq, w.translatedReq, trimmed, &w.param)
+		chunks := sdktranslator.TranslateStream(context.Background(), sdktranslator.FormatOpenAI, w.target, w.model, w.originalReq, w.translatedReq, lineForTranslate, &w.param)
 		if hasUsage {
 			for i := range chunks {
 				chunks[i] = injectStreamUsageMetadata(chunks[i], w.target, usage)
+			}
+		} else if w.target == sdktranslator.FormatClaude {
+			for i := range chunks {
+				chunks[i] = injectClaudeMessageStartInputMetadata(chunks[i], w.estimateInputTokens())
 			}
 		}
 		for i := range chunks {
@@ -247,7 +265,7 @@ func (w *OpenAIStreamTranslatorWriter) writeClaudeMessageStart() {
 			"stop_reason":   nil,
 			"stop_sequence": nil,
 			"usage": map[string]any{
-				"input_tokens":  0,
+				"input_tokens":  w.estimateInputTokens(),
 				"output_tokens": 0,
 			},
 		},
@@ -373,6 +391,152 @@ type openAIUsage struct {
 	TotalTokens      int
 }
 
+func (w *OpenAIStreamTranslatorWriter) observeOpenAIStreamOutput(line []byte) {
+	raw := strings.TrimSpace(strings.TrimPrefix(string(line), "data:"))
+	if raw == "" || raw == "[DONE]" {
+		return
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return
+	}
+	choices, _ := payload["choices"].([]any)
+	for _, choiceRaw := range choices {
+		choice, _ := choiceRaw.(map[string]any)
+		delta, _ := choice["delta"].(map[string]any)
+		w.observeStringField(delta["content"])
+		w.observeStringField(delta["reasoning_content"])
+		w.observeStringField(delta["reasoning"])
+		w.observeStringField(delta["thinking"])
+		toolCalls, _ := delta["tool_calls"].([]any)
+		for _, tcRaw := range toolCalls {
+			tc, _ := tcRaw.(map[string]any)
+			fn, _ := tc["function"].(map[string]any)
+			w.observeStringField(fn["name"])
+			w.observeStringField(fn["arguments"])
+		}
+	}
+}
+
+func (w *OpenAIStreamTranslatorWriter) observeStringField(v any) {
+	text, _ := v.(string)
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	if w.observedOutput.Len() > 0 {
+		w.observedOutput.WriteByte('\n')
+	}
+	w.observedOutput.WriteString(text)
+}
+
+func (w *OpenAIStreamTranslatorWriter) estimateOpenAIStreamUsage() (openAIUsage, bool) {
+	promptTokens := w.estimateInputTokens()
+	completionTokens := util.EstimateTokens(w.observedOutput.String())
+	if promptTokens <= 0 && completionTokens <= 0 {
+		return openAIUsage{}, false
+	}
+	if promptTokens <= 0 {
+		promptTokens = 1
+	}
+	if completionTokens <= 0 {
+		completionTokens = 1
+	}
+	return openAIUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      promptTokens + completionTokens,
+	}, true
+}
+
+func (w *OpenAIStreamTranslatorWriter) estimateInputTokens() int {
+	if n := estimateClaudeRequestInputTokens(w.originalReq); n > 0 {
+		return n
+	}
+	if n := util.EstimateTokens(string(w.originalReq)); n > 0 {
+		return n
+	}
+	return util.EstimateTokens(string(w.translatedReq))
+}
+
+func estimateClaudeRequestInputTokens(raw []byte) int {
+	var req map[string]any
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return 0
+	}
+	n := 0
+	n += estimateAnyTokenField(req["system"])
+	if messages, ok := req["messages"].([]any); ok {
+		for _, item := range messages {
+			msg, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			n += 2
+			n += estimateAnyTokenField(msg["content"])
+		}
+	}
+	if tools, ok := req["tools"].([]any); ok {
+		for _, tool := range tools {
+			b, _ := json.Marshal(tool)
+			n += util.EstimateTokens(string(b))
+		}
+	}
+	return n
+}
+
+func estimateAnyTokenField(v any) int {
+	switch x := v.(type) {
+	case nil:
+		return 0
+	case string:
+		return util.EstimateTokens(x)
+	default:
+		b, _ := json.Marshal(x)
+		return util.EstimateTokens(string(b))
+	}
+}
+
+func isOpenAIStreamFinishLine(line []byte) bool {
+	raw := strings.TrimSpace(strings.TrimPrefix(string(line), "data:"))
+	if raw == "" || raw == "[DONE]" {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return false
+	}
+	choices, _ := payload["choices"].([]any)
+	for _, choiceRaw := range choices {
+		choice, _ := choiceRaw.(map[string]any)
+		finishReason, _ := choice["finish_reason"].(string)
+		if strings.TrimSpace(finishReason) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func addOpenAIUsageToStreamLine(line []byte, usage openAIUsage) ([]byte, bool) {
+	raw := strings.TrimSpace(strings.TrimPrefix(string(line), "data:"))
+	if raw == "" || raw == "[DONE]" {
+		return nil, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, false
+	}
+	payload["usage"] = map[string]any{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.TotalTokens,
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	return []byte("data: " + string(out)), true
+}
+
 func extractOpenAIUsage(line []byte) (openAIUsage, bool) {
 	raw := strings.TrimSpace(strings.TrimPrefix(string(line), "data:"))
 	if raw == "" || raw == "[DONE]" {
@@ -405,6 +569,9 @@ func extractOpenAIUsage(line []byte) (openAIUsage, bool) {
 }
 
 func injectStreamUsageMetadata(chunk []byte, target sdktranslator.Format, usage openAIUsage) []byte {
+	if target == sdktranslator.FormatClaude {
+		return injectClaudeStreamUsageMetadata(chunk, usage)
+	}
 	if target != sdktranslator.FormatGemini {
 		return chunk
 	}
@@ -453,6 +620,111 @@ func injectStreamUsageMetadata(chunk []byte, target sdktranslator.Format, usage 
 		return append(b, []byte(suffix)...)
 	}
 	return b
+}
+
+func injectClaudeMessageStartInputMetadata(chunk []byte, inputTokens int) []byte {
+	if inputTokens <= 0 {
+		return chunk
+	}
+	return mutateClaudeStreamData(chunk, func(obj map[string]any) bool {
+		if obj["type"] != "message_start" {
+			return false
+		}
+		msg, _ := obj["message"].(map[string]any)
+		if msg == nil {
+			return false
+		}
+		existing, _ := msg["usage"].(map[string]any)
+		if existing == nil {
+			existing = map[string]any{}
+		}
+		existing["input_tokens"] = inputTokens
+		if _, ok := existing["output_tokens"]; !ok {
+			existing["output_tokens"] = 0
+		}
+		msg["usage"] = existing
+		return true
+	})
+}
+
+func injectClaudeStreamUsageMetadata(chunk []byte, usage openAIUsage) []byte {
+	return mutateClaudeStreamData(chunk, func(obj map[string]any) bool {
+		switch obj["type"] {
+		case "message_start":
+			msg, _ := obj["message"].(map[string]any)
+			if msg == nil {
+				return false
+			}
+			existing, _ := msg["usage"].(map[string]any)
+			if existing == nil {
+				existing = map[string]any{}
+			}
+			existing["input_tokens"] = usage.PromptTokens
+			if _, ok := existing["output_tokens"]; !ok {
+				existing["output_tokens"] = 0
+			}
+			msg["usage"] = existing
+		case "message_delta":
+			existing, _ := obj["usage"].(map[string]any)
+			if existing == nil {
+				existing = map[string]any{}
+			}
+			existing["output_tokens"] = usage.CompletionTokens
+			if _, ok := existing["input_tokens"]; ok {
+				existing["input_tokens"] = usage.PromptTokens
+			}
+			obj["usage"] = existing
+		default:
+			return false
+		}
+		return true
+	})
+}
+
+func mutateClaudeStreamData(chunk []byte, mutate func(map[string]any) bool) []byte {
+	suffix := ""
+	switch {
+	case bytes.HasSuffix(chunk, []byte("\n\n")):
+		suffix = "\n\n"
+	case bytes.HasSuffix(chunk, []byte("\n")):
+		suffix = "\n"
+	}
+	text := strings.TrimSpace(string(chunk))
+	if text == "" {
+		return chunk
+	}
+	lines := strings.Split(text, "\n")
+	dataIndex := -1
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "data:") {
+			dataIndex = i
+			break
+		}
+	}
+	if dataIndex < 0 {
+		return chunk
+	}
+	jsonText := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[dataIndex]), "data:"))
+	if jsonText == "" || jsonText == "[DONE]" {
+		return chunk
+	}
+	obj := map[string]any{}
+	if err := json.Unmarshal([]byte(jsonText), &obj); err != nil {
+		return chunk
+	}
+	if !mutate(obj) {
+		return chunk
+	}
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return chunk
+	}
+	lines[dataIndex] = "data: " + string(b)
+	out := strings.Join(lines, "\n")
+	if suffix != "" {
+		out += suffix
+	}
+	return []byte(out)
 }
 
 func toInt(v any) int {

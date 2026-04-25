@@ -30,6 +30,28 @@ func TestOpenAIStreamTranslatorWriterClaude(t *testing.T) {
 	}
 }
 
+func TestOpenAIStreamTranslatorWriterClaudeEstimatesMissingUsage(t *testing.T) {
+	original := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"review the repo"}],"stream":true}`)
+	translated := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"review the repo"}],"stream":true}`)
+
+	rec := httptest.NewRecorder()
+	w := NewOpenAIStreamTranslatorWriter(rec, sdktranslator.FormatClaude, "claude-sonnet-4-5", original, translated)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n"))
+	_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n"))
+	_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+
+	body := rec.Body.String()
+	if strings.Contains(body, `"input_tokens":0`) {
+		t.Fatalf("expected estimated input usage instead of zero, got: %s", body)
+	}
+	if !strings.Contains(body, `"output_tokens":1`) {
+		t.Fatalf("expected estimated output usage on message_delta, got: %s", body)
+	}
+}
+
 func TestOpenAIStreamTranslatorWriterClaudeToolUseStreamsInputJSONDelta(t *testing.T) {
 	original := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Task","input_schema":{"type":"object","properties":{"description":{"type":"string"},"prompt":{"type":"string"},"subagent_type":{"type":"string"}},"required":["description","prompt","subagent_type"]}}],"stream":true}`)
 	translated := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
