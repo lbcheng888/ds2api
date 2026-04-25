@@ -101,7 +101,7 @@ func parseXMLNodeValue(dec *xml.Decoder, start xml.StartElement) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			appendXMLChildValue(children, t.Name.Local, child)
+			appendXMLChildValue(children, xmlParameterKey(t), child)
 		case xml.EndElement:
 			if t.Name.Local != start.Name.Local {
 				return nil, errXMLMismatch(start.Name.Local, t.Name.Local)
@@ -115,6 +115,19 @@ func parseXMLNodeValue(dec *xml.Decoder, start xml.StartElement) (any, error) {
 			return children, nil
 		}
 	}
+}
+
+func xmlParameterKey(start xml.StartElement) string {
+	key := start.Name.Local
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "parameter", "argument", "param":
+		for _, attr := range start.Attr {
+			if strings.EqualFold(attr.Name.Local, "name") && strings.TrimSpace(attr.Value) != "" {
+				return strings.TrimSpace(attr.Value)
+			}
+		}
+	}
+	return key
 }
 
 func appendXMLChildValue(dst map[string]any, key string, value any) {

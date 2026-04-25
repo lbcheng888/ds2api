@@ -197,6 +197,28 @@ func TestUpdateSettingsHistorySplit(t *testing.T) {
 	}
 }
 
+func TestUpdateSettingsCompatAllowMetaAgentTools(t *testing.T) {
+	h := newAdminTestHandler(t, `{"keys":["k1"],"compat":{"allow_meta_agent_tools":false}}`)
+	payload := map[string]any{
+		"compat": map[string]any{
+			"strip_reference_markers": true,
+			"allow_meta_agent_tools":  true,
+		},
+	}
+	b, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPut, "/admin/settings", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	h.updateSettings(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	snap := h.Store.Snapshot()
+	if snap.Compat.AllowMetaAgentTools == nil || !*snap.Compat.AllowMetaAgentTools {
+		t.Fatalf("expected compat.allow_meta_agent_tools=true, got %#v", snap.Compat.AllowMetaAgentTools)
+	}
+}
+
 func TestUpdateSettingsAutoDeleteMode(t *testing.T) {
 	h := newAdminTestHandler(t, `{"keys":["k1"],"auto_delete":{"sessions":true}}`)
 

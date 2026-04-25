@@ -22,8 +22,17 @@ func ConvertClaudeToDeepSeek(claudeReq map[string]any, mappingProvider ClaudeMap
 		dsModel = "deepseek-chat"
 	}
 
-	modelLower := strings.ToLower(model)
-	if strings.Contains(modelLower, "opus") || strings.Contains(modelLower, "reasoner") || strings.Contains(modelLower, "slow") {
+	modelLower := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.HasPrefix(modelLower, "deepseek-"):
+		dsModel = modelLower
+	case strings.Contains(modelLower, "haiku") && mapping["haiku"] != "":
+		dsModel = mapping["haiku"]
+	case strings.Contains(modelLower, "sonnet") && mapping["sonnet"] != "":
+		dsModel = mapping["sonnet"]
+	case strings.Contains(modelLower, "opus") && mapping["opus"] != "":
+		dsModel = mapping["opus"]
+	case strings.Contains(modelLower, "opus") || strings.Contains(modelLower, "reasoner") || strings.Contains(modelLower, "slow"):
 		if slow := mapping["slow"]; slow != "" {
 			dsModel = slow
 		}

@@ -86,3 +86,24 @@ func TestBuildResponseObjectIgnoresToolCallFromThinkingChannel(t *testing.T) {
 		t.Fatalf("expected output message, got %#v", first["type"])
 	}
 }
+
+func TestBuildResponseObjectPromotesXMLToolCallFromThinkingChannel(t *testing.T) {
+	obj := BuildResponseObjectWithMeta(
+		"resp_test",
+		"gpt-4o",
+		"prompt",
+		`<tool_calls><tool_call><tool_name>search</tool_name><parameters><q>from-thinking</q></parameters></tool_call></tool_calls>`,
+		"",
+		[]string{"search"},
+		false,
+	)
+
+	output, _ := obj["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("expected one function call output item, got %#v", obj["output"])
+	}
+	first, _ := output[0].(map[string]any)
+	if first["type"] != "function_call" || first["name"] != "search" {
+		t.Fatalf("expected promoted function_call, got %#v", first)
+	}
+}

@@ -1,23 +1,30 @@
 package util
 
-import "ds2api/internal/config"
+import (
+	"ds2api/internal/config"
+	"ds2api/internal/toolcall"
+)
 
 type StandardRequest struct {
-	Surface        string
-	RequestedModel string
-	ResolvedModel  string
-	ResponseModel  string
-	Messages       []any
-	HistoryText    string
-	ToolsRaw       any
-	FinalPrompt    string
-	ToolNames      []string
-	ToolChoice     ToolChoicePolicy
-	Stream         bool
-	Thinking       bool
-	Search         bool
-	RefFileIDs     []string
-	PassThrough    map[string]any
+	Surface             string
+	RequestedModel      string
+	ResolvedModel       string
+	ResponseModel       string
+	Messages            []any
+	HistoryText         string
+	ToolsRaw            any
+	ToolSchemas         toolcall.ParameterSchemas
+	FinalPrompt         string
+	ToolNames           []string
+	ToolChoice          ToolChoicePolicy
+	AllowMetaAgentTools bool
+	Stream              bool
+	StreamIncludeUsage  bool
+	Thinking            bool
+	ReasoningEffort     string
+	Search              bool
+	RefFileIDs          []string
+	PassThrough         map[string]any
 }
 
 type ToolChoiceMode string

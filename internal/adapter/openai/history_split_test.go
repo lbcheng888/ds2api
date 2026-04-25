@@ -83,7 +83,7 @@ func TestBuildOpenAIHistoryTranscriptPreservesOrderAndToolHistory(t *testing.T) 
 		t.Fatalf("expected latest assistant reasoning to be extracted, got %q", reasoning)
 	}
 
-	finalPrompt, _ := buildHistorySplitPrompt(promptMessages, reasoning, nil, util.DefaultToolChoicePolicy(), false)
+	finalPrompt, _ := buildHistorySplitPrompt(promptMessages, reasoning, nil, util.DefaultToolChoicePolicy(), false, false)
 	if !strings.Contains(finalPrompt, "latest user turn") {
 		t.Fatalf("expected latest user turn in final prompt, got %s", finalPrompt)
 	}
@@ -142,7 +142,7 @@ func TestSplitOpenAIHistoryMessagesUsesLatestUserTurn(t *testing.T) {
 		t.Fatalf("expected no reasoning in this fixture, got %q", reasoning)
 	}
 
-	promptText, _ := buildHistorySplitPrompt(promptMessages, reasoning, nil, util.DefaultToolChoicePolicy(), false)
+	promptText, _ := buildHistorySplitPrompt(promptMessages, reasoning, nil, util.DefaultToolChoicePolicy(), false, false)
 	if !strings.Contains(promptText, "latest user turn") {
 		t.Fatalf("expected latest user turn in prompt, got %s", promptText)
 	}
@@ -156,6 +156,83 @@ func TestSplitOpenAIHistoryMessagesUsesLatestUserTurn(t *testing.T) {
 	}
 	if strings.Contains(historyText, "latest user turn") {
 		t.Fatalf("expected latest user turn to remain in prompt, got %s", historyText)
+	}
+}
+
+func TestSplitOpenAIOverflowMessagesKeepsLatestToolGroup(t *testing.T) {
+	messages := []any{
+		map[string]any{"role": "system", "content": "system instructions"},
+		map[string]any{"role": "user", "content": "review code"},
+		map[string]any{"role": "assistant", "content": "reading first batch"},
+		map[string]any{"role": "tool", "content": "old tool result"},
+		map[string]any{"role": "assistant", "content": "reading latest batch"},
+		map[string]any{"role": "tool", "content": "latest tool result"},
+	}
+
+	promptMessages, historyMessages := splitOpenAIOverflowMessages(messages)
+	promptText := buildOpenAIHistoryTranscript(promptMessages)
+	historyText := buildOpenAIHistoryTranscript(historyMessages)
+
+	if !strings.Contains(promptText, "review code") || !strings.Contains(promptText, "latest tool result") {
+		t.Fatalf("expected latest user and tool group to remain in prompt, got %s", promptText)
+	}
+	if strings.Contains(promptText, "old tool result") {
+		t.Fatalf("expected old tool result to move to history, got %s", promptText)
+	}
+	if !strings.Contains(historyText, "reading first batch") || !strings.Contains(historyText, "old tool result") {
+		t.Fatalf("expected older same-turn tool group in history, got %s", historyText)
+	}
+}
+
+func TestApplyHistorySplitUploadsSameTurnOverflow(t *testing.T) {
+	ds := &inlineUploadDSStub{}
+	h := &Handler{
+		Store: mockOpenAIConfig{
+			wideInput:           true,
+			historySplitEnabled: true,
+			historySplitTurns:   1,
+		},
+		DS: ds,
+	}
+	largeOldResult := strings.Repeat("old tool result\n", historySplitPromptChars/4)
+	req := map[string]any{
+		"model": "deepseek-chat",
+		"messages": []any{
+			map[string]any{"role": "system", "content": "system instructions"},
+			map[string]any{"role": "user", "content": "review code"},
+			map[string]any{"role": "assistant", "content": "reading first batch"},
+			map[string]any{"role": "tool", "content": largeOldResult},
+			map[string]any{"role": "assistant", "content": "reading latest batch"},
+			map[string]any{"role": "tool", "content": "latest tool result"},
+		},
+	}
+	stdReq, err := normalizeOpenAIChatRequest(h.Store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if len(stdReq.FinalPrompt) <= historySplitPromptChars {
+		t.Fatalf("test fixture should exceed prompt budget, got %d", len(stdReq.FinalPrompt))
+	}
+
+	out, err := h.applyHistorySplit(context.Background(), &auth.RequestAuth{DeepSeekToken: "token"}, stdReq)
+	if err != nil {
+		t.Fatalf("apply history split failed: %v", err)
+	}
+	if len(ds.uploadCalls) != 1 {
+		t.Fatalf("expected 1 upload call, got %d", len(ds.uploadCalls))
+	}
+	historyText := string(ds.uploadCalls[0].Data)
+	if !strings.Contains(historyText, "old tool result") {
+		t.Fatalf("expected old tool result in HISTORY.txt, got %s", historyText)
+	}
+	if !strings.Contains(out.FinalPrompt, "latest tool result") {
+		t.Fatalf("expected latest tool result in prompt, got %s", out.FinalPrompt)
+	}
+	if strings.Contains(out.FinalPrompt, "old tool result") {
+		t.Fatalf("expected old oversized tool result removed from prompt")
+	}
+	if !strings.Contains(out.FinalPrompt, "HISTORY.txt") {
+		t.Fatalf("expected HISTORY.txt instruction in prompt")
 	}
 }
 

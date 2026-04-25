@@ -114,13 +114,13 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 
 	responseID := "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	if stdReq.Stream {
-		h.handleResponsesStream(w, r, resp, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, traceID)
+		h.handleResponsesStream(w, r, resp, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
 		return
 	}
-	h.handleResponsesNonStream(w, resp, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, traceID)
+	h.handleResponsesNonStream(w, resp, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
 }
 
-func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice util.ToolChoicePolicy, traceID string) {
+func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -134,6 +134,13 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	if searchEnabled {
 		sanitizedText = replaceCitationMarkersWithLinks(sanitizedText, result.CitationLinks)
 	}
+	if !result.ContentFilter && strings.TrimSpace(sanitizedText) == "" {
+		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(finalPrompt, toolNames, allowMetaAgentTools); repaired != "" {
+			sanitizedText = repaired
+		} else if promoted := executableToolCallTextFromThinking(sanitizedThinking, toolNames, nil, allowMetaAgentTools); promoted != "" {
+			sanitizedText = promoted
+		}
+	}
 	if writeUpstreamEmptyOutputError(w, sanitizedText, result.ContentFilter) {
 		return
 	}
@@ -146,12 +153,12 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 		return
 	}
 
-	responseObj := openaifmt.BuildResponseObject(responseID, model, finalPrompt, sanitizedThinking, sanitizedText, toolNames)
+	responseObj := openaifmt.BuildResponseObjectWithMeta(responseID, model, finalPrompt, sanitizedThinking, sanitizedText, toolNames, allowMetaAgentTools)
 	h.getResponseStore().put(owner, responseID, responseObj)
 	writeJSON(w, http.StatusOK, responseObj)
 }
 
-func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice util.ToolChoicePolicy, traceID string) {
+func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -187,6 +194,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		bufferToolContent,
 		emitEarlyToolDeltas,
 		toolChoice,
+		allowMetaAgentTools,
 		traceID,
 		func(obj map[string]any) {
 			h.getResponseStore().put(owner, responseID, obj)

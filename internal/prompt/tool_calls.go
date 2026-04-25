@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"ds2api/internal/toolcall"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -30,6 +31,9 @@ func FormatToolCallsForPrompt(raw any) string {
 		if !ok {
 			continue
 		}
+		if toolcall.IsTaskTrackingToolName(toolCallNameForPrompt(call)) {
+			continue
+		}
 		block := formatToolCallForPrompt(call)
 		if block != "" {
 			blocks = append(blocks, block)
@@ -39,6 +43,18 @@ func FormatToolCallsForPrompt(raw any) string {
 		return ""
 	}
 	return "<tool_calls>\n" + strings.Join(blocks, "\n") + "\n</tool_calls>"
+}
+
+func toolCallNameForPrompt(call map[string]any) string {
+	if call == nil {
+		return ""
+	}
+	name := strings.TrimSpace(asString(call["name"]))
+	fn, _ := call["function"].(map[string]any)
+	if name == "" && fn != nil {
+		name = strings.TrimSpace(asString(fn["name"]))
+	}
+	return name
 }
 
 // StringifyToolCallArguments normalizes tool arguments into a compact string

@@ -388,6 +388,8 @@
         "compatibilityTitle": "Compatibility",
         "compatibilityDesc": "Compatibility controls that keep stream output closer to the wire format or safer for the web UI.",
         "stripReferenceMarkers": "Strip [reference:N] markers",
+        "allowMetaAgentTools": "Allow Agent / subagent tools",
+        "allowMetaAgentToolsDesc": "Enable ClaudeCode native subagents; disable for safer generic DeepSeek tool-call compatibility.",
         "modelTitle": "Model mapping",
         "claudeMapping": "Claude mapping (JSON)",
         "modelAliases": "Model aliases (JSON)",

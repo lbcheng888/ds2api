@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -22,6 +23,15 @@ type OpenAIStreamTranslatorWriter struct {
 	statusCode    int
 	headersSent   bool
 	lineBuf       bytes.Buffer
+
+	claudeMessageStarted bool
+	claudeToolBuffers    map[int]*bufferedClaudeToolCall
+}
+
+type bufferedClaudeToolCall struct {
+	ID        string
+	Name      string
+	Arguments strings.Builder
 }
 
 func NewOpenAIStreamTranslatorWriter(dst http.ResponseWriter, target sdktranslator.Format, model string, originalReq, translatedReq []byte) *OpenAIStreamTranslatorWriter {
@@ -80,6 +90,19 @@ func (w *OpenAIStreamTranslatorWriter) Write(p []byte) (int, error) {
 		if !bytes.HasPrefix(trimmed, []byte("data:")) {
 			continue
 		}
+		if w.writeTranslatedErrorIfPresent(trimmed) {
+			continue
+		}
+		if w.target == sdktranslator.FormatClaude {
+			if w.bufferClaudeToolCallChunk(trimmed) {
+				continue
+			}
+			if w.flushClaudeToolCallsBeforeFinish(trimmed) {
+				if f, ok := w.dst.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+		}
 		usage, hasUsage := extractOpenAIUsage(trimmed)
 		chunks := sdktranslator.TranslateStream(context.Background(), sdktranslator.FormatOpenAI, w.target, w.model, w.originalReq, w.translatedReq, trimmed, &w.param)
 		if hasUsage {
@@ -90,6 +113,9 @@ func (w *OpenAIStreamTranslatorWriter) Write(p []byte) (int, error) {
 		for i := range chunks {
 			if len(chunks[i]) == 0 {
 				continue
+			}
+			if w.target == sdktranslator.FormatClaude && bytes.Contains(chunks[i], []byte("event: message_start")) {
+				w.claudeMessageStarted = true
 			}
 			if _, err := w.dst.Write(chunks[i]); err != nil {
 				return len(p), err
@@ -105,6 +131,219 @@ func (w *OpenAIStreamTranslatorWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+func (w *OpenAIStreamTranslatorWriter) bufferClaudeToolCallChunk(line []byte) bool {
+	payload := bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(line), []byte("data:")))
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return false
+	}
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return false
+	}
+	choices, _ := body["choices"].([]any)
+	hasToolCall := false
+	for _, choiceRaw := range choices {
+		choice, _ := choiceRaw.(map[string]any)
+		delta, _ := choice["delta"].(map[string]any)
+		toolCalls, _ := delta["tool_calls"].([]any)
+		for _, tcRaw := range toolCalls {
+			tc, _ := tcRaw.(map[string]any)
+			index := toInt(tc["index"])
+			if index < 0 {
+				index = 0
+			}
+			if w.claudeToolBuffers == nil {
+				w.claudeToolBuffers = map[int]*bufferedClaudeToolCall{}
+			}
+			buf := w.claudeToolBuffers[index]
+			if buf == nil {
+				buf = &bufferedClaudeToolCall{}
+				w.claudeToolBuffers[index] = buf
+			}
+			if id, _ := tc["id"].(string); strings.TrimSpace(id) != "" {
+				buf.ID = strings.TrimSpace(id)
+			}
+			fn, _ := tc["function"].(map[string]any)
+			if name, _ := fn["name"].(string); strings.TrimSpace(name) != "" {
+				buf.Name = strings.TrimSpace(name)
+			}
+			if args, _ := fn["arguments"].(string); args != "" {
+				buf.Arguments.WriteString(args)
+			}
+			hasToolCall = true
+		}
+	}
+	return hasToolCall
+}
+
+func (w *OpenAIStreamTranslatorWriter) flushClaudeToolCallsBeforeFinish(line []byte) bool {
+	if len(w.claudeToolBuffers) == 0 {
+		return false
+	}
+	payload := bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(line), []byte("data:")))
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return w.flushClaudeToolCalls()
+	}
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return false
+	}
+	choices, _ := body["choices"].([]any)
+	for _, choiceRaw := range choices {
+		choice, _ := choiceRaw.(map[string]any)
+		finishReason, _ := choice["finish_reason"].(string)
+		if strings.TrimSpace(finishReason) == "tool_calls" {
+			return w.flushClaudeToolCalls()
+		}
+	}
+	return false
+}
+
+func (w *OpenAIStreamTranslatorWriter) flushClaudeToolCalls() bool {
+	if len(w.claudeToolBuffers) == 0 {
+		return false
+	}
+	if !w.claudeMessageStarted {
+		w.writeClaudeMessageStart()
+	}
+	indexes := make([]int, 0, len(w.claudeToolBuffers))
+	for idx := range w.claudeToolBuffers {
+		indexes = append(indexes, idx)
+	}
+	sort.Ints(indexes)
+	for _, idx := range indexes {
+		tc := w.claudeToolBuffers[idx]
+		if tc == nil || strings.TrimSpace(tc.Name) == "" {
+			continue
+		}
+		input := map[string]any{}
+		args := strings.TrimSpace(tc.Arguments.String())
+		if args != "" {
+			_ = json.Unmarshal([]byte(args), &input)
+		}
+		id := strings.TrimSpace(tc.ID)
+		if id == "" {
+			id = "toolu_" + strconv.Itoa(idx)
+		}
+		w.writeClaudeContentBlockStart(idx, id, strings.TrimSpace(tc.Name), map[string]any{})
+		w.writeClaudeInputJSONDelta(idx, input)
+		w.writeClaudeContentBlockStop(idx)
+	}
+	w.claudeToolBuffers = nil
+	return true
+}
+
+func (w *OpenAIStreamTranslatorWriter) writeClaudeMessageStart() {
+	payload, _ := json.Marshal(map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"id":            "",
+			"type":          "message",
+			"role":          "assistant",
+			"model":         w.model,
+			"content":       []any{},
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage": map[string]any{
+				"input_tokens":  0,
+				"output_tokens": 0,
+			},
+		},
+	})
+	_, _ = w.dst.Write([]byte("event: message_start\n"))
+	_, _ = w.dst.Write([]byte("data: "))
+	_, _ = w.dst.Write(payload)
+	_, _ = w.dst.Write([]byte("\n\n"))
+	w.claudeMessageStarted = true
+}
+
+func (w *OpenAIStreamTranslatorWriter) writeClaudeContentBlockStart(index int, id, name string, input map[string]any) {
+	payload, _ := json.Marshal(map[string]any{
+		"type":  "content_block_start",
+		"index": index,
+		"content_block": map[string]any{
+			"type":  "tool_use",
+			"id":    id,
+			"name":  name,
+			"input": input,
+		},
+	})
+	_, _ = w.dst.Write([]byte("event: content_block_start\n"))
+	_, _ = w.dst.Write([]byte("data: "))
+	_, _ = w.dst.Write(payload)
+	_, _ = w.dst.Write([]byte("\n\n"))
+}
+
+func (w *OpenAIStreamTranslatorWriter) writeClaudeInputJSONDelta(index int, input map[string]any) {
+	inputBytes, _ := json.Marshal(input)
+	payload, _ := json.Marshal(map[string]any{
+		"type":  "content_block_delta",
+		"index": index,
+		"delta": map[string]any{
+			"type":         "input_json_delta",
+			"partial_json": string(inputBytes),
+		},
+	})
+	_, _ = w.dst.Write([]byte("event: content_block_delta\n"))
+	_, _ = w.dst.Write([]byte("data: "))
+	_, _ = w.dst.Write(payload)
+	_, _ = w.dst.Write([]byte("\n\n"))
+}
+
+func (w *OpenAIStreamTranslatorWriter) writeClaudeContentBlockStop(index int) {
+	payload, _ := json.Marshal(map[string]any{
+		"type":  "content_block_stop",
+		"index": index,
+	})
+	_, _ = w.dst.Write([]byte("event: content_block_stop\n"))
+	_, _ = w.dst.Write([]byte("data: "))
+	_, _ = w.dst.Write(payload)
+	_, _ = w.dst.Write([]byte("\n\n"))
+}
+
+func (w *OpenAIStreamTranslatorWriter) writeTranslatedErrorIfPresent(line []byte) bool {
+	payload := bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(line), []byte("data:")))
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return false
+	}
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return false
+	}
+	errObj, ok := body["error"].(map[string]any)
+	if !ok || len(errObj) == 0 {
+		return false
+	}
+	message, _ := errObj["message"].(string)
+	if strings.TrimSpace(message) == "" {
+		message = "Upstream model returned an error."
+	}
+	switch w.target {
+	case sdktranslator.FormatClaude:
+		w.writeClaudeErrorEvent(message)
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *OpenAIStreamTranslatorWriter) writeClaudeErrorEvent(message string) {
+	payload, _ := json.Marshal(map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":    "api_error",
+			"message": message,
+		},
+	})
+	_, _ = w.dst.Write([]byte("event: error\n"))
+	_, _ = w.dst.Write([]byte("data: "))
+	_, _ = w.dst.Write(payload)
+	_, _ = w.dst.Write([]byte("\n\n"))
+	if f, ok := w.dst.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func (w *OpenAIStreamTranslatorWriter) Flush() {

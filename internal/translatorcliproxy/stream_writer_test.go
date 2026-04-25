@@ -30,6 +30,56 @@ func TestOpenAIStreamTranslatorWriterClaude(t *testing.T) {
 	}
 }
 
+func TestOpenAIStreamTranslatorWriterClaudeToolUseStreamsInputJSONDelta(t *testing.T) {
+	original := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Task","input_schema":{"type":"object","properties":{"description":{"type":"string"},"prompt":{"type":"string"},"subagent_type":{"type":"string"}},"required":["description","prompt","subagent_type"]}}],"stream":true}`)
+	translated := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+
+	rec := httptest.NewRecorder()
+	w := NewOpenAIStreamTranslatorWriter(rec, sdktranslator.FormatClaude, "claude-sonnet-4-5", original, translated)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n"))
+	_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"Task\",\"arguments\":\"{\\\"description\\\":\\\"Explore\\\",\\\"prompt\\\":\\\"Inspect files\\\",\\\"subagent_type\\\":\\\"general\\\"}\"}}]},\"finish_reason\":null}]}\n\n"))
+	_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"type":"tool_use"`) {
+		t.Fatalf("expected Claude tool_use event, got: %s", body)
+	}
+	if !strings.Contains(body, `"type":"input_json_delta"`) {
+		t.Fatalf("expected Claude tool_use input to be streamed as input_json_delta, got: %s", body)
+	}
+	if !strings.Contains(body, `"input":{}`) {
+		t.Fatalf("expected Claude tool_use start block to use official empty input, got: %s", body)
+	}
+	if !strings.Contains(body, `\"description\":\"Explore\"`) || !strings.Contains(body, `\"prompt\":\"Inspect files\"`) || !strings.Contains(body, `\"subagent_type\":\"general\"`) {
+		t.Fatalf("expected tool_use input_json_delta to include required fields, got: %s", body)
+	}
+}
+
+func TestOpenAIStreamTranslatorWriterClaudeAgentUsesInputDelta(t *testing.T) {
+	original := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Agent","input_schema":{"type":"object","properties":{"description":{"type":"string"},"prompt":{"type":"string"},"subagent_type":{"type":"string"}},"required":["description","prompt"]}}],"stream":true}`)
+	translated := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+
+	rec := httptest.NewRecorder()
+	w := NewOpenAIStreamTranslatorWriter(rec, sdktranslator.FormatClaude, "claude-sonnet-4-5", original, translated)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n"))
+	_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_agent\",\"type\":\"function\",\"function\":{\"name\":\"Agent\",\"arguments\":\"{\\\"description\\\":\\\"Explore Cheng\\\",\\\"prompt\\\":\\\"Inspect repository\\\",\\\"subagent_type\\\":\\\"Explore\\\"}\"}}]},\"finish_reason\":null}]}\n\n"))
+	_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"name":"Agent"`) || !strings.Contains(body, `"type":"input_json_delta"`) {
+		t.Fatalf("expected Agent tool_use with input_json_delta, got: %s", body)
+	}
+	if !strings.Contains(body, `\"subagent_type\":\"Explore\"`) {
+		t.Fatalf("expected Agent subagent_type in input_json_delta, got: %s", body)
+	}
+}
+
 func TestOpenAIStreamTranslatorWriterGemini(t *testing.T) {
 	original := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 	translated := []byte(`{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hi"}],"stream":true}`)
@@ -61,6 +111,26 @@ func TestOpenAIStreamTranslatorWriterPreservesKeepAliveComment(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, ": keep-alive\n\n") {
 		t.Fatalf("expected keep-alive comment passthrough, got %q", body)
+	}
+}
+
+func TestOpenAIStreamTranslatorWriterClaudeTranslatesOpenAIErrorChunk(t *testing.T) {
+	original := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	translated := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+
+	rec := httptest.NewRecorder()
+	w := NewOpenAIStreamTranslatorWriter(rec, sdktranslator.FormatClaude, "claude-sonnet-4-5", original, translated)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	_, _ = w.Write([]byte(`data: {"status_code":429,"error":{"message":"Upstream model returned empty output.","type":"rate_limit_error","code":"upstream_empty_output"}}` + "\n\n"))
+	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: error") {
+		t.Fatalf("expected Claude error event, got: %s", body)
+	}
+	if !strings.Contains(body, "Upstream model returned empty output.") {
+		t.Fatalf("expected upstream message in Claude error event, got: %s", body)
 	}
 }
 

@@ -117,6 +117,48 @@ func TestChatCompletionsStreamStatusCapturedAs200(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsStreamIncludeUsageEmitsDeepSeekUsageChunk(t *testing.T) {
+	statuses := make([]int, 0, 1)
+	h := &Handler{
+		Store: mockOpenAIConfig{wideInput: true},
+		Auth:  streamStatusAuthStub{},
+		DS:    streamStatusDSStub{resp: makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":"hello"}`, "data: [DONE]")},
+	}
+	r := chi.NewRouter()
+	r.Use(captureStatusMiddleware(&statuses))
+	RegisterRoutes(r, h)
+
+	reqBody := `{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer direct-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	frames, done := parseSSEDataFrames(t, rec.Body.String())
+	if !done {
+		t.Fatalf("expected [DONE], body=%s", rec.Body.String())
+	}
+	if len(frames) < 2 {
+		t.Fatalf("expected content, finish, and usage frames, got %#v", frames)
+	}
+	usageFrame := frames[len(frames)-1]
+	choices, _ := usageFrame["choices"].([]any)
+	if len(choices) != 0 {
+		t.Fatalf("expected usage frame choices empty, got %#v", usageFrame)
+	}
+	usage, _ := usageFrame["usage"].(map[string]any)
+	if usage == nil {
+		t.Fatalf("expected usage object, got %#v", usageFrame)
+	}
+	if usage["prompt_cache_hit_tokens"] == nil || usage["prompt_cache_miss_tokens"] == nil {
+		t.Fatalf("expected DeepSeek usage cache fields, got %#v", usage)
+	}
+}
+
 func TestResponsesStreamStatusCapturedAs200(t *testing.T) {
 	statuses := make([]int, 0, 1)
 	h := &Handler{

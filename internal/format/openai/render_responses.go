@@ -10,14 +10,26 @@ import (
 )
 
 func BuildResponseObject(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string) map[string]any {
+	return BuildResponseObjectWithMeta(responseID, model, finalPrompt, finalThinking, finalText, toolNames, false)
+}
+
+func BuildResponseObjectWithMeta(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string, allowMetaAgentTools bool) map[string]any {
 	// Strict mode: only standalone, structured tool-call payloads are treated
 	// as executable tool calls.
 	detected := toolcall.ParseStandaloneToolCallsDetailed(finalText, toolNames)
+	if len(detected.Calls) == 0 && strings.TrimSpace(finalText) == "" && strings.TrimSpace(finalThinking) != "" {
+		detected = toolcall.ParseStandaloneToolCallsDetailed(finalThinking, toolNames)
+	}
+	if !allowMetaAgentTools && toolcall.AllCallsAreMetaAgentTools(detected.Calls) {
+		finalText = toolcall.MetaAgentToolBlockedMessage()
+		detected.Calls = nil
+	}
 	exposedOutputText := finalText
 	output := make([]any, 0, 2)
-	if len(detected.Calls) > 0 {
+	calls := toolcall.NormalizeCallsForSchemasWithMeta(detected.Calls, nil, allowMetaAgentTools)
+	if len(calls) > 0 {
 		exposedOutputText = ""
-		output = append(output, toResponsesFunctionCallItems(detected.Calls)...)
+		output = append(output, toResponsesFunctionCallItems(calls)...)
 	} else {
 		content := make([]any, 0, 2)
 		if finalThinking != "" {

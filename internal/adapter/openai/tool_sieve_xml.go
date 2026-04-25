@@ -45,7 +45,7 @@ var xmlToolTagsToDetect = []string{"<tool_calls>", "<tool_calls\n", "<tool_call>
 	"<attempt_completion>", "<ask_followup_question>", "<new_task>"}
 
 // consumeXMLToolCapture tries to extract complete XML tool call blocks from captured text.
-func consumeXMLToolCapture(captured string, toolNames []string) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
+func consumeXMLToolCapture(captured string, toolNames []string, allowMetaAgentTools bool) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
 	lower := strings.ToLower(captured)
 	// Find the FIRST matching open/close pair, preferring wrapper tags.
 	// Tag pairs are ordered longest-first (e.g. <tool_calls before <tool_call)
@@ -71,6 +71,13 @@ func consumeXMLToolCapture(captured string, toolNames []string) (prefix string, 
 		parsed := toolcall.ParseToolCalls(xmlBlock, toolNames)
 		if len(parsed) > 0 {
 			prefixPart, suffixPart = trimWrappingJSONFence(prefixPart, suffixPart)
+			if !allowMetaAgentTools && toolcall.AllCallsAreMetaAgentTools(parsed) {
+				blocked := toolcall.MetaAgentToolBlockedMessage()
+				if strings.TrimSpace(prefixPart) != "" && !strings.HasSuffix(prefixPart, "\n") {
+					prefixPart += "\n"
+				}
+				return prefixPart + blocked, nil, suffixPart, true
+			}
 			return prefixPart, parsed, suffixPart, true
 		}
 		// If this block failed to become a tool call, pass it through as text.

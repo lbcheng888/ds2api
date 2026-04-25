@@ -15,6 +15,9 @@ type ModelAliasReader interface {
 }
 
 var DeepSeekModels = []ModelInfo{
+	{ID: "deepseek-v4-pro[1m]", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
+	{ID: "deepseek-v4-pro", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
+	{ID: "deepseek-v4-flash", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
 	{ID: "deepseek-chat", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
 	{ID: "deepseek-reasoner", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
 	{ID: "deepseek-chat-search", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
@@ -72,6 +75,12 @@ var ClaudeModels = []ModelInfo{
 
 func GetModelConfig(model string) (thinking bool, search bool, ok bool) {
 	switch lower(model) {
+	case "deepseek-v4-pro[1m]":
+		return true, false, true
+	case "deepseek-v4-pro":
+		return true, false, true
+	case "deepseek-v4-flash":
+		return false, false, true
 	case "deepseek-chat":
 		return false, false, true
 	case "deepseek-reasoner":
@@ -103,6 +112,10 @@ func GetModelConfig(model string) (thinking bool, search bool, ok bool) {
 
 func GetModelType(model string) (modelType string, ok bool) {
 	switch lower(model) {
+	case "deepseek-v4-pro[1m]", "deepseek-v4-pro":
+		return "expert", true
+	case "deepseek-v4-flash":
+		return "default", true
 	case "deepseek-chat", "deepseek-reasoner", "deepseek-chat-search", "deepseek-reasoner-search":
 		return "default", true
 	case "deepseek-expert-chat", "deepseek-expert-reasoner", "deepseek-expert-chat-search", "deepseek-expert-reasoner-search":
@@ -150,9 +163,6 @@ func ResolveModel(store ModelAliasReader, requested string) (string, bool) {
 	if model == "" {
 		return "", false
 	}
-	if IsSupportedDeepSeekModel(model) {
-		return model, true
-	}
 	aliases := DefaultModelAliases()
 	if store != nil {
 		for k, v := range store.ModelAliases() {
@@ -161,6 +171,9 @@ func ResolveModel(store ModelAliasReader, requested string) (string, bool) {
 	}
 	if mapped, ok := aliases[model]; ok && IsSupportedDeepSeekModel(mapped) {
 		return mapped, true
+	}
+	if IsSupportedDeepSeekModel(model) {
+		return model, true
 	}
 	if strings.HasPrefix(model, "deepseek-") {
 		return "", false

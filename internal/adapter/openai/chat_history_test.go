@@ -194,7 +194,7 @@ func TestHandleStreamContextCancelledMarksHistoryStopped(t *testing.T) {
 	rec := httptest.NewRecorder()
 	resp := makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":"hello"}`, `data: [DONE]`)
 
-	h.handleStream(rec, req, resp, "cid-stop", "deepseek-chat", "prompt", false, false, nil, session)
+	h.handleStream(rec, req, resp, "cid-stop", "deepseek-chat", "prompt", false, false, nil, nil, false, false, session)
 
 	snapshot, err := historyStore.Snapshot()
 	if err != nil {

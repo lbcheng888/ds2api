@@ -9,5 +9,5 @@ func cleanVisibleOutput(text string, stripReferenceMarkers bool) string {
 	if stripReferenceMarkers {
 		text = textclean.StripReferenceMarkers(text)
 	}
-	return text
+	return textclean.SanitizeLeakedOutput(text)
 }

@@ -6,14 +6,14 @@ import (
 )
 
 func buildOpenAIFinalPrompt(messagesRaw []any, toolsRaw any, traceID string, thinkingEnabled bool) (string, []string) {
-	return buildOpenAIFinalPromptWithPolicy(messagesRaw, toolsRaw, traceID, util.DefaultToolChoicePolicy(), thinkingEnabled)
+	return buildOpenAIFinalPromptWithPolicy(messagesRaw, toolsRaw, traceID, util.DefaultToolChoicePolicy(), thinkingEnabled, false)
 }
 
-func buildOpenAIFinalPromptWithPolicy(messagesRaw []any, toolsRaw any, traceID string, toolPolicy util.ToolChoicePolicy, thinkingEnabled bool) (string, []string) {
+func buildOpenAIFinalPromptWithPolicy(messagesRaw []any, toolsRaw any, traceID string, toolPolicy util.ToolChoicePolicy, thinkingEnabled bool, allowMetaAgentTools bool) (string, []string) {
 	messages := normalizeOpenAIMessagesForPrompt(messagesRaw, traceID)
 	toolNames := []string{}
 	if tools, ok := toolsRaw.([]any); ok && len(tools) > 0 {
-		messages, toolNames = injectToolPrompt(messages, tools, toolPolicy)
+		messages, toolNames = injectToolPrompt(messages, tools, toolPolicy, allowMetaAgentTools)
 	}
 	return deepseek.MessagesPrepareWithThinking(messages, thinkingEnabled), toolNames
 }

@@ -253,10 +253,10 @@ func appendContentPart(parts *[]ContentPart, content, kind string) {
 	*parts = append(*parts, ContentPart{Text: content, Type: kind})
 }
 
-var thinkClosePattern = regexp.MustCompile(`(?i)</\s*think\s*>`)
-var thinkOpenPattern = regexp.MustCompile(`(?i)<\s*think\s*>`)
+var thinkClosePattern = regexp.MustCompile(`(?i)</\s*(?:think|reasoning)\s*>`)
+var thinkOpenPattern = regexp.MustCompile(`(?i)<\s*(?:think|reasoning)\s*>`)
 
-// splitThinkingParts detects </think> inside thinking content and
+// splitThinkingParts detects </think>/</reasoning> inside thinking content and
 // auto-transitions everything after it to text. This handles the
 // DeepSeek API bug where the upstream SSE keeps sending
 // reasoning_content even though the model has finished thinking.

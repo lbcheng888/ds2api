@@ -13,6 +13,15 @@ func TestResolveModelDirectDeepSeek(t *testing.T) {
 	}
 }
 
+func TestResolveModelDirectDeepSeekV4(t *testing.T) {
+	for _, model := range []string{"deepseek-v4-pro[1m]", "deepseek-v4-pro", "deepseek-v4-flash"} {
+		got, ok := ResolveModel(nil, model)
+		if !ok || got != model {
+			t.Fatalf("expected %s, got ok=%v model=%q", model, ok, got)
+		}
+	}
+}
+
 func TestResolveModelAlias(t *testing.T) {
 	got, ok := ResolveModel(nil, "gpt-4.1")
 	if !ok || got != "deepseek-chat" {
@@ -56,6 +65,24 @@ func TestResolveModelCustomAliasToVision(t *testing.T) {
 	}, "my-vision-model")
 	if !ok || got != "deepseek-vision-chat-search" {
 		t.Fatalf("expected alias -> deepseek-vision-chat-search, got ok=%v model=%q", ok, got)
+	}
+}
+
+func TestResolveModelCustomAliasToDeepSeekV4(t *testing.T) {
+	got, ok := ResolveModel(mockModelAliasReader{
+		"coding-main": "deepseek-v4-pro[1m]",
+	}, "coding-main")
+	if !ok || got != "deepseek-v4-pro[1m]" {
+		t.Fatalf("expected alias -> deepseek-v4-pro[1m], got ok=%v model=%q", ok, got)
+	}
+}
+
+func TestResolveModelCustomAliasOverridesDirectDeepSeek(t *testing.T) {
+	got, ok := ResolveModel(mockModelAliasReader{
+		"deepseek-v4-pro": "deepseek-v4-pro[1m]",
+	}, "deepseek-v4-pro")
+	if !ok || got != "deepseek-v4-pro[1m]" {
+		t.Fatalf("expected direct alias override -> deepseek-v4-pro[1m], got ok=%v model=%q", ok, got)
 	}
 }
 

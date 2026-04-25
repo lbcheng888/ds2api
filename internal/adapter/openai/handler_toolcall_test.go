@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"ds2api/internal/toolcall"
+	"ds2api/internal/util"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -18,6 +20,120 @@ func makeSSEHTTPResponse(lines ...string) *http.Response {
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
 		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func TestFormatFinalStreamToolCallsDropsSchemaInvalidCall(t *testing.T) {
+	schemas := toolcall.ParameterSchemas{
+		"task": {
+			"type": "object",
+			"properties": map[string]any{
+				"description":   map[string]any{"type": "string"},
+				"prompt":        map[string]any{"type": "string"},
+				"subagent_type": map[string]any{"type": "string"},
+			},
+			"required": []any{"description", "prompt", "subagent_type"},
+		},
+	}
+	calls := []toolcall.ParsedToolCall{{Name: "task", Input: map[string]any{}}}
+	if got := formatFinalStreamToolCallsWithStableIDs(calls, nil, schemas, false); len(got) != 0 {
+		t.Fatalf("expected invalid task call to be dropped, got %#v", got)
+	}
+}
+
+func TestInjectToolPromptSkipsMetaAgentTools(t *testing.T) {
+	tools := []any{
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "Agent",
+				"description": "Launch a subagent",
+				"parameters":  map[string]any{"type": "object"},
+			},
+		},
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "TaskOutput",
+				"description": "Fetch subagent output",
+				"parameters":  map[string]any{"type": "object"},
+			},
+		},
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "read",
+				"description": "Read a file",
+				"parameters":  map[string]any{"type": "object"},
+			},
+		},
+	}
+	messages, names := injectToolPrompt([]map[string]any{{"role": "user", "content": "hi"}}, tools, util.ToolChoicePolicy{}, false)
+	if len(names) != 1 || names[0] != "read" {
+		t.Fatalf("expected only read tool name, got %#v", names)
+	}
+	system, _ := messages[0]["content"].(string)
+	if strings.Contains(system, "Tool: Agent") {
+		t.Fatalf("expected Agent tool to be removed from prompt, got %q", system)
+	}
+	if strings.Contains(system, "Tool: TaskOutput") {
+		t.Fatalf("expected TaskOutput tool to be removed from prompt, got %q", system)
+	}
+	if !strings.Contains(system, "Tool: read") {
+		t.Fatalf("expected read tool in prompt, got %q", system)
+	}
+}
+
+func TestInjectToolPromptAllowsMetaAgentToolsWhenConfigured(t *testing.T) {
+	tools := []any{
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "Agent",
+				"description": "Launch a subagent",
+				"parameters":  map[string]any{"type": "object"},
+			},
+		},
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "TaskOutput",
+				"description": "Fetch subagent output",
+				"parameters":  map[string]any{"type": "object"},
+			},
+		},
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "TaskCreate",
+				"description": "Create UI task",
+				"parameters":  map[string]any{"type": "object"},
+			},
+		},
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "TodoWrite",
+				"description": "Update UI todos",
+				"parameters":  map[string]any{"type": "object"},
+			},
+		},
+	}
+	messages, names := injectToolPrompt([]map[string]any{{"role": "user", "content": "hi"}}, tools, util.ToolChoicePolicy{}, true)
+	if len(names) != 2 || names[0] != "Agent" || names[1] != "TaskOutput" {
+		t.Fatalf("expected Agent and TaskOutput tool names, got %#v", names)
+	}
+	system, _ := messages[0]["content"].(string)
+	if !strings.Contains(system, "Tool: Agent") {
+		t.Fatalf("expected Agent tool in prompt, got %q", system)
+	}
+	if !strings.Contains(system, "Tool: TaskOutput") {
+		t.Fatalf("expected TaskOutput tool in prompt, got %q", system)
+	}
+	for _, bad := range []string{"Tool: TaskCreate", "Tool: TodoWrite"} {
+		if strings.Contains(system, bad) {
+			t.Fatalf("expected task-tracking tool %s to be removed from prompt, got %q", bad, system)
+		}
 	}
 }
 
@@ -93,7 +209,7 @@ func TestHandleNonStreamReturns429WhenUpstreamOutputEmpty(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-empty", "deepseek-chat", "prompt", false, false, nil, nil)
+	h.handleNonStream(rec, resp, "cid-empty", "deepseek-chat", "prompt", false, false, nil, nil, false, nil)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected status 429 for empty upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -112,7 +228,7 @@ func TestHandleNonStreamReturnsContentFilterErrorWhenUpstreamFilteredWithoutOutp
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-empty-filtered", "deepseek-chat", "prompt", false, false, nil, nil)
+	h.handleNonStream(rec, resp, "cid-empty-filtered", "deepseek-chat", "prompt", false, false, nil, nil, false, nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400 for filtered upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -131,7 +247,7 @@ func TestHandleNonStreamReturns429WhenUpstreamHasOnlyThinking(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-thinking-only", "deepseek-reasoner", "prompt", true, false, nil, nil)
+	h.handleNonStream(rec, resp, "cid-thinking-only", "deepseek-reasoner", "prompt", true, false, nil, nil, false, nil)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected status 429 for thinking-only upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -139,6 +255,30 @@ func TestHandleNonStreamReturns429WhenUpstreamHasOnlyThinking(t *testing.T) {
 	errObj, _ := out["error"].(map[string]any)
 	if asString(errObj["code"]) != "upstream_empty_output" {
 		t.Fatalf("expected code=upstream_empty_output, got %#v", out)
+	}
+}
+
+func TestHandleNonStreamPromotesVisibleTextAfterReasoningClose(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/thinking_content","v":"internal reasoning</reasoning>visible answer"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+
+	h.handleNonStream(rec, resp, "cid-reasoning-close", "deepseek-reasoner", "prompt", true, false, nil, nil, false, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200 when visible text follows reasoning close, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	out := decodeJSONBody(t, rec.Body.String())
+	choices, _ := out["choices"].([]any)
+	if len(choices) != 1 {
+		t.Fatalf("expected one choice, got %#v", out)
+	}
+	choice, _ := choices[0].(map[string]any)
+	msg, _ := choice["message"].(map[string]any)
+	if msg["content"] != "visible answer" {
+		t.Fatalf("expected visible content to be promoted, got %#v", msg)
 	}
 }
 
@@ -152,7 +292,7 @@ func TestHandleStreamToolsPlainTextStreamsBeforeFinish(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	h.handleStream(rec, req, resp, "cid6", "deepseek-chat", "prompt", false, false, []string{"search"}, nil)
+	h.handleStream(rec, req, resp, "cid6", "deepseek-chat", "prompt", false, false, []string{"search"}, nil, false, false, nil)
 
 	frames, done := parseSSEDataFrames(t, rec.Body.String())
 	if !done {
@@ -189,7 +329,7 @@ func TestHandleStreamIncompleteCapturedToolJSONFlushesAsTextOnFinalize(t *testin
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	h.handleStream(rec, req, resp, "cid10", "deepseek-chat", "prompt", false, false, []string{"search"}, nil)
+	h.handleStream(rec, req, resp, "cid10", "deepseek-chat", "prompt", false, false, []string{"search"}, nil, false, false, nil)
 
 	frames, done := parseSSEDataFrames(t, rec.Body.String())
 	if !done {
@@ -224,7 +364,7 @@ func TestHandleStreamEmitsDistinctToolCallIDsAcrossSeparateToolBlocks(t *testing
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	h.handleStream(rec, req, resp, "cid-multi", "deepseek-chat", "prompt", false, false, []string{"read_file", "search"}, nil)
+	h.handleStream(rec, req, resp, "cid-multi", "deepseek-chat", "prompt", false, false, []string{"read_file", "search"}, nil, false, false, nil)
 
 	frames, done := parseSSEDataFrames(t, rec.Body.String())
 	if !done {

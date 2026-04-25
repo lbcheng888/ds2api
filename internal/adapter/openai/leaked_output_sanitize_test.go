@@ -42,6 +42,14 @@ func TestSanitizeLeakedOutputRemovesDanglingThinkBlock(t *testing.T) {
 	}
 }
 
+func TestSanitizeLeakedOutputRemovesDanglingToolTagFragment(t *testing.T) {
+	raw := "Let me inspect more files.\n\n\ntool_calls>\n"
+	got := sanitizeLeakedOutput(raw)
+	if got != "Let me inspect more files.\n" {
+		t.Fatalf("unexpected sanitize result for dangling tool tag fragment: %q", got)
+	}
+}
+
 func TestSanitizeLeakedOutputRemovesAgentXMLLeaks(t *testing.T) {
 	raw := "Done.<attempt_completion><result>Some final answer</result></attempt_completion>"
 	got := sanitizeLeakedOutput(raw)

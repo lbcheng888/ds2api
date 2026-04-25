@@ -164,6 +164,58 @@ func TestProcessToolSieveNonToolXMLKeepsSuffixForToolParsing(t *testing.T) {
 	}
 }
 
+func TestProcessToolSieveRepairsMissingToolCallCloseBeforeWrapperClose(t *testing.T) {
+	var state toolStreamSieveState
+	chunk := `<tool_calls>
+<tool_call>
+<tool_name>bash</tool_name>
+<parameters><command>pwd</command><description>Show current directory</description></parameters>
+</tool_calls></tool_calls>`
+	events := processToolSieveChunk(&state, chunk, []string{"bash"})
+	events = append(events, flushToolSieve(&state, []string{"bash"})...)
+
+	var textContent strings.Builder
+	toolCalls := 0
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		toolCalls += len(evt.ToolCalls)
+	}
+	if textContent.String() != "" {
+		t.Fatalf("expected malformed tool XML to be intercepted, got content %q", textContent.String())
+	}
+	if toolCalls != 1 {
+		t.Fatalf("expected one repaired tool call, got %d events=%#v", toolCalls, events)
+	}
+}
+
+func TestProcessToolSieveInfersNamelessReadToolCall(t *testing.T) {
+	var state toolStreamSieveState
+	chunk := `<tool_calls>
+<tool_call>
+<parameter name="file_path">/Users/lbcheng/cheng-lang/src/core/lang/parser.cheng</parameter>
+</tool_calls>`
+	events := processToolSieveChunk(&state, chunk, []string{"Read", "Bash"})
+	events = append(events, flushToolSieve(&state, []string{"Read", "Bash"})...)
+
+	var textContent strings.Builder
+	var calls []string
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		for _, call := range evt.ToolCalls {
+			calls = append(calls, call.Name)
+			if call.Input["file_path"] != "/Users/lbcheng/cheng-lang/src/core/lang/parser.cheng" {
+				t.Fatalf("expected file_path argument, got %#v", call.Input)
+			}
+		}
+	}
+	if textContent.String() != "" {
+		t.Fatalf("expected nameless tool XML to be intercepted, got content %q", textContent.String())
+	}
+	if len(calls) != 1 || calls[0] != "Read" {
+		t.Fatalf("expected one inferred Read call, got %#v events=%#v", calls, events)
+	}
+}
+
 func TestProcessToolSievePassesThroughMalformedExecutableXMLBlock(t *testing.T) {
 	var state toolStreamSieveState
 	chunk := `<tool_call><parameters>{"path":"README.md"}</parameters></tool_call>`
@@ -182,6 +234,38 @@ func TestProcessToolSievePassesThroughMalformedExecutableXMLBlock(t *testing.T) 
 	}
 	if textContent.String() != chunk {
 		t.Fatalf("expected malformed executable-looking XML to pass through unchanged, got %q", textContent.String())
+	}
+}
+
+func TestProcessToolSieveBlocksMetaAgentToolCall(t *testing.T) {
+	var state toolStreamSieveState
+	chunk := `<tool_calls>
+  <tool_call>
+    <tool_name>Agent</tool_name>
+    <parameters>
+      <description>Explore</description>
+      <prompt>Explore the repository</prompt>
+      <subagent_type>general</subagent_type>
+    </parameters>
+  </tool_call>
+</tool_calls>`
+	events := processToolSieveChunk(&state, chunk, []string{"Agent", "read"})
+	events = append(events, flushToolSieve(&state, []string{"Agent", "read"})...)
+
+	var textContent strings.Builder
+	toolCalls := 0
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		toolCalls += len(evt.ToolCalls)
+	}
+	if toolCalls != 0 {
+		t.Fatalf("expected meta agent call to be blocked, got %d events=%#v", toolCalls, events)
+	}
+	if strings.Contains(textContent.String(), "<tool_call") {
+		t.Fatalf("expected blocked meta agent XML not to leak, got %q", textContent.String())
+	}
+	if !strings.Contains(textContent.String(), "Agent/subagent tools are disabled") {
+		t.Fatalf("expected visible blocked-tool message, got %q", textContent.String())
 	}
 }
 

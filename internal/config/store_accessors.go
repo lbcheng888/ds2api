@@ -51,6 +51,12 @@ func (s *Store) CompatStripReferenceMarkers() bool {
 	return *s.cfg.Compat.StripReferenceMarkers
 }
 
+func (s *Store) CompatAllowMetaAgentTools() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg.Compat.AllowMetaAgentTools != nil && *s.cfg.Compat.AllowMetaAgentTools
+}
+
 func (s *Store) ToolcallMode() string {
 	return "feature_match"
 }

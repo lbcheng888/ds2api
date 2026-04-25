@@ -21,7 +21,7 @@ func ParseToolCalls(text string, availableToolNames []string) []ParsedToolCall {
 }
 
 func ParseToolCallsDetailed(text string, availableToolNames []string) ToolCallParseResult {
-	return parseToolCallsDetailedXMLOnly(text)
+	return parseToolCallsDetailedXMLOnly(text, availableToolNames)
 }
 
 func ParseStandaloneToolCalls(text string, availableToolNames []string) []ParsedToolCall {
@@ -29,10 +29,10 @@ func ParseStandaloneToolCalls(text string, availableToolNames []string) []Parsed
 }
 
 func ParseStandaloneToolCallsDetailed(text string, availableToolNames []string) ToolCallParseResult {
-	return parseToolCallsDetailedXMLOnly(text)
+	return parseToolCallsDetailedXMLOnly(text, availableToolNames)
 }
 
-func parseToolCallsDetailedXMLOnly(text string) ToolCallParseResult {
+func parseToolCallsDetailedXMLOnly(text string, availableToolNames []string) ToolCallParseResult {
 	result := ToolCallParseResult{}
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -44,6 +44,7 @@ func parseToolCallsDetailedXMLOnly(text string) ToolCallParseResult {
 	if trimmed == "" {
 		return result
 	}
+	trimmed = repairMissingToolCallClose(trimmed)
 
 	parsed := parseXMLToolCalls(trimmed)
 	if len(parsed) == 0 {
@@ -54,25 +55,73 @@ func parseToolCallsDetailedXMLOnly(text string) ToolCallParseResult {
 	}
 
 	result.SawToolCallSyntax = true
-	calls, rejectedNames := filterToolCallsDetailed(parsed)
+	calls, rejectedNames := filterToolCallsDetailed(parsed, availableToolNames)
 	result.Calls = calls
 	result.RejectedToolNames = rejectedNames
 	result.RejectedByPolicy = len(rejectedNames) > 0 && len(calls) == 0
 	return result
 }
 
-func filterToolCallsDetailed(parsed []ParsedToolCall) ([]ParsedToolCall, []string) {
+func filterToolCallsDetailed(parsed []ParsedToolCall, availableToolNames []string) ([]ParsedToolCall, []string) {
 	out := make([]ParsedToolCall, 0, len(parsed))
 	for _, tc := range parsed {
-		if tc.Name == "" {
-			continue
-		}
 		if tc.Input == nil {
 			tc.Input = map[string]any{}
+		}
+		if strings.TrimSpace(tc.Name) == "" {
+			name, ok := inferToolNameFromKnownRequiredFields(tc.Input, availableToolNames)
+			if !ok {
+				continue
+			}
+			tc.Name = name
 		}
 		out = append(out, tc)
 	}
 	return out, nil
+}
+
+func inferToolNameFromKnownRequiredFields(input map[string]any, availableToolNames []string) (string, bool) {
+	if len(input) == 0 || len(availableToolNames) == 0 {
+		return "", false
+	}
+	bestName := ""
+	bestScore := 0
+	tied := false
+	for _, name := range availableToolNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		required := knownRequiredToolFields(name)
+		if len(required) == 0 {
+			continue
+		}
+		ok := true
+		for _, field := range required {
+			value, hasValue := inputValueForKnownRequiredField(input, field)
+			if !hasValue || isEmptyKnownRequiredValue(value) {
+				ok = false
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+		score := len(required)
+		if score > bestScore {
+			bestName = name
+			bestScore = score
+			tied = false
+			continue
+		}
+		if score == bestScore {
+			tied = true
+		}
+	}
+	if bestName == "" || tied {
+		return "", false
+	}
+	return bestName, true
 }
 
 func looksLikeToolCallSyntax(text string) bool {

@@ -27,43 +27,49 @@ func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNorma
 	payload := cloneMap(req)
 	payload["messages"] = normalizedMessages
 	toolsRequested, _ := req["tools"].([]any)
-	payload["messages"] = injectClaudeToolPrompt(payload, normalizedMessages, toolsRequested)
+	allowMetaAgentTools := store != nil && store.CompatAllowMetaAgentTools()
+	payload["messages"] = injectClaudeToolPrompt(payload, normalizedMessages, toolsRequested, allowMetaAgentTools)
 
 	dsPayload := convertClaudeToDeepSeek(payload, store)
 	dsModel, _ := dsPayload["model"].(string)
+	if resolved, ok := config.ResolveModel(store, dsModel); ok {
+		dsModel = resolved
+		dsPayload["model"] = resolved
+	}
 	thinkingEnabled, searchEnabled, ok := config.GetModelConfig(dsModel)
 	if !ok {
 		thinkingEnabled = false
 		searchEnabled = false
 	}
 	finalPrompt := deepseek.MessagesPrepareWithThinking(toMessageMaps(dsPayload["messages"]), thinkingEnabled)
-	toolNames := extractClaudeToolNames(toolsRequested)
+	toolNames := extractClaudeToolNames(toolsRequested, allowMetaAgentTools)
 	if len(toolNames) == 0 && len(toolsRequested) > 0 {
 		toolNames = []string{"__any_tool__"}
 	}
 
 	return claudeNormalizedRequest{
 		Standard: util.StandardRequest{
-			Surface:        "anthropic_messages",
-			RequestedModel: strings.TrimSpace(model),
-			ResolvedModel:  dsModel,
-			ResponseModel:  strings.TrimSpace(model),
-			Messages:       payload["messages"].([]any),
-			FinalPrompt:    finalPrompt,
-			ToolNames:      toolNames,
-			Stream:         util.ToBool(req["stream"]),
-			Thinking:       thinkingEnabled,
-			Search:         searchEnabled,
+			Surface:             "anthropic_messages",
+			RequestedModel:      strings.TrimSpace(model),
+			ResolvedModel:       dsModel,
+			ResponseModel:       strings.TrimSpace(model),
+			Messages:            payload["messages"].([]any),
+			FinalPrompt:         finalPrompt,
+			ToolNames:           toolNames,
+			Stream:              util.ToBool(req["stream"]),
+			Thinking:            thinkingEnabled,
+			Search:              searchEnabled,
+			AllowMetaAgentTools: allowMetaAgentTools,
 		},
 		NormalizedMessages: normalizedMessages,
 	}, nil
 }
 
-func injectClaudeToolPrompt(payload map[string]any, normalizedMessages []any, tools []any) []any {
+func injectClaudeToolPrompt(payload map[string]any, normalizedMessages []any, tools []any, allowMetaAgentTools bool) []any {
 	if len(tools) == 0 {
 		return normalizedMessages
 	}
-	toolPrompt := strings.TrimSpace(buildClaudeToolPrompt(tools))
+	toolPrompt := strings.TrimSpace(buildClaudeToolPrompt(tools, allowMetaAgentTools))
 	if toolPrompt == "" {
 		return normalizedMessages
 	}

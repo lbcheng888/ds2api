@@ -16,17 +16,20 @@ type chatStreamRuntime struct {
 	rc       *http.ResponseController
 	canFlush bool
 
-	completionID string
-	created      int64
-	model        string
-	finalPrompt  string
-	toolNames    []string
+	completionID        string
+	created             int64
+	model               string
+	finalPrompt         string
+	toolNames           []string
+	toolSchemas         toolcall.ParameterSchemas
+	allowMetaAgentTools bool
 
 	thinkingEnabled       bool
 	searchEnabled         bool
 	stripReferenceMarkers bool
 
 	firstChunkSent       bool
+	streamIncludeUsage   bool
 	bufferToolContent    bool
 	emitEarlyToolDeltas  bool
 	toolCallsEmitted     bool
@@ -59,6 +62,9 @@ func newChatStreamRuntime(
 	searchEnabled bool,
 	stripReferenceMarkers bool,
 	toolNames []string,
+	toolSchemas toolcall.ParameterSchemas,
+	allowMetaAgentTools bool,
+	streamIncludeUsage bool,
 	bufferToolContent bool,
 	emitEarlyToolDeltas bool,
 ) *chatStreamRuntime {
@@ -71,9 +77,12 @@ func newChatStreamRuntime(
 		model:                 model,
 		finalPrompt:           finalPrompt,
 		toolNames:             toolNames,
+		toolSchemas:           toolSchemas,
+		allowMetaAgentTools:   allowMetaAgentTools,
 		thinkingEnabled:       thinkingEnabled,
 		searchEnabled:         searchEnabled,
 		stripReferenceMarkers: stripReferenceMarkers,
+		streamIncludeUsage:    streamIncludeUsage,
 		bufferToolContent:     bufferToolContent,
 		emitEarlyToolDeltas:   emitEarlyToolDeltas,
 		streamToolCallIDs:     map[int]string{},
@@ -130,13 +139,21 @@ func (s *chatStreamRuntime) resetStreamToolCallState() {
 func (s *chatStreamRuntime) finalize(finishReason string) {
 	finalThinking := s.thinking.String()
 	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
+	if finishReason != "content_filter" && strings.TrimSpace(finalText) == "" {
+		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(s.finalPrompt, s.toolNames, s.allowMetaAgentTools); repaired != "" {
+			finalText = repaired
+		} else if promoted := executableToolCallTextFromThinking(finalThinking, s.toolNames, s.toolSchemas, s.allowMetaAgentTools); promoted != "" {
+			finalText = promoted
+		}
+	}
 	s.finalThinking = finalThinking
 	s.finalText = finalText
 	detected := toolcall.ParseStandaloneToolCallsDetailed(finalText, s.toolNames)
-	if len(detected.Calls) > 0 && !s.toolCallsDoneEmitted {
+	formattedDetected := formatFinalStreamToolCallsWithStableIDs(detected.Calls, s.streamToolCallIDs, s.toolSchemas, s.allowMetaAgentTools)
+	if len(formattedDetected) > 0 && !s.toolCallsDoneEmitted {
 		finishReason = "tool_calls"
 		delta := map[string]any{
-			"tool_calls": formatFinalStreamToolCallsWithStableIDs(detected.Calls, s.streamToolCallIDs),
+			"tool_calls": formattedDetected,
 		}
 		if !s.firstChunkSent {
 			delta["role"] = "assistant"
@@ -152,13 +169,14 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 		s.toolCallsEmitted = true
 		s.toolCallsDoneEmitted = true
 	} else if s.bufferToolContent {
-		for _, evt := range flushToolSieve(&s.toolSieve, s.toolNames) {
-			if len(evt.ToolCalls) > 0 {
+		for _, evt := range flushToolSieveWithMeta(&s.toolSieve, s.toolNames, s.allowMetaAgentTools) {
+			formattedToolCalls := formatFinalStreamToolCallsWithStableIDs(evt.ToolCalls, s.streamToolCallIDs, s.toolSchemas, s.allowMetaAgentTools)
+			if len(formattedToolCalls) > 0 {
 				finishReason = "tool_calls"
 				s.toolCallsEmitted = true
 				s.toolCallsDoneEmitted = true
 				tcDelta := map[string]any{
-					"tool_calls": formatFinalStreamToolCallsWithStableIDs(evt.ToolCalls, s.streamToolCallIDs),
+					"tool_calls": formattedToolCalls,
 				}
 				if !s.firstChunkSent {
 					tcDelta["role"] = "assistant"
@@ -197,10 +215,10 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 		}
 	}
 
-	if len(detected.Calls) > 0 || s.toolCallsEmitted {
+	if len(formattedDetected) > 0 || s.toolCallsEmitted {
 		finishReason = "tool_calls"
 	}
-	if len(detected.Calls) == 0 && !s.toolCallsEmitted && strings.TrimSpace(finalText) == "" {
+	if len(formattedDetected) == 0 && !s.toolCallsEmitted && strings.TrimSpace(finalText) == "" {
 		status := http.StatusTooManyRequests
 		message := "Upstream model returned empty output."
 		code := "upstream_empty_output"
@@ -223,8 +241,11 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 		s.created,
 		s.model,
 		[]map[string]any{openaifmt.BuildChatStreamFinishChoice(0, finishReason)},
-		usage,
+		nil,
 	))
+	if s.streamIncludeUsage {
+		s.sendChunk(openaifmt.BuildChatStreamUsageChunk(s.completionID, s.created, s.model, usage))
+	}
 	s.sendDone()
 }
 
@@ -279,13 +300,13 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 			if !s.bufferToolContent {
 				delta["content"] = trimmed
 			} else {
-				events := processToolSieveChunk(&s.toolSieve, trimmed, s.toolNames)
+				events := processToolSieveChunkWithMeta(&s.toolSieve, trimmed, s.toolNames, s.allowMetaAgentTools)
 				for _, evt := range events {
 					if len(evt.ToolCallDeltas) > 0 {
 						if !s.emitEarlyToolDeltas {
 							continue
 						}
-						filtered := filterIncrementalToolCallDeltasByAllowed(evt.ToolCallDeltas, s.streamToolNames)
+						filtered := filterIncrementalToolCallDeltasByAllowed(evt.ToolCallDeltas, s.streamToolNames, s.allowMetaAgentTools)
 						if len(filtered) == 0 {
 							continue
 						}
@@ -304,11 +325,12 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 						newChoices = append(newChoices, openaifmt.BuildChatStreamDeltaChoice(0, tcDelta))
 						continue
 					}
-					if len(evt.ToolCalls) > 0 {
+					formattedToolCalls := formatFinalStreamToolCallsWithStableIDs(evt.ToolCalls, s.streamToolCallIDs, s.toolSchemas, s.allowMetaAgentTools)
+					if len(formattedToolCalls) > 0 {
 						s.toolCallsEmitted = true
 						s.toolCallsDoneEmitted = true
 						tcDelta := map[string]any{
-							"tool_calls": formatFinalStreamToolCallsWithStableIDs(evt.ToolCalls, s.streamToolCallIDs),
+							"tool_calls": formattedToolCalls,
 						}
 						if !s.firstChunkSent {
 							tcDelta["role"] = "assistant"

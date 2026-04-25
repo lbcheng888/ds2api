@@ -1,6 +1,9 @@
 package prompt
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestStringifyToolCallArgumentsPreservesConcatenatedJSON(t *testing.T) {
 	got := StringifyToolCallArguments(`{}{"query":"测试工具调用"}`)
@@ -54,4 +57,35 @@ func TestFormatToolCallsForPromptUsesCDATAForMultilineContent(t *testing.T) {
 	if got != want {
 		t.Fatalf("unexpected multiline cdata tool call XML: %q", got)
 	}
+}
+
+func TestFormatToolCallsForPromptDropsTaskTrackingCalls(t *testing.T) {
+	got := FormatToolCallsForPrompt([]any{
+		map[string]any{
+			"name": "TaskCreate",
+			"input": map[string]any{
+				"subject":     "Track work",
+				"description": "Only updates the client task list",
+			},
+		},
+		map[string]any{
+			"name": "Read",
+			"input": map[string]any{
+				"file_path": "/tmp/a.txt",
+			},
+		},
+	})
+	if got == "" {
+		t.Fatal("expected real tool call to remain")
+	}
+	if contains(got, "TaskCreate") {
+		t.Fatalf("expected task tracking call to be dropped, got %q", got)
+	}
+	if !contains(got, "<tool_name>Read</tool_name>") {
+		t.Fatalf("expected Read call to remain, got %q", got)
+	}
+}
+
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
 }

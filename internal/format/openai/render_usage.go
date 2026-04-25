@@ -7,9 +7,11 @@ func BuildChatUsage(finalPrompt, finalThinking, finalText string) map[string]any
 	reasoningTokens := util.EstimateTokens(finalThinking)
 	completionTokens := util.EstimateTokens(finalText)
 	return map[string]any{
-		"prompt_tokens":     promptTokens,
-		"completion_tokens": reasoningTokens + completionTokens,
-		"total_tokens":      promptTokens + reasoningTokens + completionTokens,
+		"prompt_tokens":            promptTokens,
+		"prompt_cache_hit_tokens":  0,
+		"prompt_cache_miss_tokens": promptTokens,
+		"completion_tokens":        reasoningTokens + completionTokens,
+		"total_tokens":             promptTokens + reasoningTokens + completionTokens,
 		"completion_tokens_details": map[string]any{
 			"reasoning_tokens": reasoningTokens,
 		},

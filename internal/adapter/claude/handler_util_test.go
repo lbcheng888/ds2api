@@ -281,7 +281,7 @@ func TestBuildClaudeToolPromptSingleTool(t *testing.T) {
 			},
 		},
 	}
-	prompt := buildClaudeToolPrompt(tools)
+	prompt := buildClaudeToolPrompt(tools, false)
 	if prompt == "" {
 		t.Fatal("expected non-empty prompt")
 	}
@@ -305,7 +305,7 @@ func TestBuildClaudeToolPromptMultipleTools(t *testing.T) {
 		map[string]any{"name": "tool1", "description": "desc1"},
 		map[string]any{"name": "tool2", "description": "desc2"},
 	}
-	prompt := buildClaudeToolPrompt(tools)
+	prompt := buildClaudeToolPrompt(tools, false)
 	if !containsStr(prompt, "tool1") || !containsStr(prompt, "tool2") {
 		t.Fatalf("expected both tools in prompt")
 	}
@@ -327,7 +327,7 @@ func TestBuildClaudeToolPromptSupportsOpenAIStyleFunctionTool(t *testing.T) {
 			},
 		},
 	}
-	prompt := buildClaudeToolPrompt(tools)
+	prompt := buildClaudeToolPrompt(tools, false)
 	if !containsStr(prompt, "Tool: search") {
 		t.Fatalf("expected OpenAI-style function tool name in prompt, got: %q", prompt)
 	}
@@ -341,10 +341,34 @@ func TestBuildClaudeToolPromptSupportsOpenAIStyleFunctionTool(t *testing.T) {
 
 func TestBuildClaudeToolPromptSkipsNonMap(t *testing.T) {
 	tools := []any{"not a map"}
-	prompt := buildClaudeToolPrompt(tools)
+	prompt := buildClaudeToolPrompt(tools, false)
 	// No valid tools → empty prompt
 	if prompt != "" {
 		t.Fatalf("expected empty prompt for non-map tools, got: %q", prompt)
+	}
+}
+
+func TestBuildClaudeToolPromptSkipsMetaAgentTools(t *testing.T) {
+	tools := []any{
+		map[string]any{"name": "Agent", "description": "Launch subagent"},
+		map[string]any{"name": "read", "description": "Read file"},
+	}
+	prompt := buildClaudeToolPrompt(tools, false)
+	if containsStr(prompt, "Tool: Agent") {
+		t.Fatalf("expected Agent tool to be removed from prompt, got %q", prompt)
+	}
+	if !containsStr(prompt, "Tool: read") {
+		t.Fatalf("expected read tool in prompt, got %q", prompt)
+	}
+}
+
+func TestBuildClaudeToolPromptAllowsMetaAgentToolsWhenConfigured(t *testing.T) {
+	tools := []any{
+		map[string]any{"name": "Agent", "description": "Launch subagent"},
+	}
+	prompt := buildClaudeToolPrompt(tools, true)
+	if !containsStr(prompt, "Tool: Agent") {
+		t.Fatalf("expected Agent tool in prompt, got %q", prompt)
 	}
 }
 
@@ -389,7 +413,7 @@ func TestExtractClaudeToolNamesSingle(t *testing.T) {
 	tools := []any{
 		map[string]any{"name": "search"},
 	}
-	names := extractClaudeToolNames(tools)
+	names := extractClaudeToolNames(tools, false)
 	if len(names) != 1 || names[0] != "search" {
 		t.Fatalf("expected [search], got %v", names)
 	}
@@ -400,7 +424,7 @@ func TestExtractClaudeToolNamesMultiple(t *testing.T) {
 		map[string]any{"name": "search"},
 		map[string]any{"name": "calculate"},
 	}
-	names := extractClaudeToolNames(tools)
+	names := extractClaudeToolNames(tools, false)
 	if len(names) != 2 {
 		t.Fatalf("expected 2 names, got %v", names)
 	}
@@ -411,7 +435,7 @@ func TestExtractClaudeToolNamesSkipsEmptyName(t *testing.T) {
 		map[string]any{"name": ""},
 		map[string]any{"name": "valid"},
 	}
-	names := extractClaudeToolNames(tools)
+	names := extractClaudeToolNames(tools, false)
 	if len(names) != 1 || names[0] != "valid" {
 		t.Fatalf("expected [valid], got %v", names)
 	}
@@ -419,14 +443,14 @@ func TestExtractClaudeToolNamesSkipsEmptyName(t *testing.T) {
 
 func TestExtractClaudeToolNamesSkipsNonMap(t *testing.T) {
 	tools := []any{"not a map", 42}
-	names := extractClaudeToolNames(tools)
+	names := extractClaudeToolNames(tools, false)
 	if len(names) != 0 {
 		t.Fatalf("expected 0, got %v", names)
 	}
 }
 
 func TestExtractClaudeToolNamesNil(t *testing.T) {
-	names := extractClaudeToolNames(nil)
+	names := extractClaudeToolNames(nil, false)
 	if len(names) != 0 {
 		t.Fatalf("expected 0, got %v", names)
 	}
@@ -441,9 +465,31 @@ func TestExtractClaudeToolNamesSupportsOpenAIStyleFunctionTool(t *testing.T) {
 			},
 		},
 	}
-	names := extractClaudeToolNames(tools)
+	names := extractClaudeToolNames(tools, false)
 	if len(names) != 1 || names[0] != "search" {
 		t.Fatalf("expected [search], got %v", names)
+	}
+}
+
+func TestExtractClaudeToolNamesSkipsMetaAgentTools(t *testing.T) {
+	tools := []any{
+		map[string]any{"name": "Agent"},
+		map[string]any{"name": "read"},
+	}
+	names := extractClaudeToolNames(tools, false)
+	if len(names) != 1 || names[0] != "read" {
+		t.Fatalf("expected [read], got %v", names)
+	}
+}
+
+func TestExtractClaudeToolNamesAllowsMetaAgentToolsWhenConfigured(t *testing.T) {
+	tools := []any{
+		map[string]any{"name": "Agent"},
+		map[string]any{"name": "read"},
+	}
+	names := extractClaudeToolNames(tools, true)
+	if len(names) != 2 || names[0] != "Agent" || names[1] != "read" {
+		t.Fatalf("expected [Agent read], got %v", names)
 	}
 }
 

@@ -17,12 +17,13 @@ type responsesStreamRuntime struct {
 	rc       *http.ResponseController
 	canFlush bool
 
-	responseID  string
-	model       string
-	finalPrompt string
-	toolNames   []string
-	traceID     string
-	toolChoice  util.ToolChoicePolicy
+	responseID          string
+	model               string
+	finalPrompt         string
+	toolNames           []string
+	traceID             string
+	toolChoice          util.ToolChoicePolicy
+	allowMetaAgentTools bool
 
 	thinkingEnabled       bool
 	searchEnabled         bool
@@ -69,6 +70,7 @@ func newResponsesStreamRuntime(
 	bufferToolContent bool,
 	emitEarlyToolDeltas bool,
 	toolChoice util.ToolChoicePolicy,
+	allowMetaAgentTools bool,
 	traceID string,
 	persistResponse func(obj map[string]any),
 ) *responsesStreamRuntime {
@@ -94,6 +96,7 @@ func newResponsesStreamRuntime(
 		functionNames:         map[int]string{},
 		messageOutputID:       -1,
 		toolChoice:            toolChoice,
+		allowMetaAgentTools:   allowMetaAgentTools,
 		traceID:               traceID,
 		persistResponse:       persistResponse,
 	}
@@ -126,13 +129,20 @@ func (s *responsesStreamRuntime) failResponse(message, code string) {
 func (s *responsesStreamRuntime) finalize() {
 	finalThinking := s.thinking.String()
 	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
+	if strings.TrimSpace(finalText) == "" {
+		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(s.finalPrompt, s.toolNames, s.allowMetaAgentTools); repaired != "" {
+			finalText = repaired
+		} else if promoted := executableToolCallTextFromThinking(finalThinking, s.toolNames, nil, s.allowMetaAgentTools); promoted != "" {
+			finalText = promoted
+		}
+	}
 
 	if s.bufferToolContent {
-		s.processToolStreamEvents(flushToolSieve(&s.sieve, s.toolNames), true, true)
+		s.processToolStreamEvents(flushToolSieveWithMeta(&s.sieve, s.toolNames, s.allowMetaAgentTools), true, true)
 	}
 
 	textParsed := toolcall.ParseStandaloneToolCallsDetailed(finalText, s.toolNames)
-	detected := textParsed.Calls
+	detected := toolcall.NormalizeCallsForSchemasWithMeta(textParsed.Calls, nil, s.allowMetaAgentTools)
 	s.logToolPolicyRejections(textParsed)
 
 	if len(detected) > 0 {
@@ -224,7 +234,7 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 			s.emitTextDelta(trimmed)
 			continue
 		}
-		s.processToolStreamEvents(processToolSieveChunk(&s.sieve, trimmed, s.toolNames), true, true)
+		s.processToolStreamEvents(processToolSieveChunkWithMeta(&s.sieve, trimmed, s.toolNames, s.allowMetaAgentTools), true, true)
 	}
 
 	return streamengine.ParsedDecision{ContentSeen: contentSeen}

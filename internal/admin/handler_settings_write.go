@@ -56,6 +56,9 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 			if compatCfg.StripReferenceMarkers != nil {
 				c.Compat.StripReferenceMarkers = compatCfg.StripReferenceMarkers
 			}
+			if compatCfg.AllowMetaAgentTools != nil {
+				c.Compat.AllowMetaAgentTools = compatCfg.AllowMetaAgentTools
+			}
 		}
 		if responsesCfg != nil && responsesCfg.StoreTTLSeconds > 0 {
 			c.Responses.StoreTTLSeconds = responsesCfg.StoreTTLSeconds

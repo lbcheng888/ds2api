@@ -77,7 +77,7 @@ func normalizeClaudeMessages(messages []any) []any {
 	return out
 }
 
-func buildClaudeToolPrompt(tools []any) string {
+func buildClaudeToolPrompt(tools []any, allowMetaAgentTools bool) string {
 	toolSchemas := make([]string, 0, len(tools))
 	names := make([]string, 0, len(tools))
 	for _, t := range tools {
@@ -87,6 +87,12 @@ func buildClaudeToolPrompt(tools []any) string {
 		}
 		name, desc, schemaObj := extractClaudeToolMeta(m)
 		if name == "" {
+			continue
+		}
+		if toolcall.IsTaskTrackingToolName(name) {
+			continue
+		}
+		if !allowMetaAgentTools && toolcall.IsMetaAgentToolName(name) {
 			continue
 		}
 		names = append(names, name)

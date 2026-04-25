@@ -388,6 +388,8 @@
         "compatibilityTitle": "兼容性设置",
         "compatibilityDesc": "用于控制输出格式兼容性，避免把模型原始流里的标记直接暴露到前端。",
         "stripReferenceMarkers": "移除 [reference:N] 标记",
+        "allowMetaAgentTools": "允许 Agent / subagent 工具",
+        "allowMetaAgentToolsDesc": "开启后 ClaudeCode 可使用原生子代理；关闭时更适合普通 DeepSeek 工具调用兼容。",
         "modelTitle": "模型映射",
         "claudeMapping": "Claude 映射（JSON）",
         "modelAliases": "模型别名（JSON）",

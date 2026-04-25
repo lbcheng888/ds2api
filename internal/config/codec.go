@@ -162,6 +162,7 @@ func (c Config) Clone() Config {
 		Compat: CompatConfig{
 			WideInputStrictOutput: cloneBoolPtr(c.Compat.WideInputStrictOutput),
 			StripReferenceMarkers: cloneBoolPtr(c.Compat.StripReferenceMarkers),
+			AllowMetaAgentTools:   cloneBoolPtr(c.Compat.AllowMetaAgentTools),
 		},
 		Responses:  c.Responses,
 		Embeddings: c.Embeddings,

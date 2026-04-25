@@ -7,6 +7,10 @@ import (
 )
 
 func processToolSieveChunk(state *toolStreamSieveState, chunk string, toolNames []string) []toolStreamEvent {
+	return processToolSieveChunkWithMeta(state, chunk, toolNames, false)
+}
+
+func processToolSieveChunkWithMeta(state *toolStreamSieveState, chunk string, toolNames []string, allowMetaAgentTools bool) []toolStreamEvent {
 	if state == nil {
 		return nil
 	}
@@ -26,7 +30,7 @@ func processToolSieveChunk(state *toolStreamSieveState, chunk string, toolNames 
 				state.capture.WriteString(state.pending.String())
 				state.pending.Reset()
 			}
-			prefix, calls, suffix, ready := consumeToolCapture(state, toolNames)
+			prefix, calls, suffix, ready := consumeToolCapture(state, toolNames, allowMetaAgentTools)
 			if !ready {
 				break
 			}
@@ -88,17 +92,21 @@ func processToolSieveChunk(state *toolStreamSieveState, chunk string, toolNames 
 }
 
 func flushToolSieve(state *toolStreamSieveState, toolNames []string) []toolStreamEvent {
+	return flushToolSieveWithMeta(state, toolNames, false)
+}
+
+func flushToolSieveWithMeta(state *toolStreamSieveState, toolNames []string, allowMetaAgentTools bool) []toolStreamEvent {
 	if state == nil {
 		return nil
 	}
-	events := processToolSieveChunk(state, "", toolNames)
+	events := processToolSieveChunkWithMeta(state, "", toolNames, allowMetaAgentTools)
 	if len(state.pendingToolCalls) > 0 {
 		events = append(events, toolStreamEvent{ToolCalls: state.pendingToolCalls})
 		state.pendingToolRaw = ""
 		state.pendingToolCalls = nil
 	}
 	if state.capturing {
-		consumedPrefix, consumedCalls, consumedSuffix, ready := consumeToolCapture(state, toolNames)
+		consumedPrefix, consumedCalls, consumedSuffix, ready := consumeToolCapture(state, toolNames, allowMetaAgentTools)
 		if ready {
 			if consumedPrefix != "" {
 				state.noteText(consumedPrefix)
@@ -179,14 +187,14 @@ func findToolSegmentStart(state *toolStreamSieveState, s string) int {
 	}
 }
 
-func consumeToolCapture(state *toolStreamSieveState, toolNames []string) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
+func consumeToolCapture(state *toolStreamSieveState, toolNames []string, allowMetaAgentTools bool) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
 	captured := state.capture.String()
 	if captured == "" {
 		return "", nil, "", false
 	}
 
 	// XML tool call extraction only.
-	if xmlPrefix, xmlCalls, xmlSuffix, xmlReady := consumeXMLToolCapture(captured, toolNames); xmlReady {
+	if xmlPrefix, xmlCalls, xmlSuffix, xmlReady := consumeXMLToolCapture(captured, toolNames, allowMetaAgentTools); xmlReady {
 		return xmlPrefix, xmlCalls, xmlSuffix, true
 	}
 	// If XML tags are present but block is incomplete, keep buffering.

@@ -15,6 +15,7 @@ const (
 	historySplitFilename    = "HISTORY.txt"
 	historySplitContentType = "text/plain; charset=utf-8"
 	historySplitPurpose     = "assistants"
+	historySplitPromptChars = 120000
 )
 
 func (h *Handler) applyHistorySplit(ctx context.Context, a *auth.RequestAuth, stdReq util.StandardRequest) (util.StandardRequest, error) {
@@ -26,6 +27,7 @@ func (h *Handler) applyHistorySplit(ctx context.Context, a *auth.RequestAuth, st
 	}
 
 	promptMessages, historyMessages := splitOpenAIHistoryMessages(stdReq.Messages, h.Store.HistorySplitTriggerAfterTurns())
+	promptMessages, historyMessages = splitOpenAIHistoryForPromptBudget(promptMessages, historyMessages, stdReq)
 	if len(historyMessages) == 0 {
 		return stdReq, nil
 	}
@@ -53,11 +55,83 @@ func (h *Handler) applyHistorySplit(ctx context.Context, a *auth.RequestAuth, st
 	stdReq.Messages = promptMessages
 	stdReq.HistoryText = historyText
 	stdReq.RefFileIDs = prependUniqueRefFileID(stdReq.RefFileIDs, fileID)
-	stdReq.FinalPrompt, stdReq.ToolNames = buildHistorySplitPrompt(promptMessages, reasoningContent, stdReq.ToolsRaw, stdReq.ToolChoice, stdReq.Thinking)
+	stdReq.FinalPrompt, stdReq.ToolNames = buildHistorySplitPrompt(promptMessages, reasoningContent, stdReq.ToolsRaw, stdReq.ToolChoice, stdReq.Thinking, stdReq.AllowMetaAgentTools)
 	return stdReq, nil
 }
 
-func buildHistorySplitPrompt(messages []any, reasoningContent string, toolsRaw any, toolPolicy util.ToolChoicePolicy, thinkingEnabled bool) (string, []string) {
+func splitOpenAIHistoryForPromptBudget(promptMessages, historyMessages []any, stdReq util.StandardRequest) ([]any, []any) {
+	if len(promptMessages) == 0 {
+		return promptMessages, historyMessages
+	}
+	promptText := stdReq.FinalPrompt
+	if len(historyMessages) > 0 {
+		reasoning := extractHistorySplitReasoningContent(historyMessages)
+		promptText, _ = buildHistorySplitPrompt(promptMessages, reasoning, stdReq.ToolsRaw, stdReq.ToolChoice, stdReq.Thinking, stdReq.AllowMetaAgentTools)
+	}
+	for len(promptText) > historySplitPromptChars {
+		nextPrompt, overflowHistory := splitOpenAIOverflowMessages(promptMessages)
+		if len(overflowHistory) == 0 {
+			break
+		}
+		historyMessages = append(historyMessages, overflowHistory...)
+		promptMessages = nextPrompt
+		reasoning := extractHistorySplitReasoningContent(historyMessages)
+		promptText, _ = buildHistorySplitPrompt(promptMessages, reasoning, stdReq.ToolsRaw, stdReq.ToolChoice, stdReq.Thinking, stdReq.AllowMetaAgentTools)
+	}
+	return promptMessages, historyMessages
+}
+
+func splitOpenAIOverflowMessages(messages []any) ([]any, []any) {
+	if len(messages) == 0 {
+		return messages, nil
+	}
+	lastUser := lastOpenAIUserMessageIndex(messages)
+	if lastUser < 0 {
+		return messages, nil
+	}
+	lastAssistantAfterUser := -1
+	for i := len(messages) - 1; i > lastUser; i-- {
+		msg, ok := messages[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(asString(msg["role"])), "assistant") {
+			lastAssistantAfterUser = i
+			break
+		}
+	}
+	if lastAssistantAfterUser > lastUser+1 {
+		return moveMessageRangeToHistory(messages, lastUser+1, lastAssistantAfterUser)
+	}
+	if lastAssistantAfterUser == lastUser+1 {
+		return moveMessageRangeToHistory(messages, lastAssistantAfterUser, len(messages))
+	}
+	return messages, nil
+}
+
+func moveMessageRangeToHistory(messages []any, start, end int) ([]any, []any) {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(messages) {
+		end = len(messages)
+	}
+	if start >= end {
+		return messages, nil
+	}
+	promptMessages := make([]any, 0, len(messages)-(end-start))
+	historyMessages := make([]any, 0, end-start)
+	for i, msg := range messages {
+		if i >= start && i < end {
+			historyMessages = append(historyMessages, msg)
+			continue
+		}
+		promptMessages = append(promptMessages, msg)
+	}
+	return promptMessages, historyMessages
+}
+
+func buildHistorySplitPrompt(messages []any, reasoningContent string, toolsRaw any, toolPolicy util.ToolChoicePolicy, thinkingEnabled bool, allowMetaAgentTools bool) (string, []string) {
 	if len(messages) == 0 && strings.TrimSpace(reasoningContent) == "" {
 		return "", nil
 	}
@@ -68,7 +142,7 @@ func buildHistorySplitPrompt(messages []any, reasoningContent string, toolsRaw a
 		"content": instruction,
 	})
 	withInstruction = append(withInstruction, injectHistorySplitReasoningMessage(messages, reasoningContent)...)
-	return buildOpenAIFinalPromptWithPolicy(withInstruction, toolsRaw, "", toolPolicy, false)
+	return buildOpenAIFinalPromptWithPolicy(withInstruction, toolsRaw, "", toolPolicy, false, allowMetaAgentTools)
 }
 
 func historySplitPromptInstruction(thinkingEnabled bool) string {

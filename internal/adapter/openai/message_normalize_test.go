@@ -233,6 +233,29 @@ func TestNormalizeOpenAIMessagesForPrompt_AssistantToolCallsMissingNameAreDroppe
 	}
 }
 
+func TestNormalizeOpenAIMessagesForPrompt_AssistantTaskTrackingToolCallsDropped(t *testing.T) {
+	raw := []any{
+		map[string]any{
+			"role": "assistant",
+			"tool_calls": []any{
+				map[string]any{
+					"id":   "call_task",
+					"type": "function",
+					"function": map[string]any{
+						"name":      "TaskCreate",
+						"arguments": `{"subject":"Plan","description":"Track only"}`,
+					},
+				},
+			},
+		},
+	}
+
+	normalized := normalizeOpenAIMessagesForPrompt(raw, "")
+	if len(normalized) != 0 {
+		t.Fatalf("expected task-tracking-only assistant tool history to be dropped, got %#v", normalized)
+	}
+}
+
 func TestNormalizeOpenAIMessagesForPrompt_AssistantNilContentDoesNotInjectNullLiteral(t *testing.T) {
 	raw := []any{
 		map[string]any{

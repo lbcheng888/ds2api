@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"strings"
 	"testing"
 
 	"ds2api/internal/config"
@@ -33,8 +34,8 @@ func TestNormalizeOpenAIChatRequest(t *testing.T) {
 	if !n.Stream {
 		t.Fatalf("expected stream=true")
 	}
-	if _, ok := n.PassThrough["temperature"]; !ok {
-		t.Fatalf("expected temperature passthrough")
+	if _, ok := n.PassThrough["temperature"]; ok {
+		t.Fatalf("did not expect temperature passthrough when thinking is enabled")
 	}
 	if n.FinalPrompt == "" {
 		t.Fatalf("expected non-empty final prompt")
@@ -206,5 +207,83 @@ func TestNormalizeOpenAIResponsesRequestToolChoiceNoneKeepsToolDetectionEnabled(
 	}
 	if len(n.ToolNames) == 0 {
 		t.Fatalf("expected tool detection sentinel when tool_choice=none, got %#v", n.ToolNames)
+	}
+}
+
+func TestNormalizeOpenAIChatRequestThinkingDisabledKeepsSamplingParams(t *testing.T) {
+	store := newEmptyStoreForNormalizeTest(t)
+	req := map[string]any{
+		"model": "deepseek-v4-pro[1m]",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+		"thinking":    map[string]any{"type": "disabled"},
+		"temperature": 0.3,
+		"stream_options": map[string]any{
+			"include_usage": true,
+		},
+	}
+	n, err := normalizeOpenAIChatRequest(store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if n.Thinking {
+		t.Fatal("expected thinking disabled by request")
+	}
+	if !n.StreamIncludeUsage {
+		t.Fatal("expected stream_options.include_usage to be parsed")
+	}
+	if _, ok := n.PassThrough["temperature"]; !ok {
+		t.Fatalf("expected temperature passthrough when thinking is disabled")
+	}
+}
+
+func TestNormalizeOpenAIChatRequestRejectsLogprobsWhenThinking(t *testing.T) {
+	store := newEmptyStoreForNormalizeTest(t)
+	req := map[string]any{
+		"model": "deepseek-v4-pro[1m]",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+		"logprobs": true,
+	}
+	if _, err := normalizeOpenAIChatRequest(store, req, ""); err == nil {
+		t.Fatal("expected logprobs to fail when thinking is enabled")
+	}
+}
+
+func TestNormalizeOpenAIChatRequestMapsMaxCompletionTokens(t *testing.T) {
+	store := newEmptyStoreForNormalizeTest(t)
+	req := map[string]any{
+		"model": "deepseek-chat",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+		"max_completion_tokens": float64(123),
+	}
+	n, err := normalizeOpenAIChatRequest(store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if got := n.PassThrough["max_tokens"]; got != float64(123) {
+		t.Fatalf("expected max_completion_tokens mapped to max_tokens, got %#v", n.PassThrough)
+	}
+}
+
+func TestNormalizeOpenAIChatRequestResponseFormatAddsJSONInstruction(t *testing.T) {
+	store := newEmptyStoreForNormalizeTest(t)
+	req := map[string]any{
+		"model": "deepseek-chat",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+		"response_format": map[string]any{"type": "json_object"},
+	}
+	n, err := normalizeOpenAIChatRequest(store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if !strings.Contains(n.FinalPrompt, "valid JSON object only") {
+		t.Fatalf("expected JSON mode instruction in prompt, got %q", n.FinalPrompt)
 	}
 }

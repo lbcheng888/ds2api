@@ -11,7 +11,7 @@ import (
 	"ds2api/internal/util"
 )
 
-func injectToolPrompt(messages []map[string]any, tools []any, policy util.ToolChoicePolicy) ([]map[string]any, []string) {
+func injectToolPrompt(messages []map[string]any, tools []any, policy util.ToolChoicePolicy, allowMetaAgentTools bool) ([]map[string]any, []string) {
 	if policy.IsNone() {
 		return messages, nil
 	}
@@ -41,6 +41,12 @@ func injectToolPrompt(messages []map[string]any, tools []any, policy util.ToolCh
 		desc, _ := fn["description"].(string)
 		schema, _ := fn["parameters"].(map[string]any)
 		name = strings.TrimSpace(name)
+		if toolcall.IsTaskTrackingToolName(name) {
+			continue
+		}
+		if !allowMetaAgentTools && toolcall.IsMetaAgentToolName(name) {
+			continue
+		}
 		if !isAllowed(name) {
 			continue
 		}
@@ -58,7 +64,7 @@ func injectToolPrompt(messages []map[string]any, tools []any, policy util.ToolCh
 	if policy.Mode == util.ToolChoiceRequired {
 		toolPrompt += "\n7) For this response, you MUST call at least one tool from the allowed list."
 	}
-	if policy.Mode == util.ToolChoiceForced && strings.TrimSpace(policy.ForcedName) != "" {
+	if policy.Mode == util.ToolChoiceForced && strings.TrimSpace(policy.ForcedName) != "" && (allowMetaAgentTools || !toolcall.IsMetaAgentToolName(policy.ForcedName)) {
 		toolPrompt += "\n7) For this response, you MUST call exactly this tool name: " + strings.TrimSpace(policy.ForcedName)
 		toolPrompt += "\n8) Do not call any other tool."
 	}
@@ -113,13 +119,16 @@ func formatIncrementalStreamToolCallDeltas(deltas []toolCallDelta, ids map[int]s
 	return out
 }
 
-func filterIncrementalToolCallDeltasByAllowed(deltas []toolCallDelta, seenNames map[int]string) []toolCallDelta {
+func filterIncrementalToolCallDeltasByAllowed(deltas []toolCallDelta, seenNames map[int]string, allowMetaAgentTools bool) []toolCallDelta {
 	if len(deltas) == 0 {
 		return nil
 	}
 	out := make([]toolCallDelta, 0, len(deltas))
 	for _, d := range deltas {
 		if d.Name != "" {
+			if !allowMetaAgentTools && toolcall.IsMetaAgentToolName(d.Name) {
+				continue
+			}
 			if seenNames != nil {
 				seenNames[d.Index] = d.Name
 			}
@@ -139,7 +148,8 @@ func filterIncrementalToolCallDeltasByAllowed(deltas []toolCallDelta, seenNames 
 	return out
 }
 
-func formatFinalStreamToolCallsWithStableIDs(calls []toolcall.ParsedToolCall, ids map[int]string) []map[string]any {
+func formatFinalStreamToolCallsWithStableIDs(calls []toolcall.ParsedToolCall, ids map[int]string, schemas toolcall.ParameterSchemas, allowMetaAgentTools bool) []map[string]any {
+	calls = toolcall.NormalizeCallsForSchemasWithMeta(calls, schemas, allowMetaAgentTools)
 	if len(calls) == 0 {
 		return nil
 	}

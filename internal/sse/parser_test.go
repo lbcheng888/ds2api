@@ -105,6 +105,26 @@ func TestParseSSEChunkForContentAutoTransitionsThinkClose(t *testing.T) {
 	}
 }
 
+func TestParseSSEChunkForContentAutoTransitionsReasoningClose(t *testing.T) {
+	chunk := map[string]any{
+		"p": "response/thinking_content",
+		"v": "deep thoughts</reasoning>visible answer",
+	}
+	parts, _, nextType := ParseSSEChunkForContent(chunk, true, "thinking")
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts from split, got %d: %#v", len(parts), parts)
+	}
+	if parts[0].Type != "thinking" || parts[0].Text != "deep thoughts" {
+		t.Fatalf("first part should be thinking: %#v", parts[0])
+	}
+	if parts[1].Type != "text" || parts[1].Text != "visible answer" {
+		t.Fatalf("second part should be text: %#v", parts[1])
+	}
+	if nextType != "text" {
+		t.Fatalf("expected next type text, got %q", nextType)
+	}
+}
+
 func TestParseSSEChunkForContentStripsLeakedThinkTags(t *testing.T) {
 	chunk := map[string]any{
 		"p": "response/thinking_content",

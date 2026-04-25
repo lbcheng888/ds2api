@@ -17,10 +17,13 @@ var toolCallMarkupSelfClosingPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+
 var toolCallMarkupKVPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?([a-z0-9_\-.]+)\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?([a-z0-9_\-.]+)>`)
 var toolCallMarkupAttrPattern = regexp.MustCompile(`(?is)(name|function|tool)\s*=\s*"([^"]+)"`)
 var anyTagPattern = regexp.MustCompile(`(?is)<[^>]+>`)
-var toolCallMarkupNameTagNames = []string{"name", "function"}
+var toolCallMarkupNameTagNames = []string{"name", "function", "tool_name", "function_name", "tool_call_name"}
 var toolCallMarkupNamePatternByTag = map[string]*regexp.Regexp{
-	"name":     regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?name\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?name>`),
-	"function": regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?function\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?function>`),
+	"name":           regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?name\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?name>`),
+	"function":       regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?function\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?function>`),
+	"tool_name":      regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?tool_name\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?tool_name>`),
+	"function_name":  regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?function_name\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?function_name>`),
+	"tool_call_name": regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?tool_call_name\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?tool_call_name>`),
 }
 
 // cdataPattern matches a standalone CDATA section.
@@ -51,7 +54,7 @@ func parseMarkupToolCalls(text string) []ParsedToolCall {
 			}
 			attrs := strings.TrimSpace(m[1])
 			inner := strings.TrimSpace(m[2])
-			if parsed := parseMarkupSingleToolCall(attrs, inner); parsed.Name != "" {
+			if parsed := parseMarkupSingleToolCall(attrs, inner); parsed.Name != "" || len(parsed.Input) > 0 {
 				out = append(out, parsed)
 			}
 		}
@@ -60,7 +63,7 @@ func parseMarkupToolCalls(text string) []ParsedToolCall {
 		if len(m) < 2 {
 			continue
 		}
-		if parsed := parseMarkupSingleToolCall(strings.TrimSpace(m[1]), ""); parsed.Name != "" {
+		if parsed := parseMarkupSingleToolCall(strings.TrimSpace(m[1]), ""); parsed.Name != "" || len(parsed.Input) > 0 {
 			out = append(out, parsed)
 		}
 	}
@@ -103,17 +106,18 @@ func parseMarkupSingleToolCall(attrs string, inner string) ParsedToolCall {
 		name = strings.TrimSpace(m[2])
 	}
 	if name == "" {
-		name = findMarkupTagValue(inner, toolCallMarkupNameTagNames, toolCallMarkupNamePatternByTag)
+		name = findMarkupTagValue(stripTopLevelXMLParameters(inner), toolCallMarkupNameTagNames, toolCallMarkupNamePatternByTag)
 	}
-	if name == "" {
-		return ParsedToolCall{}
-	}
-
 	input := map[string]any{}
-	if argsRaw := findMarkupTagValue(inner, toolCallMarkupArgsTagNames, toolCallMarkupArgsPatternByTag); argsRaw != "" {
+	if named := parseNamedMarkupParameters(inner); len(named) > 0 {
+		input = named
+	} else if argsRaw := findMarkupTagValue(inner, toolCallMarkupArgsTagNames, toolCallMarkupArgsPatternByTag); argsRaw != "" {
 		input = parseMarkupInput(argsRaw)
 	} else if kv := parseMarkupKVObject(inner); len(kv) > 0 {
 		input = kv
+	}
+	if name == "" && len(input) == 0 {
+		return ParsedToolCall{}
 	}
 	return ParsedToolCall{Name: name, Input: input}
 }
@@ -137,7 +141,7 @@ func parseMarkupKVObject(text string) map[string]any {
 		if key == "" {
 			continue
 		}
-		if !strings.EqualFold(key, endKey) {
+		if !strings.EqualFold(key, endKey) && !isLooseParameterClose(key, endKey) {
 			continue
 		}
 		value := parseMarkupValue(m[2])
@@ -150,6 +154,19 @@ func parseMarkupKVObject(text string) map[string]any {
 		return nil
 	}
 	return out
+}
+
+func isLooseParameterClose(key, endKey string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "parameters", "parameter", "arguments", "argument", "args", "params", "tool_call", "tool_calls", "tool_name", "function_name", "tool_call_name", "name", "function", "tool":
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(endKey)) {
+	case "parameter", "argument", "param":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseMarkupValue(inner string) any {

@@ -5,5 +5,5 @@ func (h *Handler) toolcallFeatureMatchEnabled() bool {
 }
 
 func (h *Handler) toolcallEarlyEmitHighConfidence() bool {
-	return true
+	return false
 }

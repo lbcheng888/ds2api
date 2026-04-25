@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"ds2api/internal/config"
+	"ds2api/internal/toolcall"
 	"ds2api/internal/util"
 )
 
@@ -19,31 +20,48 @@ func normalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID 
 		return util.StandardRequest{}, fmt.Errorf("model %q is not available", model)
 	}
 	thinkingEnabled, searchEnabled, _ := config.GetModelConfig(resolvedModel)
+	var err error
+	thinkingEnabled, err = applyOpenAIThinkingOverride(req["thinking"], thinkingEnabled)
+	if err != nil {
+		return util.StandardRequest{}, err
+	}
+	if err := rejectUnsupportedThinkingParams(req, thinkingEnabled); err != nil {
+		return util.StandardRequest{}, err
+	}
+	if err := toolcall.ValidateStrictFunctionTools(req["tools"]); err != nil {
+		return util.StandardRequest{}, err
+	}
 	responseModel := strings.TrimSpace(model)
 	if responseModel == "" {
 		responseModel = resolvedModel
 	}
 	toolPolicy := util.DefaultToolChoicePolicy()
-	finalPrompt, toolNames := buildOpenAIFinalPromptWithPolicy(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled)
+	allowMetaAgentTools := store != nil && store.CompatAllowMetaAgentTools()
+	messagesRaw = appendOpenAIResponseFormatInstruction(messagesRaw, req["response_format"])
+	finalPrompt, toolNames := buildOpenAIFinalPromptWithPolicy(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled, allowMetaAgentTools)
 	toolNames = ensureToolDetectionEnabled(toolNames, req["tools"])
-	passThrough := collectOpenAIChatPassThrough(req)
+	passThrough := collectOpenAIChatPassThrough(req, thinkingEnabled)
 	refFileIDs := collectOpenAIRefFileIDs(req)
 
 	return util.StandardRequest{
-		Surface:        "openai_chat",
-		RequestedModel: strings.TrimSpace(model),
-		ResolvedModel:  resolvedModel,
-		ResponseModel:  responseModel,
-		Messages:       messagesRaw,
-		ToolsRaw:       req["tools"],
-		FinalPrompt:    finalPrompt,
-		ToolNames:      toolNames,
-		ToolChoice:     toolPolicy,
-		Stream:         util.ToBool(req["stream"]),
-		Thinking:       thinkingEnabled,
-		Search:         searchEnabled,
-		RefFileIDs:     refFileIDs,
-		PassThrough:    passThrough,
+		Surface:             "openai_chat",
+		RequestedModel:      strings.TrimSpace(model),
+		ResolvedModel:       resolvedModel,
+		ResponseModel:       responseModel,
+		Messages:            messagesRaw,
+		ToolsRaw:            req["tools"],
+		ToolSchemas:         toolcall.ExtractParameterSchemas(req["tools"]),
+		FinalPrompt:         finalPrompt,
+		ToolNames:           toolNames,
+		ToolChoice:          toolPolicy,
+		AllowMetaAgentTools: allowMetaAgentTools,
+		Stream:              util.ToBool(req["stream"]),
+		StreamIncludeUsage:  streamIncludeUsage(req["stream_options"]),
+		Thinking:            thinkingEnabled,
+		ReasoningEffort:     openAIReasoningEffort(req["thinking"], req["reasoning_effort"]),
+		Search:              searchEnabled,
+		RefFileIDs:          refFileIDs,
+		PassThrough:         passThrough,
 	}, nil
 }
 
@@ -58,6 +76,18 @@ func normalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 		return util.StandardRequest{}, fmt.Errorf("model %q is not available", model)
 	}
 	thinkingEnabled, searchEnabled, _ := config.GetModelConfig(resolvedModel)
+	var err error
+	thinkingEnabled, err = applyOpenAIThinkingOverride(req["thinking"], thinkingEnabled)
+	if err != nil {
+		return util.StandardRequest{}, err
+	}
+	if err := rejectUnsupportedThinkingParams(req, thinkingEnabled); err != nil {
+		return util.StandardRequest{}, err
+	}
+	if err := toolcall.ValidateStrictFunctionTools(req["tools"]); err != nil {
+		return util.StandardRequest{}, err
+	}
+	allowMetaAgentTools := store != nil && store.CompatAllowMetaAgentTools()
 
 	// Keep width-control as an explicit policy hook even if current default is true.
 	allowWideInput := true
@@ -77,29 +107,34 @@ func normalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 	if err != nil {
 		return util.StandardRequest{}, err
 	}
-	finalPrompt, toolNames := buildOpenAIFinalPromptWithPolicy(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled)
+	messagesRaw = appendOpenAIResponseFormatInstruction(messagesRaw, req["response_format"])
+	finalPrompt, toolNames := buildOpenAIFinalPromptWithPolicy(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled, allowMetaAgentTools)
 	toolNames = ensureToolDetectionEnabled(toolNames, req["tools"])
 	if !toolPolicy.IsNone() {
 		toolPolicy.Allowed = namesToSet(toolNames)
 	}
-	passThrough := collectOpenAIChatPassThrough(req)
+	passThrough := collectOpenAIChatPassThrough(req, thinkingEnabled)
 	refFileIDs := collectOpenAIRefFileIDs(req)
 
 	return util.StandardRequest{
-		Surface:        "openai_responses",
-		RequestedModel: model,
-		ResolvedModel:  resolvedModel,
-		ResponseModel:  model,
-		Messages:       messagesRaw,
-		ToolsRaw:       req["tools"],
-		FinalPrompt:    finalPrompt,
-		ToolNames:      toolNames,
-		ToolChoice:     toolPolicy,
-		Stream:         util.ToBool(req["stream"]),
-		Thinking:       thinkingEnabled,
-		Search:         searchEnabled,
-		RefFileIDs:     refFileIDs,
-		PassThrough:    passThrough,
+		Surface:             "openai_responses",
+		RequestedModel:      model,
+		ResolvedModel:       resolvedModel,
+		ResponseModel:       model,
+		Messages:            messagesRaw,
+		ToolsRaw:            req["tools"],
+		ToolSchemas:         toolcall.ExtractParameterSchemas(req["tools"]),
+		FinalPrompt:         finalPrompt,
+		ToolNames:           toolNames,
+		ToolChoice:          toolPolicy,
+		AllowMetaAgentTools: allowMetaAgentTools,
+		Stream:              util.ToBool(req["stream"]),
+		StreamIncludeUsage:  streamIncludeUsage(req["stream_options"]),
+		Thinking:            thinkingEnabled,
+		ReasoningEffort:     openAIReasoningEffort(req["thinking"], req["reasoning_effort"]),
+		Search:              searchEnabled,
+		RefFileIDs:          refFileIDs,
+		PassThrough:         passThrough,
 	}, nil
 }
 
@@ -117,21 +152,122 @@ func ensureToolDetectionEnabled(toolNames []string, toolsRaw any) []string {
 	return []string{"__any_tool__"}
 }
 
-func collectOpenAIChatPassThrough(req map[string]any) map[string]any {
+func collectOpenAIChatPassThrough(req map[string]any, thinkingEnabled bool) map[string]any {
 	out := map[string]any{}
 	for _, k := range []string{
 		"temperature",
 		"top_p",
 		"max_tokens",
-		"max_completion_tokens",
 		"presence_penalty",
 		"frequency_penalty",
 		"stop",
 	} {
+		if thinkingEnabled && openAIThinkingIgnoredParam(k) {
+			continue
+		}
 		if v, ok := req[k]; ok {
 			out[k] = v
 		}
 	}
+	if v, ok := req["max_completion_tokens"]; ok {
+		if _, hasMaxTokens := out["max_tokens"]; !hasMaxTokens {
+			out["max_tokens"] = v
+		}
+	}
+	return out
+}
+
+func applyOpenAIThinkingOverride(raw any, current bool) (bool, error) {
+	if raw == nil {
+		return current, nil
+	}
+	switch v := raw.(type) {
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "", "enabled", "enable", "true":
+			return true, nil
+		case "disabled", "disable", "false":
+			return false, nil
+		default:
+			return current, fmt.Errorf("thinking.type must be 'enabled' or 'disabled'")
+		}
+	case map[string]any:
+		typ := strings.ToLower(strings.TrimSpace(asString(v["type"])))
+		switch typ {
+		case "", "enabled":
+			return true, nil
+		case "disabled":
+			return false, nil
+		default:
+			return current, fmt.Errorf("thinking.type must be 'enabled' or 'disabled'")
+		}
+	default:
+		return current, fmt.Errorf("thinking must be an object")
+	}
+}
+
+func rejectUnsupportedThinkingParams(req map[string]any, thinkingEnabled bool) error {
+	if !thinkingEnabled {
+		return nil
+	}
+	for _, key := range []string{"logprobs", "top_logprobs"} {
+		if _, ok := req[key]; ok {
+			return fmt.Errorf("%s is not supported when thinking is enabled", key)
+		}
+	}
+	return nil
+}
+
+func openAIThinkingIgnoredParam(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "temperature", "top_p", "presence_penalty", "frequency_penalty":
+		return true
+	default:
+		return false
+	}
+}
+
+func openAIReasoningEffort(thinkingRaw any, topLevel any) string {
+	if s := strings.TrimSpace(asString(topLevel)); s != "" {
+		return normalizeOpenAIReasoningEffort(s)
+	}
+	if m, ok := thinkingRaw.(map[string]any); ok {
+		return normalizeOpenAIReasoningEffort(asString(m["reasoning_effort"]))
+	}
+	return ""
+}
+
+func normalizeOpenAIReasoningEffort(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(raw))
+	case "xhigh", "max":
+		return "max"
+	default:
+		return ""
+	}
+}
+
+func streamIncludeUsage(raw any) bool {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return false
+	}
+	return util.ToBool(m["include_usage"])
+}
+
+func appendOpenAIResponseFormatInstruction(messages []any, raw any) []any {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return messages
+	}
+	if strings.ToLower(strings.TrimSpace(asString(m["type"]))) != "json_object" {
+		return messages
+	}
+	instruction := "Respond with one valid JSON object only. Do not include markdown fences or explanatory text outside the JSON object."
+	out := make([]any, 0, len(messages)+1)
+	out = append(out, map[string]any{"role": "system", "content": instruction})
+	out = append(out, messages...)
 	return out
 }
 

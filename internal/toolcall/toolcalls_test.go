@@ -30,6 +30,216 @@ func TestParseToolCallsSupportsClaudeXMLToolCall(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsSupportsCanonicalParameterNameAttributes(t *testing.T) {
+	text := `<tool_calls><tool_call><tool_name>task</tool_name><parameters><parameter name="description">list files</parameter><parameter name="prompt">run ls</parameter><parameter name="subagent_type">general</parameter></parameters></tool_call></tool_calls>`
+	calls := ParseToolCalls(text, []string{"task"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	if calls[0].Input["description"] != "list files" {
+		t.Fatalf("expected description argument, got %#v", calls[0].Input)
+	}
+	if calls[0].Input["prompt"] != "run ls" {
+		t.Fatalf("expected prompt argument, got %#v", calls[0].Input)
+	}
+	if calls[0].Input["subagent_type"] != "general" {
+		t.Fatalf("expected subagent_type argument, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsSupportsToolCallNameTagWithNamedParameters(t *testing.T) {
+	text := `<tool_calls>
+<tool_call>
+<tool_call_name>read</tool_call_name>
+<parameter name="filePath" type="string">/Users/lbcheng/cheng-lang/findings.md</parameter>
+</tool_call>
+<tool_call>
+<tool_call_name>read</tool_call_name>
+<parameter name="filePath" type="string">/Users/lbcheng/cheng-lang/progress.md</parameter>
+</tool_call>
+</tool_calls>`
+	calls := ParseToolCalls(text, []string{"read"})
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %#v", calls)
+	}
+	if calls[0].Name != "read" || calls[0].Input["filePath"] != "/Users/lbcheng/cheng-lang/findings.md" {
+		t.Fatalf("expected first read filePath argument, got %#v", calls[0])
+	}
+	if calls[1].Name != "read" || calls[1].Input["filePath"] != "/Users/lbcheng/cheng-lang/progress.md" {
+		t.Fatalf("expected second read filePath argument, got %#v", calls[1])
+	}
+}
+
+func TestParseToolCallsInfersReadFromNamelessFilePathParameter(t *testing.T) {
+	text := `<tool_calls>
+<tool_call>
+<parameter name="file_path">/Users/lbcheng/cheng-lang/src/core/lang/parser.cheng</parameter>
+</tool_call>
+</tool_calls>`
+	calls := ParseToolCalls(text, []string{"Read", "Bash", "Edit"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one inferred Read call, got %#v", calls)
+	}
+	if calls[0].Name != "Read" {
+		t.Fatalf("expected inferred Read tool, got %#v", calls[0])
+	}
+	if calls[0].Input["file_path"] != "/Users/lbcheng/cheng-lang/src/core/lang/parser.cheng" {
+		t.Fatalf("expected file_path argument, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsInfersBashFromNamelessCommandParameter(t *testing.T) {
+	text := `<tool_calls>
+<tool_call>
+<parameter name="command" description="List files">ls -la /Users/lbcheng/cheng-lang</parameter>
+</tool_call>
+</tool_calls>`
+	calls := ParseToolCalls(text, []string{"Read", "Bash"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one inferred Bash call, got %#v", calls)
+	}
+	if calls[0].Name != "Bash" {
+		t.Fatalf("expected inferred Bash tool, got %#v", calls[0])
+	}
+	if calls[0].Input["command"] != "ls -la /Users/lbcheng/cheng-lang" {
+		t.Fatalf("expected command argument, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsDoesNotInferAmbiguousNamelessParameters(t *testing.T) {
+	text := `<tool_calls><tool_call><parameter name="description">Review code</parameter></tool_call></tool_calls>`
+	calls := ParseToolCalls(text, []string{"Agent", "TaskCreate"})
+	if len(calls) != 0 {
+		t.Fatalf("expected ambiguous nameless call to be ignored, got %#v", calls)
+	}
+}
+
+func TestParseToolCallsSupportsSiblingParametersOutsideParametersTag(t *testing.T) {
+	text := `<tool_calls>
+<tool_call>
+<tool_name>read</tool_name>
+<parameters>
+<filePath>/Users/lbcheng/cheng-lang/src/core/tooling/gate_main.cheng</filePath>
+</parameters>
+<limit>100</limit>
+</tool_call>
+</tool_calls>`
+	calls := ParseToolCalls(text, []string{"read"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	if calls[0].Input["filePath"] != "/Users/lbcheng/cheng-lang/src/core/tooling/gate_main.cheng" {
+		t.Fatalf("expected filePath argument, got %#v", calls[0].Input)
+	}
+	if calls[0].Input["limit"] != float64(100) {
+		t.Fatalf("expected sibling limit argument, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsSupportsMalformedToolNameEqualsTag(t *testing.T) {
+	text := `<tool_calls>
+<tool_call>
+<tool_name="read</tool_name>
+<parameters>
+<filePath>/Users/lbcheng/cheng-lang/src/core/backend/line_map.cheng</filePath>
+<limit>50</limit>
+</parameters>
+</tool_call>
+</tool_calls>`
+	calls := ParseToolCalls(text, []string{"read"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	if calls[0].Name != "read" {
+		t.Fatalf("expected read tool name, got %#v", calls[0])
+	}
+	if calls[0].Input["filePath"] != "/Users/lbcheng/cheng-lang/src/core/backend/line_map.cheng" {
+		t.Fatalf("expected filePath argument, got %#v", calls[0].Input)
+	}
+	if calls[0].Input["limit"] != "50" {
+		t.Fatalf("expected limit argument, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsSupportsToolCallNameAttributeWithNamedParameters(t *testing.T) {
+	text := `<tool_calls>
+<tool_call name="read">
+<parameter name="filePath" string="true">/Users/lbcheng/cheng-lang</parameter>
+</tool_call>
+<tool_call name="glob">
+<parameter name="pattern" string="true">**/*.c</parameter>
+<parameter name="path" string="true">/Users/lbcheng/cheng-lang</parameter>
+</tool_call>
+</tool_calls>`
+	calls := ParseToolCalls(text, []string{"read", "glob"})
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %#v", calls)
+	}
+	if calls[0].Name != "read" || calls[0].Input["filePath"] != "/Users/lbcheng/cheng-lang" {
+		t.Fatalf("expected read filePath argument, got %#v", calls[0])
+	}
+	if calls[1].Name != "glob" || calls[1].Input["pattern"] != "**/*.c" || calls[1].Input["path"] != "/Users/lbcheng/cheng-lang" {
+		t.Fatalf("expected glob pattern/path arguments, got %#v", calls[1])
+	}
+}
+
+func TestParseToolCallsSupportsDirectToolElementBody(t *testing.T) {
+	text := `<tool_calls><tool_call><bash><command>find /Users/lbcheng/cheng-lang -type f | head -100</command><description>List all files</description></bash></tool_call></tool_calls>`
+	calls := ParseToolCalls(text, []string{"bash"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	if calls[0].Name != "bash" {
+		t.Fatalf("expected bash tool, got %#v", calls[0])
+	}
+	if calls[0].Input["command"] != "find /Users/lbcheng/cheng-lang -type f | head -100" {
+		t.Fatalf("expected command argument, got %#v", calls[0].Input)
+	}
+	if calls[0].Input["description"] != "List all files" {
+		t.Fatalf("expected description argument, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsRepairsMissingToolCallCloseBeforeWrapperClose(t *testing.T) {
+	text := `<tool_calls>
+<tool_call>
+<tool_name>bash</tool_name>
+<parameters><command>pwd</command><description>Show current directory</description></parameters>
+</tool_calls></tool_calls>`
+	calls := ParseToolCalls(text, []string{"bash"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	if calls[0].Name != "bash" {
+		t.Fatalf("expected bash tool, got %#v", calls[0])
+	}
+	if calls[0].Input["command"] != "pwd" || calls[0].Input["description"] != "Show current directory" {
+		t.Fatalf("expected repaired bash arguments, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsSupportsLooseParameterClosingTag(t *testing.T) {
+	text := `<tool_calls>
+  <tool_call>
+    <tool_name>Bash</tool_name>
+    <parameters><description>Show diff</description><command><![CDATA[cd /Users/lbcheng/cheng-lang && git diff --stat HEAD]]></parameter></description>
+  </tool_call>
+</tool_calls>`
+	calls := ParseToolCalls(text, []string{"Bash"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	if calls[0].Name != "Bash" {
+		t.Fatalf("expected Bash tool, got %#v", calls[0])
+	}
+	if calls[0].Input["description"] != "Show diff" {
+		t.Fatalf("expected description argument, got %#v", calls[0].Input)
+	}
+	if calls[0].Input["command"] != "cd /Users/lbcheng/cheng-lang && git diff --stat HEAD" {
+		t.Fatalf("expected command argument, got %#v", calls[0].Input)
+	}
+}
+
 func TestParseToolCallsSupportsMultilineCDATAAndRepeatedXMLTags(t *testing.T) {
 	text := `<tool_call><tool_name>write_file</tool_name><parameters><path>script.sh</path><content><![CDATA[#!/bin/bash
 echo "hello"

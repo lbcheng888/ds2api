@@ -14,6 +14,7 @@ import (
 	openaifmt "ds2api/internal/format/openai"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
+	"ds2api/internal/toolcall"
 )
 
 func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -103,10 +104,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if stdReq.Stream {
-		h.handleStream(w, r, resp, sessionID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, historySession)
+		h.handleStream(w, r, resp, sessionID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.AllowMetaAgentTools, stdReq.StreamIncludeUsage, historySession)
 		return
 	}
-	h.handleNonStream(w, resp, sessionID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, historySession)
+	h.handleNonStream(w, resp, sessionID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.AllowMetaAgentTools, historySession)
 }
 
 func (h *Handler) autoDeleteRemoteSession(ctx context.Context, a *auth.RequestAuth, sessionID string) {
@@ -142,7 +143,7 @@ func (h *Handler) autoDeleteRemoteSession(ctx context.Context, a *auth.RequestAu
 	}
 }
 
-func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, historySession *chatHistorySession) {
+func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, allowMetaAgentTools bool, historySession *chatHistorySession) {
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(resp.Body)
@@ -160,6 +161,13 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 	if searchEnabled {
 		finalText = replaceCitationMarkersWithLinks(finalText, result.CitationLinks)
 	}
+	if !result.ContentFilter && strings.TrimSpace(finalText) == "" {
+		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(finalPrompt, toolNames, allowMetaAgentTools); repaired != "" {
+			finalText = repaired
+		} else if promoted := executableToolCallTextFromThinking(finalThinking, toolNames, toolSchemas, allowMetaAgentTools); promoted != "" {
+			finalText = promoted
+		}
+	}
 	if shouldWriteUpstreamEmptyOutputError(finalText) {
 		status, message, code := upstreamEmptyOutputDetail(result.ContentFilter, finalText, finalThinking)
 		if historySession != nil {
@@ -168,7 +176,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		writeUpstreamEmptyOutputError(w, finalText, result.ContentFilter)
 		return
 	}
-	respBody := openaifmt.BuildChatCompletion(completionID, model, finalPrompt, finalThinking, finalText, toolNames)
+	respBody := openaifmt.BuildChatCompletion(completionID, model, finalPrompt, finalThinking, finalText, toolNames, toolSchemas, allowMetaAgentTools)
 	finishReason := "stop"
 	if choices, ok := respBody["choices"].([]map[string]any); ok && len(choices) > 0 {
 		if fr, _ := choices[0]["finish_reason"].(string); strings.TrimSpace(fr) != "" {
@@ -181,7 +189,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 	writeJSON(w, http.StatusOK, respBody)
 }
 
-func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, historySession *chatHistorySession) {
+func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, allowMetaAgentTools bool, streamIncludeUsage bool, historySession *chatHistorySession) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -222,6 +230,9 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 		searchEnabled,
 		stripReferenceMarkers,
 		toolNames,
+		toolSchemas,
+		allowMetaAgentTools,
+		streamIncludeUsage,
 		bufferToolContent,
 		emitEarlyToolDeltas,
 	)

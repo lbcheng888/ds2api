@@ -1,12 +1,18 @@
 package openai
 
-import "net/http"
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+)
 
 func writeOpenAIError(w http.ResponseWriter, status int, message string) {
 	writeOpenAIErrorWithCode(w, status, message, "")
 }
 
 func writeOpenAIErrorWithCode(w http.ResponseWriter, status int, message, code string) {
+	message = normalizeOpenAIErrorMessage(message)
 	if code == "" {
 		code = openAIErrorCode(status)
 	}
@@ -18,6 +24,25 @@ func writeOpenAIErrorWithCode(w http.ResponseWriter, status int, message, code s
 			"param":   nil,
 		},
 	})
+}
+
+func normalizeOpenAIErrorMessage(message string) string {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return "request failed"
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &raw); err == nil {
+		if errObj, ok := raw["error"].(map[string]any); ok {
+			if msg := strings.TrimSpace(fmt.Sprint(errObj["message"])); msg != "" && msg != "<nil>" {
+				return msg
+			}
+		}
+		if msg := strings.TrimSpace(fmt.Sprint(raw["message"])); msg != "" && msg != "<nil>" {
+			return msg
+		}
+	}
+	return trimmed
 }
 
 func openAIErrorType(status int) string {

@@ -360,3 +360,28 @@ func TestConvertClaudeToDeepSeekOpusUsesSlowMapping(t *testing.T) {
 		t.Fatalf("expected opus to use slow mapping, got %q", out["model"])
 	}
 }
+
+func TestConvertClaudeToDeepSeekPassesThroughDeepSeekV4Model(t *testing.T) {
+	store := config.LoadStore()
+	req := map[string]any{
+		"model":    "deepseek-v4-pro[1m]",
+		"messages": []any{map[string]any{"role": "user", "content": "Hi"}},
+	}
+	out := ConvertClaudeToDeepSeek(req, store)
+	if out["model"] != "deepseek-v4-pro[1m]" {
+		t.Fatalf("expected direct V4 model passthrough, got %q", out["model"])
+	}
+}
+
+func TestConvertClaudeToDeepSeekHaikuUsesHaikuMapping(t *testing.T) {
+	t.Setenv("DS2API_CONFIG_JSON", `{"keys":[],"accounts":[],"claude_mapping":{"fast":"deepseek-v4-pro","slow":"deepseek-v4-pro","haiku":"deepseek-v4-flash"}}`)
+	store := config.LoadStore()
+	req := map[string]any{
+		"model":    "claude-haiku-4-5",
+		"messages": []any{map[string]any{"role": "user", "content": "Hi"}},
+	}
+	out := ConvertClaudeToDeepSeek(req, store)
+	if out["model"] != "deepseek-v4-flash" {
+		t.Fatalf("expected haiku mapping, got %q", out["model"])
+	}
+}
