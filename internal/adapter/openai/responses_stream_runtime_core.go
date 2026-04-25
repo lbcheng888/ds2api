@@ -110,7 +110,8 @@ func newResponsesStreamRuntime(
 
 func (s *responsesStreamRuntime) failResponse(message, code string) {
 	s.failed = true
-	annotateFailureCaptureHeaders(s.w, s.sessionID)
+	capture := annotateFailureCaptureHeaders(s.w, s.sessionID)
+	message = withFailureCaptureMessage(message, capture)
 	failedResp := map[string]any{
 		"id":          s.responseID,
 		"type":        "response",

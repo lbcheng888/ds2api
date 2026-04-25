@@ -120,10 +120,11 @@ func (s *chatStreamRuntime) sendDone() {
 }
 
 func (s *chatStreamRuntime) sendFailedChunk(status int, message, code string) {
+	capture := annotateFailureCaptureHeaders(s.w, s.completionID)
+	message = withFailureCaptureMessage(message, capture)
 	s.finalErrorStatus = status
 	s.finalErrorMessage = message
 	s.finalErrorCode = code
-	annotateFailureCaptureHeaders(s.w, s.completionID)
 	s.sendChunk(map[string]any{
 		"status_code": status,
 		"error": map[string]any{

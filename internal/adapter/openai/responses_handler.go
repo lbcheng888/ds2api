@@ -110,8 +110,7 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		annotateFailureCaptureHeaders(w, sessionID)
-		writeOpenAIError(w, resp.StatusCode, strings.TrimSpace(string(body)))
+		writeOpenAIErrorWithCodeAndFailureCapture(w, resp.StatusCode, strings.TrimSpace(string(body)), "", sessionID)
 		return
 	}
 	result := sse.CollectStream(resp, thinkingEnabled, true)
@@ -132,28 +131,25 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 		}
 	}
 	if shouldWriteUpstreamEmptyOutputError(sanitizedText) {
-		annotateFailureCaptureHeaders(w, sessionID)
-		writeUpstreamEmptyOutputError(w, sanitizedText, result.ContentFilter)
+		status, message, code := upstreamEmptyOutputDetail(result.ContentFilter, sanitizedText, sanitizedThinking)
+		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, sessionID)
 		return
 	}
 	if status, message, code, ok := futureActionMissingToolCallDetail(sanitizedText, toolNames, nil, allowMetaAgentTools); ok {
-		annotateFailureCaptureHeaders(w, sessionID)
-		writeOpenAIErrorWithCode(w, status, message, code)
+		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, sessionID)
 		return
 	}
 	textParsed := toolcall.ParseStandaloneToolCallsDetailed(sanitizedText, toolNames)
 	if normalizedToolCallsExceedInputBytes(textParsed.Calls, nil, allowMetaAgentTools, runtimeBufferedToolContentMaxBytes(h.Store)) {
 		status, message, code := toolCallTooLargeError()
-		annotateFailureCaptureHeaders(w, sessionID)
-		writeOpenAIErrorWithCode(w, status, message, code)
+		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, sessionID)
 		return
 	}
 	logResponsesToolPolicyRejection(traceID, toolChoice, textParsed, "text")
 
 	callCount := len(textParsed.Calls)
 	if toolChoice.IsRequired() && callCount == 0 {
-		annotateFailureCaptureHeaders(w, sessionID)
-		writeOpenAIErrorWithCode(w, http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation")
+		writeOpenAIErrorWithCodeAndFailureCapture(w, http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation", sessionID)
 		return
 	}
 
@@ -166,8 +162,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		annotateFailureCaptureHeaders(w, sessionID)
-		writeOpenAIError(w, resp.StatusCode, strings.TrimSpace(string(body)))
+		writeOpenAIErrorWithCodeAndFailureCapture(w, resp.StatusCode, strings.TrimSpace(string(body)), "", sessionID)
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")

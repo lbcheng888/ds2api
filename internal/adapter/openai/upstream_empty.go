@@ -16,12 +16,3 @@ func upstreamEmptyOutputDetail(contentFilter bool, text, thinking string) (int, 
 	}
 	return http.StatusTooManyRequests, "Upstream model returned empty output.", "upstream_empty_output"
 }
-
-func writeUpstreamEmptyOutputError(w http.ResponseWriter, text string, contentFilter bool) bool {
-	if !shouldWriteUpstreamEmptyOutputError(text) {
-		return false
-	}
-	status, message, code := upstreamEmptyOutputDetail(contentFilter, text, "")
-	writeOpenAIErrorWithCode(w, status, message, code)
-	return true
-}

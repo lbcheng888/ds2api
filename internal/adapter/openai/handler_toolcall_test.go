@@ -223,6 +223,7 @@ func TestHandleNonStreamReturns429WhenUpstreamOutputEmpty(t *testing.T) {
 }
 
 func TestHandleNonStreamFailureAnnotatesCaptureChain(t *testing.T) {
+	t.Setenv("DS2API_RAW_STREAM_SAMPLE_ROOT", t.TempDir())
 	store := devcapture.Global()
 	store.Clear()
 	defer store.Clear()
@@ -250,6 +251,12 @@ func TestHandleNonStreamFailureAnnotatesCaptureChain(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Ds2-Capture-Ids"); got == "" {
 		t.Fatalf("expected capture ids header")
+	}
+	if got := rec.Header().Get("X-Ds2-Failure-Sample-Id"); got == "" {
+		t.Fatalf("expected failure sample id header")
+	}
+	if !strings.Contains(rec.Body.String(), "Raw sample saved:") {
+		t.Fatalf("expected error message to include sample id, body=%s", rec.Body.String())
 	}
 }
 

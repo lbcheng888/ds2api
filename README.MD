@@ -451,6 +451,7 @@ go run ./cmd/ds2api
 - `X-Ds2-Capture-Chain`：可直接传给 `/admin/dev/raw-samples/save` 的 `chain_key`
 - `X-Ds2-Capture-Ids`：本次链路内的抓包 ID
 - `X-Ds2-Capture-Save`：保存抓包链的接口提示
+- `X-Ds2-Failure-Sample-Id`：已自动落盘的失败回放样本 ID
 
 返回字段包含：
 
