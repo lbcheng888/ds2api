@@ -216,6 +216,39 @@ func TestProcessToolSieveInfersNamelessReadToolCall(t *testing.T) {
 	}
 }
 
+func TestProcessToolSieveExtractsDirectToolElementsInMalformedWrapper(t *testing.T) {
+	var state toolStreamSieveState
+	chunk := `<tool_calls>
+  <tool_call>
+    <tool name="Read">
+      <parameter name="file_path" type="string">/Users/lbcheng/cheng-lang/README.md</parameter>
+    </tool>
+    <parameter name="limit" type="number">200</parameter>
+  </tool>
+  <tool name="Read">
+    <parameter name="file_path" type="string">/Users/lbcheng/cheng-lang/task_plan.md</parameter>
+    <parameter name="limit" type="number">200</parameter>
+  </tool>
+</tool_calls>`
+	events := processToolSieveChunk(&state, chunk, []string{"Read"})
+	events = append(events, flushToolSieve(&state, []string{"Read"})...)
+
+	var textContent strings.Builder
+	var paths []string
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		for _, call := range evt.ToolCalls {
+			paths = append(paths, call.Input["file_path"].(string))
+		}
+	}
+	if textContent.String() != "" {
+		t.Fatalf("expected malformed direct tool XML to be intercepted, got content %q", textContent.String())
+	}
+	if len(paths) != 2 || paths[0] != "/Users/lbcheng/cheng-lang/README.md" || paths[1] != "/Users/lbcheng/cheng-lang/task_plan.md" {
+		t.Fatalf("expected two Read calls, got %#v events=%#v", paths, events)
+	}
+}
+
 func TestProcessToolSievePassesThroughMalformedExecutableXMLBlock(t *testing.T) {
 	var state toolStreamSieveState
 	chunk := `<tool_call><parameters>{"path":"README.md"}</parameters></tool_call>`

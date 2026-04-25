@@ -476,6 +476,31 @@ func TestParseToolCallsSupportsNestedToolTagStyle(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsSupportsDirectToolElementsInMalformedWrapper(t *testing.T) {
+	text := `<tool_calls>
+  <tool_call>
+    <tool name="Read">
+      <parameter name="file_path" type="string">/Users/lbcheng/cheng-lang/README.md</parameter>
+    </tool>
+    <parameter name="limit" type="number">200</parameter>
+  </tool>
+  <tool name="Read">
+    <parameter name="file_path" type="string">/Users/lbcheng/cheng-lang/task_plan.md</parameter>
+    <parameter name="limit" type="number">200</parameter>
+  </tool>
+</tool_calls>`
+	calls := ParseToolCalls(text, []string{"Read"})
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 direct tool calls, got %#v", calls)
+	}
+	if calls[0].Name != "Read" || calls[0].Input["file_path"] != "/Users/lbcheng/cheng-lang/README.md" {
+		t.Fatalf("unexpected first call: %#v", calls[0])
+	}
+	if calls[1].Name != "Read" || calls[1].Input["file_path"] != "/Users/lbcheng/cheng-lang/task_plan.md" || calls[1].Input["limit"] != float64(200) {
+		t.Fatalf("unexpected second call: %#v", calls[1])
+	}
+}
+
 func TestParseToolCallsSupportsAntmlFunctionAttributeWithParametersTag(t *testing.T) {
 	text := `<antml:function_calls><antml:function_call id="x" function="Bash"><antml:parameters>{"command":"pwd"}</antml:parameters></antml:function_call></antml:function_calls>`
 	calls := ParseToolCalls(text, []string{"bash"})

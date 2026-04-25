@@ -128,6 +128,7 @@ func looksLikeToolCallSyntax(text string) bool {
 	lower := strings.ToLower(text)
 	return strings.Contains(lower, "<tool_calls") ||
 		strings.Contains(lower, "<tool_call") ||
+		strings.Contains(lower, "<tool ") ||
 		strings.Contains(lower, "<function_calls") ||
 		strings.Contains(lower, "<function_call") ||
 		strings.Contains(lower, "<invoke") ||

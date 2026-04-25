@@ -18,6 +18,7 @@ var antmlFunctionCallPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_]+:)?functio
 var antmlArgumentPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_]+:)?argument\s+name="([^"]+)"\s*>\s*(.*?)\s*</(?:[a-z0-9_]+:)?argument>`)
 var invokeCallPattern = regexp.MustCompile(`(?is)<invoke\s+name="([^"]+)"\s*>(.*?)</invoke>`)
 var invokeParamPattern = regexp.MustCompile(`(?is)<parameter\s+name="([^"]+)"\s*>\s*(.*?)\s*</parameter>`)
+var directToolElementPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?tool\b([^>]*)>(.*?)</(?:[a-z0-9_:-]+:)?tool>`)
 var namedParameterPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?(?:parameter|argument|param)\b([^>]*)>(.*?)</(?:[a-z0-9_:-]+:)?(?:parameter|argument|param)>`)
 var parameterNameAttrPattern = regexp.MustCompile(`(?is)\bname\s*=\s*"([^"]+)"`)
 var toolUseFunctionPattern = regexp.MustCompile(`(?is)<tool_use>\s*<function\s+name="([^"]+)"\s*>(.*?)</function>\s*</tool_use>`)
@@ -33,6 +34,9 @@ var xmlToolNamePatterns = []*regexp.Regexp{
 
 func parseXMLToolCalls(text string) []ParsedToolCall {
 	text = repairMissingToolCallClose(text)
+	if calls := parseDirectToolElementCalls(text); len(calls) > 0 {
+		return calls
+	}
 	matches := xmlToolCallPattern.FindAllString(text, -1)
 	out := make([]ParsedToolCall, 0, len(matches)+1)
 	for _, block := range matches {
@@ -67,6 +71,39 @@ func parseXMLToolCalls(text string) []ParsedToolCall {
 		return []ParsedToolCall{call}
 	}
 	return nil
+}
+
+func parseDirectToolElementCalls(text string) []ParsedToolCall {
+	matches := directToolElementPattern.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	out := make([]ParsedToolCall, 0, len(matches))
+	for _, m := range matches {
+		if len(m) < 3 {
+			continue
+		}
+		name := ""
+		if attrMatch := toolCallMarkupAttrPattern.FindStringSubmatch(m[1]); len(attrMatch) >= 3 {
+			name = strings.TrimSpace(html.UnescapeString(attrMatch[2]))
+		}
+		if name == "" {
+			continue
+		}
+		inner := strings.TrimSpace(m[2])
+		input := extractXMLToolParamsByRegex(inner)
+		if len(input) == 0 {
+			input = parseMarkupKVObject(inner)
+		}
+		if input == nil {
+			input = map[string]any{}
+		}
+		out = append(out, ParsedToolCall{Name: name, Input: input})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func repairMissingToolCallClose(text string) string {
