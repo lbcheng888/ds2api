@@ -54,6 +54,9 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 			if runtimeCfg.StreamMaxDurationSeconds > 0 {
 				c.Runtime.StreamMaxDurationSeconds = runtimeCfg.StreamMaxDurationSeconds
 			}
+			if runtimeCfg.ReasoningOnlyTimeoutSeconds > 0 {
+				c.Runtime.ReasoningOnlyTimeoutSeconds = runtimeCfg.ReasoningOnlyTimeoutSeconds
+			}
 			if runtimeCfg.BufferedToolContentMaxBytes > 0 {
 				c.Runtime.BufferedToolContentMaxBytes = runtimeCfg.BufferedToolContentMaxBytes
 			}

@@ -406,6 +406,7 @@
         "tokenRefreshIntervalHours": "Managed token refresh interval (hours)",
         "accountFailureCooldownSeconds": "Failed-account cooldown (seconds)",
         "streamMaxDurationSeconds": "Max stream duration (seconds)",
+        "reasoningOnlyTimeoutSeconds": "Reasoning-only timeout (seconds)",
         "bufferedToolContentMaxBytes": "Tool buffer limit (bytes)",
         "behaviorTitle": "Behavior",
         "responsesTTL": "Responses store TTL (seconds)",

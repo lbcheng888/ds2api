@@ -38,6 +38,7 @@ type ConfigReader interface {
 	AutoDeleteSessions() bool
 	RuntimeAccountFailureCooldownSeconds() int
 	RuntimeStreamMaxDurationSeconds() int
+	RuntimeReasoningOnlyTimeoutSeconds() int
 	RuntimeBufferedToolContentMaxBytes() int
 	HistorySplitEnabled() bool
 	HistorySplitTriggerAfterTurns() int

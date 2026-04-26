@@ -7,6 +7,13 @@ func runtimeStreamMaxDurationSeconds(store ConfigReader) int {
 	return store.RuntimeStreamMaxDurationSeconds()
 }
 
+func runtimeReasoningOnlyTimeoutSeconds(store ConfigReader) int {
+	if store == nil {
+		return 180
+	}
+	return store.RuntimeReasoningOnlyTimeoutSeconds()
+}
+
 func runtimeBufferedToolContentMaxBytes(store ConfigReader) int {
 	if store == nil {
 		return 262144

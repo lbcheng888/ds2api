@@ -72,6 +72,7 @@
     "token_refresh_interval_hours": 6,
     "account_failure_cooldown_seconds": 120,
     "stream_max_duration_seconds": 900,
+    "reasoning_only_timeout_seconds": 180,
     "buffered_tool_content_max_bytes": 262144
   },
   "auto_delete": {

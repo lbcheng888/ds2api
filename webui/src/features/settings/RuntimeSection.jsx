@@ -88,6 +88,21 @@ export default function RuntimeSection({ t, form, setForm }) {
                     />
                 </label>
                 <label className="text-sm space-y-2">
+                    <span className="text-muted-foreground">{t('settings.reasoningOnlyTimeoutSeconds')}</span>
+                    <input
+                        type="number"
+                        min={30}
+                        max={600}
+                        step={1}
+                        value={form.runtime.reasoning_only_timeout_seconds}
+                        onChange={(e) => setForm((prev) => ({
+                            ...prev,
+                            runtime: { ...prev.runtime, reasoning_only_timeout_seconds: Number(e.target.value || 30) },
+                        }))}
+                        className="w-full bg-background border border-border rounded-lg px-3 py-2"
+                    />
+                </label>
+                <label className="text-sm space-y-2">
                     <span className="text-muted-foreground">{t('settings.bufferedToolContentMaxBytes')}</span>
                     <input
                         type="number"

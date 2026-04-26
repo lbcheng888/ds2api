@@ -34,6 +34,7 @@ type ConfigStore interface {
 	RuntimeTokenRefreshIntervalHours() int
 	RuntimeAccountFailureCooldownSeconds() int
 	RuntimeStreamMaxDurationSeconds() int
+	RuntimeReasoningOnlyTimeoutSeconds() int
 	RuntimeBufferedToolContentMaxBytes() int
 	AutoDeleteMode() string
 	HistorySplitEnabled() bool

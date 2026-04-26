@@ -3,17 +3,18 @@ package openai
 import "testing"
 
 type mockOpenAIConfig struct {
-	aliases             map[string]string
-	wideInput           bool
-	autoDeleteMode      string
-	toolMode            string
-	earlyEmit           string
-	responsesTTL        int
-	embedProv           string
-	historySplitEnabled bool
-	historySplitTurns   int
-	allowMetaAgentTools bool
-	reasoningEffort     string
+	aliases              map[string]string
+	wideInput            bool
+	autoDeleteMode       string
+	toolMode             string
+	earlyEmit            string
+	responsesTTL         int
+	embedProv            string
+	historySplitEnabled  bool
+	historySplitTurns    int
+	allowMetaAgentTools  bool
+	reasoningEffort      string
+	reasoningOnlyTimeout int
 }
 
 func (m mockOpenAIConfig) ModelAliases() map[string]string { return m.aliases }
@@ -40,6 +41,12 @@ func (m mockOpenAIConfig) RuntimeAccountFailureCooldownSeconds() int {
 }
 func (m mockOpenAIConfig) RuntimeStreamMaxDurationSeconds() int {
 	return 900
+}
+func (m mockOpenAIConfig) RuntimeReasoningOnlyTimeoutSeconds() int {
+	if m.reasoningOnlyTimeout > 0 {
+		return m.reasoningOnlyTimeout
+	}
+	return 180
 }
 func (m mockOpenAIConfig) RuntimeBufferedToolContentMaxBytes() int {
 	return 262144

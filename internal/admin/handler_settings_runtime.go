@@ -23,6 +23,9 @@ func validateMergedRuntimeSettings(current config.RuntimeConfig, incoming *confi
 		if incoming.StreamMaxDurationSeconds > 0 {
 			merged.StreamMaxDurationSeconds = incoming.StreamMaxDurationSeconds
 		}
+		if incoming.ReasoningOnlyTimeoutSeconds > 0 {
+			merged.ReasoningOnlyTimeoutSeconds = incoming.ReasoningOnlyTimeoutSeconds
+		}
 		if incoming.BufferedToolContentMaxBytes > 0 {
 			merged.BufferedToolContentMaxBytes = incoming.BufferedToolContentMaxBytes
 		}

@@ -307,7 +307,7 @@ func (s *chatStreamRuntime) retryableProtocolFailure() bool {
 		return false
 	}
 	switch s.finalErrorCode {
-	case "upstream_empty_output", upstreamMissingToolCallCode, upstreamInvalidToolCallCode, "tool_choice_violation":
+	case "upstream_empty_output", "upstream_no_action_timeout", upstreamMissingToolCallCode, upstreamInvalidToolCallCode, "tool_choice_violation":
 	default:
 		return false
 	}
@@ -336,6 +336,7 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 
 	newChoices := make([]map[string]any, 0, len(parsed.Parts))
 	contentSeen := false
+	actionSeen := false
 	for _, p := range parsed.Parts {
 		cleanedText := cleanVisibleOutput(p.Text, s.stripReferenceMarkers)
 		if s.searchEnabled && sse.IsCitation(cleanedText) {
@@ -362,6 +363,7 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 				continue
 			}
 			s.text.WriteString(trimmed)
+			actionSeen = true
 			if !s.bufferToolContent {
 				delta["content"] = trimmed
 				s.visibleContentSent = true
@@ -381,6 +383,7 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 						if len(formatted) == 0 {
 							continue
 						}
+						actionSeen = true
 						tcDelta := map[string]any{
 							"tool_calls": formatted,
 						}
@@ -399,6 +402,7 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 					}
 					formattedToolCalls := formatFinalStreamToolCallsWithStableIDs(evt.ToolCalls, s.streamToolCallIDs, s.toolSchemas, s.allowMetaAgentTools)
 					if len(formattedToolCalls) > 0 {
+						actionSeen = true
 						s.toolCallsEmitted = true
 						s.toolCallsDoneEmitted = true
 						tcDelta := map[string]any{
@@ -431,5 +435,5 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 	if len(newChoices) > 0 {
 		s.sendChunk(openaifmt.BuildChatStreamChunk(s.completionID, s.created, s.model, newChoices, nil))
 	}
-	return streamengine.ParsedDecision{ContentSeen: contentSeen}
+	return streamengine.ParsedDecision{ContentSeen: contentSeen, ActionSeen: actionSeen}
 }

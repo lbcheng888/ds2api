@@ -237,6 +237,7 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 	}
 
 	contentSeen := false
+	actionSeen := false
 	for _, p := range parsed.Parts {
 		cleanedText := cleanVisibleOutput(p.Text, s.stripReferenceMarkers)
 		if cleanedText == "" {
@@ -263,6 +264,7 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 		if trimmed == "" {
 			continue
 		}
+		actionSeen = true
 		s.text.WriteString(trimmed)
 		if !s.bufferToolContent {
 			s.emitTextDelta(trimmed)
@@ -279,5 +281,5 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 		}
 	}
 
-	return streamengine.ParsedDecision{ContentSeen: contentSeen}
+	return streamengine.ParsedDecision{ContentSeen: contentSeen, ActionSeen: actionSeen}
 }

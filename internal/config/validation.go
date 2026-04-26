@@ -105,6 +105,9 @@ func ValidateRuntimeConfig(runtime RuntimeConfig) error {
 	if err := ValidateIntRange("runtime.stream_max_duration_seconds", runtime.StreamMaxDurationSeconds, 30, 3600, false); err != nil {
 		return err
 	}
+	if err := ValidateIntRange("runtime.reasoning_only_timeout_seconds", runtime.ReasoningOnlyTimeoutSeconds, 30, 600, false); err != nil {
+		return err
+	}
 	if err := ValidateIntRange("runtime.buffered_tool_content_max_bytes", runtime.BufferedToolContentMaxBytes, 32768, 10485760, false); err != nil {
 		return err
 	}

@@ -14,6 +14,7 @@ const (
 	StopReasonNone              StopReason = ""
 	StopReasonContextCancelled  StopReason = "context_cancelled"
 	StopReasonNoContentTimeout  StopReason = "no_content_timeout"
+	StopReasonNoActionTimeout   StopReason = "no_action_timeout"
 	StopReasonIdleTimeout       StopReason = "idle_timeout"
 	StopReasonMaxDuration       StopReason = "max_duration"
 	StopReasonUpstreamCompleted StopReason = "upstream_completed"
@@ -27,6 +28,7 @@ type ConsumeConfig struct {
 	InitialType         string
 	KeepAliveInterval   time.Duration
 	IdleTimeout         time.Duration
+	ActionTimeout       time.Duration
 	MaxDuration         time.Duration
 	MaxKeepAliveNoInput int
 }
@@ -35,6 +37,7 @@ type ParsedDecision struct {
 	Stop        bool
 	StopReason  StopReason
 	ContentSeen bool
+	ActionSeen  bool
 }
 
 type ConsumeHooks struct {
@@ -72,7 +75,9 @@ func ConsumeSSE(cfg ConsumeConfig, hooks ConsumeHooks) {
 	}
 
 	hasContent := false
+	hasAction := false
 	lastContent := time.Now()
+	lastAction := lastContent
 	keepaliveCount := 0
 
 	finalize := func(reason StopReason, scannerErr error) {
@@ -103,6 +108,10 @@ func ConsumeSSE(cfg ConsumeConfig, hooks ConsumeHooks) {
 				finalize(StopReasonIdleTimeout, nil)
 				return
 			}
+			if cfg.ActionTimeout > 0 && hasContent && !hasAction && time.Since(lastAction) > cfg.ActionTimeout {
+				finalize(StopReasonNoActionTimeout, nil)
+				return
+			}
 			if hooks.OnKeepAlive != nil {
 				hooks.OnKeepAlive()
 			}
@@ -119,6 +128,10 @@ func ConsumeSSE(cfg ConsumeConfig, hooks ConsumeHooks) {
 				hasContent = true
 				lastContent = time.Now()
 				keepaliveCount = 0
+			}
+			if decision.ActionSeen {
+				hasAction = true
+				lastAction = time.Now()
 			}
 			if decision.Stop {
 				reason := decision.StopReason

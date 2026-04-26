@@ -163,6 +163,7 @@ type RuntimeConfig struct {
 	TokenRefreshIntervalHours     int `json:"token_refresh_interval_hours,omitempty"`
 	AccountFailureCooldownSeconds int `json:"account_failure_cooldown_seconds,omitempty"`
 	StreamMaxDurationSeconds      int `json:"stream_max_duration_seconds,omitempty"`
+	ReasoningOnlyTimeoutSeconds   int `json:"reasoning_only_timeout_seconds,omitempty"`
 	BufferedToolContentMaxBytes   int `json:"buffered_tool_content_max_bytes,omitempty"`
 }
 

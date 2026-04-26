@@ -211,6 +211,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		InitialType:         initialType,
 		KeepAliveInterval:   time.Duration(deepseek.KeepAliveTimeout) * time.Second,
 		IdleTimeout:         time.Duration(deepseek.StreamIdleTimeout) * time.Second,
+		ActionTimeout:       time.Duration(runtimeReasoningOnlyTimeoutSeconds(h.Store)) * time.Second,
 		MaxDuration:         time.Duration(runtimeStreamMaxDurationSeconds(h.Store)) * time.Second,
 		MaxKeepAliveNoInput: deepseek.MaxKeepaliveCount,
 	}, streamengine.ConsumeHooks{
@@ -218,6 +219,10 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		OnFinalize: func(reason streamengine.StopReason, _ error) {
 			if reason == streamengine.StopReasonMaxDuration {
 				streamRuntime.failResponse("Upstream stream exceeded max duration before completing.", "upstream_stream_timeout")
+				return
+			}
+			if reason == streamengine.StopReasonNoActionTimeout {
+				streamRuntime.failResponse("Upstream model produced reasoning for too long without visible content or a tool call.", "upstream_no_action_timeout")
 				return
 			}
 			streamRuntime.finalize()

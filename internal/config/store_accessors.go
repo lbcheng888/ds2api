@@ -214,6 +214,20 @@ func (s *Store) RuntimeStreamMaxDurationSeconds() int {
 	return 900
 }
 
+func (s *Store) RuntimeReasoningOnlyTimeoutSeconds() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cfg.Runtime.ReasoningOnlyTimeoutSeconds > 0 {
+		return s.cfg.Runtime.ReasoningOnlyTimeoutSeconds
+	}
+	if raw := strings.TrimSpace(os.Getenv("DS2API_REASONING_ONLY_TIMEOUT_SECONDS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 180
+}
+
 func (s *Store) RuntimeBufferedToolContentMaxBytes() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -90,6 +90,13 @@ func parseSettingsUpdateRequest(req map[string]any) (*config.AdminConfig, *confi
 			}
 			cfg.StreamMaxDurationSeconds = n
 		}
+		if v, exists := raw["reasoning_only_timeout_seconds"]; exists {
+			n := intFrom(v)
+			if err := config.ValidateIntRange("runtime.reasoning_only_timeout_seconds", n, 30, 600, true); err != nil {
+				return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			}
+			cfg.ReasoningOnlyTimeoutSeconds = n
+		}
 		if v, exists := raw["buffered_tool_content_max_bytes"]; exists {
 			n := intFrom(v)
 			if err := config.ValidateIntRange("runtime.buffered_tool_content_max_bytes", n, 32768, 10485760, true); err != nil {

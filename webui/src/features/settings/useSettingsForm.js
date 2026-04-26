@@ -19,6 +19,7 @@ const DEFAULT_FORM = {
         token_refresh_interval_hours: 6,
         account_failure_cooldown_seconds: 120,
         stream_max_duration_seconds: 900,
+        reasoning_only_timeout_seconds: 180,
         buffered_tool_content_max_bytes: 262144,
     },
     compat: { strip_reference_markers: true, allow_meta_agent_tools: false, default_reasoning_effort: '' },
@@ -68,6 +69,7 @@ function fromServerForm(data) {
             token_refresh_interval_hours: Number(data.runtime?.token_refresh_interval_hours || 6),
             account_failure_cooldown_seconds: Number(data.runtime?.account_failure_cooldown_seconds || 120),
             stream_max_duration_seconds: Number(data.runtime?.stream_max_duration_seconds || 900),
+            reasoning_only_timeout_seconds: Number(data.runtime?.reasoning_only_timeout_seconds || 180),
             buffered_tool_content_max_bytes: Number(data.runtime?.buffered_tool_content_max_bytes || 262144),
         },
         compat: {
@@ -103,6 +105,7 @@ function toServerPayload(form) {
             token_refresh_interval_hours: Number(form.runtime.token_refresh_interval_hours),
             account_failure_cooldown_seconds: Number(form.runtime.account_failure_cooldown_seconds),
             stream_max_duration_seconds: Number(form.runtime.stream_max_duration_seconds),
+            reasoning_only_timeout_seconds: Number(form.runtime.reasoning_only_timeout_seconds),
             buffered_tool_content_max_bytes: Number(form.runtime.buffered_tool_content_max_bytes),
         },
         compat: {
