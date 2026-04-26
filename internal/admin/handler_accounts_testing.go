@@ -146,7 +146,6 @@ func (h *Handler) testAccount(ctx context.Context, acc config.Account, model, me
 		}
 	}
 
-	// 获取会话数量
 	sessionStats, sessionErr := h.DS.GetSessionCountForToken(proxyCtx, token)
 	if sessionErr == nil && sessionStats != nil {
 		result["session_count"] = sessionStats.FirstPageCount
@@ -191,6 +190,10 @@ func (h *Handler) testAccount(ctx context.Context, acc config.Account, model, me
 		return result
 	}
 	collected := sse.CollectStream(resp, thinking, true)
+	if collected.ErrorMessage != "" {
+		result["message"] = collected.ErrorMessage
+		return result
+	}
 	result["success"] = true
 	result["response_time"] = int(time.Since(start).Milliseconds())
 	if collected.Text != "" {
@@ -275,10 +278,8 @@ func (h *Handler) deleteAllSessions(w http.ResponseWriter, r *http.Request) {
 	_ = h.Store.UpdateAccountToken(acc.Identifier(), token)
 	authCtx.DeepSeekToken = token
 
-	// 删除所有会话
 	err = h.DS.DeleteAllSessionsForToken(proxyCtx, token)
 	if err != nil {
-		// token 可能过期，尝试重新登录并重试一次
 		newToken, loginErr := h.DS.Login(proxyCtx, acc)
 		if loginErr != nil {
 			writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "删除失败: " + err.Error()})

@@ -56,6 +56,8 @@ type chatStreamRuntime struct {
 	deferRetryableProtocolFailure bool
 }
 
+const upstreamInvalidRefFileIDCode = "upstream_invalid_ref_file_id"
+
 func newChatStreamRuntime(
 	w http.ResponseWriter,
 	rc *http.ResponseController,
@@ -307,7 +309,7 @@ func (s *chatStreamRuntime) retryableProtocolFailure() bool {
 		return false
 	}
 	switch s.finalErrorCode {
-	case "upstream_empty_output", "upstream_no_action_timeout", upstreamMissingToolCallCode, upstreamInvalidToolCallCode, "tool_choice_violation":
+	case "upstream_empty_output", "upstream_no_action_timeout", upstreamMissingToolCallCode, upstreamInvalidToolCallCode, upstreamInvalidRefFileIDCode, "tool_choice_violation":
 	default:
 		return false
 	}
@@ -325,7 +327,16 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 		return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReasonHandlerRequested}
 	}
 	if parsed.ErrorMessage != "" {
-		return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReason("content_filter")}
+		code := strings.TrimSpace(parsed.ErrorCode)
+		if code == "" {
+			code = "upstream_error"
+		}
+		message := strings.TrimSpace(parsed.ErrorMessage)
+		if message == "" {
+			message = "DeepSeek upstream returned an error."
+		}
+		s.sendFailedChunkOrDefer(http.StatusBadGateway, message, code)
+		return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReasonHandlerRequested}
 	}
 	if parsed.Stop {
 		if parsed.Finished && s.bufferToolContent && hasCallableTools(s.toolNames) && !s.toolCallsEmitted {

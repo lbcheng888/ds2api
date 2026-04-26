@@ -287,3 +287,105 @@ func TestChatCompletionsStreamRetriesMissingToolCallOnManagedAccount(t *testing.
 		t.Fatalf("expected acct-1 marked failed, got %q", got)
 	}
 }
+
+type invalidRefHistoryRetryDSStub struct {
+	callCount          int
+	uploadAccounts     []string
+	completionAccounts []string
+	completionRefs     [][]string
+}
+
+func (d *invalidRefHistoryRetryDSStub) CreateSession(_ context.Context, a *auth.RequestAuth, _ int) (string, error) {
+	return "session-" + a.AccountID, nil
+}
+
+func (d *invalidRefHistoryRetryDSStub) GetPow(_ context.Context, _ *auth.RequestAuth, _ int) (string, error) {
+	return "pow", nil
+}
+
+func (d *invalidRefHistoryRetryDSStub) UploadFile(_ context.Context, a *auth.RequestAuth, req deepseek.UploadFileRequest, _ int) (*deepseek.UploadFileResult, error) {
+	d.uploadAccounts = append(d.uploadAccounts, a.AccountID)
+	if req.Filename != historySplitFilename || len(req.Data) == 0 {
+		return nil, errors.New("bad history upload")
+	}
+	return &deepseek.UploadFileResult{ID: "history-" + a.AccountID, Filename: req.Filename, Bytes: int64(len(req.Data)), Status: "uploaded"}, nil
+}
+
+func (d *invalidRefHistoryRetryDSStub) CallCompletion(_ context.Context, a *auth.RequestAuth, payload map[string]any, _ string, _ int) (*http.Response, error) {
+	d.callCount++
+	d.completionAccounts = append(d.completionAccounts, a.AccountID)
+	d.completionRefs = append(d.completionRefs, refIDsFromPayload(payload))
+	if d.callCount == 1 {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"code":0,"msg":"","data":{"biz_code":9,"biz_msg":"invalid ref file id","biz_data":null}}`)),
+		}, nil
+	}
+	return makeSSEHTTPResponse(`data: {"p":"response/content","v":"ok after history reupload"}`, `data: [DONE]`), nil
+}
+
+func (d *invalidRefHistoryRetryDSStub) DeleteSessionForToken(_ context.Context, _ string, _ string) (*deepseek.DeleteSessionResult, error) {
+	return &deepseek.DeleteSessionResult{Success: true}, nil
+}
+
+func (d *invalidRefHistoryRetryDSStub) DeleteAllSessionsForToken(_ context.Context, _ string) error {
+	return nil
+}
+
+func TestChatCompletionsStreamReuploadsHistoryFileAfterInvalidRefFileID(t *testing.T) {
+	authStub := &failoverAuthStub{}
+	dsStub := &invalidRefHistoryRetryDSStub{}
+	h := &Handler{
+		Store: mockOpenAIConfig{wideInput: true, historySplitEnabled: true, historySplitTurns: 1},
+		Auth:  authStub,
+		DS:    dsStub,
+	}
+	reqBody := `{
+		"model":"deepseek-chat",
+		"stream":true,
+		"messages":[
+			{"role":"user","content":"old question"},
+			{"role":"assistant","content":"old answer"},
+			{"role":"user","content":"continue"}
+		]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer ds2api-key")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 after history reupload retry, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "ok after history reupload") {
+		t.Fatalf("expected successful retry body, got %s", rec.Body.String())
+	}
+	if got := strings.Join(dsStub.uploadAccounts, ","); got != "acct-1,acct-2" {
+		t.Fatalf("expected history upload for both accounts, got %q", got)
+	}
+	if got := strings.Join(dsStub.completionAccounts, ","); got != "acct-1,acct-2" {
+		t.Fatalf("expected completion on both accounts, got %q", got)
+	}
+	if len(dsStub.completionRefs) != 2 {
+		t.Fatalf("expected two completion payloads, got %#v", dsStub.completionRefs)
+	}
+	if len(dsStub.completionRefs[0]) == 0 || dsStub.completionRefs[0][0] != "history-acct-1" {
+		t.Fatalf("expected first payload to use acct-1 history file, got %#v", dsStub.completionRefs[0])
+	}
+	if len(dsStub.completionRefs[1]) == 0 || dsStub.completionRefs[1][0] != "history-acct-2" {
+		t.Fatalf("expected retry payload to use acct-2 history file, got %#v", dsStub.completionRefs[1])
+	}
+}
+
+func refIDsFromPayload(payload map[string]any) []string {
+	raw, _ := payload["ref_file_ids"].([]any)
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if s, ok := item.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}

@@ -114,6 +114,14 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 		return
 	}
 	result := sse.CollectStream(resp, thinkingEnabled, true)
+	if result.ErrorMessage != "" {
+		code := strings.TrimSpace(result.ErrorCode)
+		if code == "" {
+			code = "upstream_error"
+		}
+		writeOpenAIErrorWithCodeAndFailureCapture(w, http.StatusBadGateway, result.ErrorMessage, code, sessionID)
+		return
+	}
 	stripReferenceMarkers := h.compatStripReferenceMarkers()
 	sanitizedThinking := cleanVisibleOutput(result.Thinking, stripReferenceMarkers)
 	sanitizedText := cleanVisibleOutput(result.Text, stripReferenceMarkers)

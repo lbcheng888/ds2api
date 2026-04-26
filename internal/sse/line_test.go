@@ -64,6 +64,19 @@ func TestParseDeepSeekContentLineErrorStops(t *testing.T) {
 	}
 }
 
+func TestParseDeepSeekContentLineRawInvalidRefFileID(t *testing.T) {
+	res := ParseDeepSeekContentLine([]byte(`{"code":0,"msg":"","data":{"biz_code":9,"biz_msg":"invalid ref file id","biz_data":null}}`), false, "text")
+	if !res.Parsed || !res.Stop {
+		t.Fatalf("expected raw business error to stop: %#v", res)
+	}
+	if res.ErrorMessage != "invalid ref file id" {
+		t.Fatalf("unexpected error message: %#v", res)
+	}
+	if res.ErrorCode != "upstream_invalid_ref_file_id" {
+		t.Fatalf("unexpected error code: %#v", res)
+	}
+}
+
 func TestParseDeepSeekContentLineContent(t *testing.T) {
 	res := ParseDeepSeekContentLine([]byte(`data: {"p":"response/content","v":"hi"}`), false, "text")
 	if !res.Parsed || res.Stop {

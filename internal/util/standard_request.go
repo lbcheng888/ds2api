@@ -14,6 +14,8 @@ type StandardRequest struct {
 	ResponseModel       string
 	Messages            []any
 	HistoryText         string
+	HistoryRefFileID    string
+	HistoryRefAccountID string
 	ToolsRaw            any
 	ToolSchemas         toolcall.ParameterSchemas
 	FinalPrompt         string

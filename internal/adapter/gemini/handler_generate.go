@@ -142,6 +142,10 @@ func (h *Handler) handleNonStreamGenerateContent(w http.ResponseWriter, resp *ht
 	}
 
 	result := sse.CollectStream(resp, thinkingEnabled, true)
+	if result.ErrorMessage != "" {
+		writeGeminiError(w, http.StatusBadGateway, result.ErrorMessage)
+		return
+	}
 	stripReferenceMarkers := h.compatStripReferenceMarkers()
 	writeJSON(w, http.StatusOK, buildGeminiGenerateContentResponse(
 		model,

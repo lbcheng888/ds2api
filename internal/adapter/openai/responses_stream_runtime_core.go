@@ -226,7 +226,19 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 	if !parsed.Parsed {
 		return streamengine.ParsedDecision{}
 	}
-	if parsed.ContentFilter || parsed.ErrorMessage != "" {
+	if parsed.ContentFilter {
+		return streamengine.ParsedDecision{Stop: true}
+	}
+	if parsed.ErrorMessage != "" {
+		code := strings.TrimSpace(parsed.ErrorCode)
+		if code == "" {
+			code = "upstream_error"
+		}
+		message := strings.TrimSpace(parsed.ErrorMessage)
+		if message == "" {
+			message = "DeepSeek upstream returned an error."
+		}
+		s.failResponse(message, code)
 		return streamengine.ParsedDecision{Stop: true}
 	}
 	if parsed.Stop {

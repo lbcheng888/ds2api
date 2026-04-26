@@ -2,11 +2,14 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"ds2api/internal/auth"
 	"ds2api/internal/config"
+	"ds2api/internal/deepseek"
 	"ds2api/internal/util"
 )
 
@@ -28,8 +31,21 @@ func (h *Handler) callCompletionWithFailover(ctx context.Context, a *auth.Reques
 	}
 	var lastStage string
 	var lastErr error
+	attemptReq := stdReq
 	for attempt := 1; attempt <= attemptLimit; attempt++ {
-		sessionID, resp, stage, err := h.callCompletionOnce(ctx, a, stdReq)
+		refreshedReq, refreshErr := h.ensureHistoryAttachmentForCurrentAccount(ctx, a, attemptReq)
+		if refreshErr != nil {
+			lastStage = "history_upload"
+			lastErr = refreshErr
+			h.markManagedAccountFailure(a)
+			config.Logger.Warn("[openai_completion] attempt failed", "stage", lastStage, "attempt", attempt, "account", accountIDForLog(a), "error", refreshErr)
+			if attempt >= attemptLimit || !h.switchManagedAccount(ctx, a) {
+				break
+			}
+			continue
+		}
+		attemptReq = refreshedReq
+		sessionID, resp, stage, err := h.callCompletionOnce(ctx, a, attemptReq)
 		if err == nil {
 			if resp != nil && shouldFailoverCompletionStatus(resp.StatusCode) && a != nil && a.UseConfigToken {
 				lastStage = "completion_status"
@@ -79,6 +95,63 @@ func (h *Handler) callCompletionOnce(ctx context.Context, a *auth.RequestAuth, s
 		return sessionID, nil, "completion", err
 	}
 	return sessionID, resp, "", nil
+}
+
+func (h *Handler) ensureHistoryAttachmentForCurrentAccount(ctx context.Context, a *auth.RequestAuth, stdReq util.StandardRequest) (util.StandardRequest, error) {
+	if strings.TrimSpace(stdReq.HistoryText) == "" {
+		return stdReq, nil
+	}
+	currentAccount := accountIDForLog(a)
+	if strings.TrimSpace(stdReq.HistoryRefFileID) != "" && strings.EqualFold(strings.TrimSpace(stdReq.HistoryRefAccountID), currentAccount) {
+		return stdReq, nil
+	}
+	if h == nil || h.DS == nil {
+		return stdReq, errors.New("history attachment upload requires DeepSeek client")
+	}
+	result, err := h.DS.UploadFile(ctx, a, deepseek.UploadFileRequest{
+		Filename:    historySplitFilename,
+		ContentType: historySplitContentType,
+		Purpose:     historySplitPurpose,
+		Data:        []byte(stdReq.HistoryText),
+	}, 3)
+	if err != nil {
+		return stdReq, fmt.Errorf("upload history file for current account: %w", err)
+	}
+	fileID := strings.TrimSpace(result.ID)
+	if fileID == "" {
+		return stdReq, errors.New("upload history file for current account returned empty file id")
+	}
+	stdReq.RefFileIDs = replaceHistoryRefFileID(stdReq.RefFileIDs, stdReq.HistoryRefFileID, fileID)
+	stdReq.HistoryRefFileID = fileID
+	stdReq.HistoryRefAccountID = currentAccount
+	return stdReq, nil
+}
+
+func replaceHistoryRefFileID(existing []string, oldID, newID string) []string {
+	newID = strings.TrimSpace(newID)
+	if newID == "" {
+		return existing
+	}
+	oldID = strings.TrimSpace(oldID)
+	out := make([]string, 0, len(existing)+1)
+	seen := map[string]struct{}{strings.ToLower(newID): {}}
+	out = append(out, newID)
+	for _, id := range existing {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" || strings.EqualFold(trimmed, newID) {
+			continue
+		}
+		if oldID != "" && strings.EqualFold(trimmed, oldID) {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func shouldFailoverCompletionStatus(status int) bool {
@@ -148,6 +221,8 @@ func completionAttemptErrorDetail(a *auth.RequestAuth, stage string) (int, strin
 		return http.StatusBadGateway, "Failed to create DeepSeek session after managed-account failover.", "upstream_session_failed"
 	case "pow":
 		return http.StatusBadGateway, "Failed to get DeepSeek PoW after managed-account failover.", "upstream_pow_failed"
+	case "history_upload":
+		return http.StatusBadGateway, "Failed to upload HISTORY.txt after managed-account failover.", "upstream_history_upload_failed"
 	case "completion_status":
 		return http.StatusBadGateway, "DeepSeek completion returned a retriable error after managed-account failover.", "upstream_completion_status_failed"
 	default:
