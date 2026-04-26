@@ -77,10 +77,12 @@ func MessagesPrepareWithThinking(messages []map[string]any, thinkingEnabled bool
 	parts = append(parts, beginSentenceMarker)
 	lastRole := ""
 	lastNonSystemRole := ""
+	lastNonSystemText := ""
 	for _, m := range merged {
 		lastRole = m.Role
 		if m.Role != "system" && strings.TrimSpace(m.Text) != "" {
 			lastNonSystemRole = m.Role
+			lastNonSystemText = m.Text
 		}
 		switch m.Role {
 		case "assistant":
@@ -103,6 +105,9 @@ func MessagesPrepareWithThinking(messages []map[string]any, thinkingEnabled bool
 	}
 	if thinkingEnabled && lastNonSystemRole == "tool" {
 		parts = append(parts, formatRoleBlock(systemMarker, postToolVisibleAnswerInstruction(), endInstructionsMarker))
+	}
+	if lastNonSystemRole == "tool" && isEditToolErrorText(lastNonSystemText) {
+		parts = append(parts, formatRoleBlock(systemMarker, editToolErrorRecoveryInstruction(), endInstructionsMarker))
 	}
 	if thinkingEnabled && lastRole != "assistant" {
 		parts = append(parts, formatRoleBlock(systemMarker, finalAssistantTurnInstruction(), endInstructionsMarker))
@@ -127,6 +132,10 @@ func formatRoleBlock(marker, text, endMarker string) string {
 
 func postToolVisibleAnswerInstruction() string {
 	return "Tool results are complete. If more work is required, call the next needed tool now in this same assistant response. TaskCreate, TaskUpdate, TodoWrite, and TodoRead only update the client task UI; they are not implementation progress, so after any task-list update you must immediately call real work tools such as Read, Grep, Glob, Bash, Edit, MultiEdit, Agent, or TaskOutput. If waiting for background agents or task notifications, call TaskOutput now with the concrete task_id values. If no further tool is required, answer the user now in visible assistant content. Do not stop with future-tense setup text like 'I'll implement' or 'let me run' unless it is followed by a tool call. Do not ask broad next-step questions like 'do you want me to continue' after concrete findings exist; choose the highest-priority actionable fix and proceed when the user asked to optimize, improve, fix, continue, or proceed. Do not put the final answer only in reasoning_content. Ignore task-tracking reminders unless the user explicitly requested task tracking."
+}
+
+func editToolErrorRecoveryInstruction() string {
+	return "The latest edit/update tool failed because its replacement target did not match the current file text. Before any next Edit, MultiEdit, Update, or apply_diff on that file, read the file again and copy the exact current unique old_string from that read result. Do not retry the same stale old_string or infer it from a diff."
 }
 
 func finalAssistantTurnInstruction() string {
@@ -159,6 +168,25 @@ func isInvalidToolParameterErrorText(text string) bool {
 		strings.Contains(lower, "missing") ||
 		strings.Contains(lower, "invalid_type") ||
 		strings.Contains(lower, "expected")
+}
+
+func isEditToolErrorText(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	for _, needle := range []string{
+		"error editing file",
+		"string to replace not found",
+		"old_string",
+		"old string",
+		"replacement target did not match",
+	} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func stripInvalidEmptyParameterToolCallBlocks(text string) string {

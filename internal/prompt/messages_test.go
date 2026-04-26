@@ -133,6 +133,41 @@ func TestMessagesPrepareWithThinkingAddsPostToolVisibleAnswerContract(t *testing
 	}
 }
 
+func TestMessagesPrepareAddsEditErrorRecoveryContract(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "user", "content": "Change core_types.cheng"},
+		{"role": "assistant", "content": "<tool_calls><tool_call><tool_name>Update</tool_name></tool_call></tool_calls>"},
+		{"role": "tool", "content": "Error editing file"},
+	}
+	got := MessagesPrepareWithThinking(messages, true)
+	for _, want := range []string{
+		"The latest edit/update tool failed",
+		"read the file again",
+		"exact current unique old_string",
+		"Do not retry the same stale old_string",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected edit recovery instruction %q, got %q", want, got)
+		}
+	}
+	if strings.Index(got, "Error editing file") > strings.Index(got, "The latest edit/update tool failed") {
+		t.Fatalf("expected recovery instruction after edit failure result, got %q", got)
+	}
+}
+
+func TestMessagesPrepareDoesNotKeepEditRecoveryAfterAssistantReply(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "user", "content": "Change core_types.cheng"},
+		{"role": "assistant", "content": "<tool_calls><tool_call><tool_name>Update</tool_name></tool_call></tool_calls>"},
+		{"role": "tool", "content": "Error editing file"},
+		{"role": "assistant", "content": "I will read the file again."},
+	}
+	got := MessagesPrepareWithThinking(messages, true)
+	if strings.Contains(got, "The latest edit/update tool failed") {
+		t.Fatalf("did not expect stale edit recovery instruction after assistant reply, got %q", got)
+	}
+}
+
 func TestMessagesPrepareWithThinkingAddsTaskNotificationContract(t *testing.T) {
 	messages := []map[string]any{
 		{"role": "user", "content": "<task-notification><task-id>task_a</task-id><status>completed</status></task-notification>"},
