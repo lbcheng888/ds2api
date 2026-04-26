@@ -53,7 +53,7 @@ type chatStreamRuntime struct {
 	finalErrorMessage string
 	finalErrorCode    string
 
-	deferEmptyOutputFailure bool
+	deferRetryableProtocolFailure bool
 }
 
 func newChatStreamRuntime(
@@ -123,6 +123,14 @@ func (s *chatStreamRuntime) sendDone() {
 	}
 }
 
+func (s *chatStreamRuntime) attachRoleIfNeeded(delta map[string]any) {
+	if s.firstChunkSent {
+		return
+	}
+	delta["role"] = "assistant"
+	s.firstChunkSent = true
+}
+
 func (s *chatStreamRuntime) sendFailedChunk(status int, message, code string) {
 	capture := annotateFailureCaptureHeaders(s.w, s.completionID)
 	message = withFailureCaptureMessage(message, capture)
@@ -139,6 +147,16 @@ func (s *chatStreamRuntime) sendFailedChunk(status int, message, code string) {
 		},
 	})
 	s.sendDone()
+}
+
+func (s *chatStreamRuntime) sendFailedChunkOrDefer(status int, message, code string) {
+	s.finalErrorStatus = status
+	s.finalErrorMessage = message
+	s.finalErrorCode = code
+	if s.deferRetryableProtocolFailure && s.retryableProtocolFailure() {
+		return
+	}
+	s.sendFailedChunk(status, message, code)
 }
 
 func (s *chatStreamRuntime) resetStreamToolCallState() {
@@ -172,7 +190,7 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 	}
 	formattedDetected := formatFinalStreamToolCallsWithStableIDs(detected.Calls, s.streamToolCallIDs, s.toolSchemas, s.allowMetaAgentTools)
 	if s.toolChoice.IsRequired() && len(formattedDetected) == 0 && !s.toolCallsEmitted {
-		s.sendFailedChunk(http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation")
+		s.sendFailedChunkOrDefer(http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation")
 		return
 	}
 	if len(formattedDetected) > 0 && !s.toolCallsDoneEmitted {
@@ -232,7 +250,7 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 	}
 	if len(formattedDetected) == 0 && !s.toolCallsEmitted {
 		if status, message, code, ok := futureActionMissingToolCallDetail(finalText, s.toolNames, s.toolSchemas, s.allowMetaAgentTools); ok {
-			s.sendFailedChunk(status, message, code)
+			s.sendFailedChunkOrDefer(status, message, code)
 			return
 		}
 		if !s.visibleContentSent && strings.TrimSpace(finalText) != "" {
@@ -265,13 +283,7 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 			message = "Upstream content filtered the response and returned no output."
 			code = "content_filter"
 		}
-		s.finalErrorStatus = status
-		s.finalErrorMessage = message
-		s.finalErrorCode = code
-		if s.deferEmptyOutputFailure && s.retryableEmptyOutputFailure() {
-			return
-		}
-		s.sendFailedChunk(status, message, code)
+		s.sendFailedChunkOrDefer(status, message, code)
 		return
 	}
 	usage := openaifmt.BuildChatUsage(s.finalPrompt, finalThinking, finalText)
@@ -290,15 +302,16 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 	s.sendDone()
 }
 
-func (s *chatStreamRuntime) retryableEmptyOutputFailure() bool {
+func (s *chatStreamRuntime) retryableProtocolFailure() bool {
 	if s == nil {
 		return false
 	}
-	return s.finalErrorCode == "upstream_empty_output" &&
-		!s.firstChunkSent &&
-		!s.visibleContentSent &&
-		!s.toolCallsEmitted &&
-		!s.toolCallsDoneEmitted
+	switch s.finalErrorCode {
+	case "upstream_empty_output", upstreamMissingToolCallCode, upstreamInvalidToolCallCode, "tool_choice_violation":
+	default:
+		return false
+	}
+	return !s.visibleContentSent && !s.toolCallsEmitted && !s.toolCallsDoneEmitted
 }
 
 func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedDecision {
@@ -333,10 +346,6 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 		}
 		contentSeen = true
 		delta := map[string]any{}
-		if !s.firstChunkSent {
-			delta["role"] = "assistant"
-			s.firstChunkSent = true
-		}
 		if p.Type == "thinking" {
 			if s.thinkingEnabled {
 				trimmed := sse.TrimContinuationOverlap(s.thinking.String(), cleanedText)
@@ -345,6 +354,7 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 				}
 				s.thinking.WriteString(trimmed)
 				delta["reasoning_content"] = trimmed
+				s.attachRoleIfNeeded(delta)
 			}
 		} else {
 			trimmed := sse.TrimContinuationOverlap(s.text.String(), cleanedText)
@@ -355,6 +365,7 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 			if !s.bufferToolContent {
 				delta["content"] = trimmed
 				s.visibleContentSent = true
+				s.attachRoleIfNeeded(delta)
 			} else {
 				events := processToolSieveChunkWithMeta(&s.toolSieve, trimmed, s.toolNames, s.allowMetaAgentTools)
 				for _, evt := range events {

@@ -17,7 +17,7 @@ import (
 func (h *Handler) handleStreamWithRetry(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, resp *http.Response, completionID string, stdReq util.StandardRequest, historySession *chatHistorySession) string {
 	currentCompletionID := completionID
 	currentResp := resp
-	allowEmptyRetry := h.shouldRetryEmptyStreamOutput(a)
+	allowProtocolRetry := h.shouldRetryStreamProtocolFailure(a)
 	for attempt := 1; ; attempt++ {
 		runtime := h.handleStreamAttempt(
 			w,
@@ -33,23 +33,29 @@ func (h *Handler) handleStreamWithRetry(w http.ResponseWriter, r *http.Request, 
 			stdReq.ToolChoice,
 			stdReq.AllowMetaAgentTools,
 			stdReq.StreamIncludeUsage,
-			allowEmptyRetry,
+			allowProtocolRetry,
 			historySession,
 		)
-		if runtime == nil || !allowEmptyRetry || !runtime.retryableEmptyOutputFailure() {
+		if runtime == nil || !allowProtocolRetry || !runtime.retryableProtocolFailure() {
 			return currentCompletionID
 		}
 		h.autoDeleteRemoteSession(r.Context(), a, currentCompletionID)
 		h.markManagedAccountFailure(a)
-		config.Logger.Warn("[openai_stream] upstream returned empty output; retrying on another managed account", "attempt", attempt, "account", accountIDForLog(a), "session_id", currentCompletionID)
+		config.Logger.Warn("[openai_stream] upstream protocol failure; retrying on another managed account", "attempt", attempt, "account", accountIDForLog(a), "session_id", currentCompletionID, "code", runtime.finalErrorCode)
 		if attempt >= maxManagedCompletionAccountAttempts || !h.switchManagedAccount(r.Context(), a) {
 			runtime.sendFailedChunk(runtime.finalErrorStatus, runtime.finalErrorMessage, runtime.finalErrorCode)
+			if historySession != nil {
+				historySession.error(runtime.finalErrorStatus, runtime.finalErrorMessage, runtime.finalErrorCode, runtime.thinking.String(), runtime.text.String())
+			}
 			return currentCompletionID
 		}
 		nextCompletionID, nextResp, stage, err := h.callCompletionWithFailover(r.Context(), a, stdReq)
 		if err != nil {
 			status, message, code := completionAttemptErrorDetail(a, stage)
 			runtime.sendFailedChunk(status, message, code)
+			if historySession != nil {
+				historySession.error(status, message, code, runtime.thinking.String(), runtime.text.String())
+			}
 			return currentCompletionID
 		}
 		currentCompletionID = nextCompletionID
@@ -57,7 +63,7 @@ func (h *Handler) handleStreamWithRetry(w http.ResponseWriter, r *http.Request, 
 	}
 }
 
-func (h *Handler) shouldRetryEmptyStreamOutput(a *auth.RequestAuth) bool {
+func (h *Handler) shouldRetryStreamProtocolFailure(a *auth.RequestAuth) bool {
 	return a != nil && a.UseConfigToken
 }
 
@@ -65,7 +71,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 	h.handleStreamAttempt(w, r, resp, completionID, model, finalPrompt, thinkingEnabled, searchEnabled, toolNames, toolSchemas, toolChoice, allowMetaAgentTools, streamIncludeUsage, false, historySession)
 }
 
-func (h *Handler) handleStreamAttempt(w http.ResponseWriter, r *http.Request, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, streamIncludeUsage bool, deferEmptyOutputFailure bool, historySession *chatHistorySession) *chatStreamRuntime {
+func (h *Handler) handleStreamAttempt(w http.ResponseWriter, r *http.Request, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, streamIncludeUsage bool, deferRetryableProtocolFailure bool, historySession *chatHistorySession) *chatStreamRuntime {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -114,7 +120,7 @@ func (h *Handler) handleStreamAttempt(w http.ResponseWriter, r *http.Request, re
 		runtimeBufferedToolContentMaxBytes(h.Store),
 	)
 	streamRuntime.toolChoice = toolChoice
-	streamRuntime.deferEmptyOutputFailure = deferEmptyOutputFailure
+	streamRuntime.deferRetryableProtocolFailure = deferRetryableProtocolFailure
 
 	streamengine.ConsumeSSE(streamengine.ConsumeConfig{
 		Context:             r.Context(),
@@ -145,7 +151,7 @@ func (h *Handler) handleStreamAttempt(w http.ResponseWriter, r *http.Request, re
 			} else {
 				streamRuntime.finalize("stop")
 			}
-			if streamRuntime.deferEmptyOutputFailure && streamRuntime.retryableEmptyOutputFailure() {
+			if streamRuntime.deferRetryableProtocolFailure && streamRuntime.retryableProtocolFailure() {
 				return
 			}
 			if historySession == nil {
