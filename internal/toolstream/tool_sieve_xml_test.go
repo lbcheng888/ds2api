@@ -84,6 +84,65 @@ func TestProcessToolSieveHandlesLongXMLToolCall(t *testing.T) {
 	}
 }
 
+func TestProcessToolSieveKeepsCDATAEmbeddedToolClosingBuffered(t *testing.T) {
+	var state State
+	payload := strings.Join([]string{
+		"# DS2API 4.0 更新内容",
+		"",
+		strings.Repeat("x", 4096),
+		"```xml",
+		"<tool_calls>",
+		"  <invoke name=\"demo\">",
+		"    <parameter name=\"value\">x</parameter>",
+		"  </invoke>",
+		"</tool_calls>",
+		"```",
+		"tail",
+	}, "\n")
+	innerClose := strings.Index(payload, "</tool_calls>") + len("</tool_calls>")
+	chunks := []string{
+		"<tool_calls>\n  <invoke name=\"Write\">\n    <parameter name=\"content\"><![CDATA[",
+		payload[:innerClose],
+		payload[innerClose:],
+		"]]></parameter>\n    <parameter name=\"file_path\">DS2API-4.0-Release-Notes.md</parameter>\n  </invoke>\n</tool_calls>",
+	}
+
+	var events []Event
+	for i, c := range chunks {
+		next := ProcessChunk(&state, c, []string{"Write"})
+		if i <= 1 {
+			for _, evt := range next {
+				if evt.Content != "" || len(evt.ToolCalls) > 0 {
+					t.Fatalf("expected no events before outer closing tag, chunk=%d events=%#v", i, next)
+				}
+			}
+		}
+		events = append(events, next...)
+	}
+	events = append(events, Flush(&state, []string{"Write"})...)
+
+	var textContent strings.Builder
+	var gotPayload string
+	toolCalls := 0
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		if len(evt.ToolCalls) > 0 {
+			toolCalls += len(evt.ToolCalls)
+			gotPayload, _ = evt.ToolCalls[0].Input["content"].(string)
+		}
+	}
+
+	if toolCalls != 1 {
+		t.Fatalf("expected one parsed tool call, got %d events=%#v", toolCalls, events)
+	}
+	if textContent.Len() != 0 {
+		t.Fatalf("expected no leaked text, got %q", textContent.String())
+	}
+	if gotPayload != payload {
+		t.Fatalf("expected full CDATA payload to survive intact, got len=%d want=%d", len(gotPayload), len(payload))
+	}
+}
+
 func TestProcessToolSieveXMLWithLeadingText(t *testing.T) {
 	var state State
 	// Model outputs some prose then an XML tool call.

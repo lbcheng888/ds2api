@@ -54,6 +54,32 @@ echo "hello"
 	}
 }
 
+func TestParseToolCallsKeepsToolSyntaxInsideCDATAAsParameterText(t *testing.T) {
+	payload := strings.Join([]string{
+		"# Release notes",
+		"",
+		"```xml",
+		"<tool_calls>",
+		"  <invoke name=\"demo\">",
+		"    <parameter name=\"value\">x</parameter>",
+		"  </invoke>",
+		"</tool_calls>",
+		"```",
+	}, "\n")
+	text := `<tool_calls><invoke name="Write"><parameter name="content"><![CDATA[` + payload + `]]></parameter><parameter name="file_path">DS2API-4.0-Release-Notes.md</parameter></invoke></tool_calls>`
+	calls := ParseToolCalls(text, []string{"Write"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	content, _ := calls[0].Input["content"].(string)
+	if content != payload {
+		t.Fatalf("expected CDATA payload with nested tool syntax to survive intact, got %q", content)
+	}
+	if calls[0].Input["file_path"] != "DS2API-4.0-Release-Notes.md" {
+		t.Fatalf("expected file_path parameter, got %#v", calls[0].Input)
+	}
+}
+
 func TestParseToolCallsSupportsInvokeParameters(t *testing.T) {
 	text := `<tool_calls><invoke name="get_weather"><parameter name="city">beijing</parameter><parameter name="unit">c</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"get_weather"})

@@ -35,9 +35,10 @@ func consumeXMLToolCapture(captured string, toolNames []string) (prefix string, 
 		if openIdx < 0 {
 			continue
 		}
-		// Find the LAST occurrence of the specific closing tag to get the outermost block.
-		closeIdx := strings.LastIndex(lower, pair.close)
-		if closeIdx < openIdx {
+		// Find the matching closing tag outside CDATA. Long write-file tool
+		// calls often contain XML examples in CDATA, including </tool_calls>.
+		closeIdx := findXMLCloseOutsideCDATA(captured, pair.close, openIdx+len(pair.open))
+		if closeIdx < 0 {
 			// Opening tag is present but its specific closing tag hasn't arrived.
 			// Return not-ready so we keep buffering until the canonical wrapper closes.
 			return "", nil, "", false
@@ -57,7 +58,7 @@ func consumeXMLToolCapture(captured string, toolNames []string) (prefix string, 
 	}
 	if !strings.Contains(lower, "<tool_calls") {
 		invokeIdx := strings.Index(lower, "<invoke")
-		closeIdx := strings.LastIndex(lower, "</tool_calls>")
+		closeIdx := findXMLCloseOutsideCDATA(captured, "</tool_calls>", invokeIdx)
 		if invokeIdx >= 0 && closeIdx > invokeIdx {
 			closeEnd := closeIdx + len("</tool_calls>")
 			xmlBlock := "<tool_calls>" + captured[invokeIdx:closeIdx] + "</tool_calls>"
@@ -79,13 +80,46 @@ func consumeXMLToolCapture(captured string, toolNames []string) (prefix string, 
 func hasOpenXMLToolTag(captured string) bool {
 	lower := strings.ToLower(captured)
 	for _, pair := range xmlToolCallTagPairs {
-		if strings.Contains(lower, pair.open) {
-			if !strings.Contains(lower, pair.close) {
+		openIdx := strings.Index(lower, pair.open)
+		if openIdx >= 0 {
+			if findXMLCloseOutsideCDATA(captured, pair.close, openIdx+len(pair.open)) < 0 {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func findXMLCloseOutsideCDATA(s, closeTag string, start int) int {
+	if s == "" || closeTag == "" {
+		return -1
+	}
+	if start < 0 {
+		start = 0
+	}
+	lower := strings.ToLower(s)
+	target := strings.ToLower(closeTag)
+	for i := start; i < len(s); {
+		switch {
+		case strings.HasPrefix(lower[i:], "<![cdata["):
+			end := strings.Index(lower[i+len("<![cdata["):], "]]>")
+			if end < 0 {
+				return -1
+			}
+			i += len("<![cdata[") + end + len("]]>")
+		case strings.HasPrefix(lower[i:], "<!--"):
+			end := strings.Index(lower[i+len("<!--"):], "-->")
+			if end < 0 {
+				return -1
+			}
+			i += len("<!--") + end + len("-->")
+		case strings.HasPrefix(lower[i:], target):
+			return i
+		default:
+			i++
+		}
+	}
+	return -1
 }
 
 // findPartialXMLToolTagStart checks if the string ends with a partial canonical
