@@ -146,7 +146,7 @@ function findPidByPort(port) {
       }
       return [...pids];
     } else {
-      const output = execSync(`lsof -ti :${port}`, {
+      const output = execSync(`lsof -nP -tiTCP:${port} -sTCP:LISTEN`, {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'ignore'],
       });
@@ -236,6 +236,75 @@ function launchctl(args, options = {}) {
   });
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function restartDrainTimeoutMs() {
+  const raw = Number.parseInt(process.env.DS2API_RESTART_DRAIN_TIMEOUT_SECONDS || '300', 10);
+  const seconds = Number.isFinite(raw) && raw >= 0 ? raw : 300;
+  return seconds * 1000;
+}
+
+function forceRestartEnabled() {
+  return ['1', 'true', 'yes'].includes(String(process.env.DS2API_FORCE_RESTART || '').trim().toLowerCase());
+}
+
+async function fetchQueueStatus() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+  try {
+    const res = await fetch(`http://127.0.0.1:${CONFIG.port}/admin/queue/status`, {
+      headers: { Authorization: `Bearer ${CONFIG.adminKey}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function countEstablishedBackendConnections() {
+  if (isWindows) return 0;
+  try {
+    const output = execSync(`lsof -nP -iTCP:${CONFIG.port} -sTCP:ESTABLISHED`, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    return output.trim().split('\n').filter(line => line.trim() && !line.startsWith('COMMAND')).length;
+  } catch {
+    return 0;
+  }
+}
+
+async function waitForBackendDrain() {
+  const timeoutMs = restartDrainTimeoutMs();
+  if (timeoutMs === 0 || forceRestartEnabled()) return;
+  if (getRunningStatus().backend.length === 0) return;
+
+  const started = Date.now();
+  let lastDetail = '';
+  while (Date.now() - started <= timeoutMs) {
+    const status = await fetchQueueStatus();
+    if (status) {
+      const inUse = Number(status.in_use || 0);
+      const waiting = Number(status.waiting || 0);
+      if (inUse === 0 && waiting === 0) return;
+      lastDetail = `in_use=${inUse}, waiting=${waiting}`;
+    } else {
+      const established = countEstablishedBackendConnections();
+      if (established === 0) return;
+      lastDetail = `established_connections=${established}`;
+    }
+    log.warn(`后端仍有活跃请求，等待安全重启 (${lastDetail})...`);
+    await sleep(3000);
+  }
+  throw new Error(`service-restart 已取消：${Math.round(timeoutMs / 1000)} 秒内后端仍未空闲 (${lastDetail || 'unknown'}). 如确认要强制重启，设置 DS2API_FORCE_RESTART=1`);
+}
+
 function bootoutLaunchAgent({ quiet = false } = {}) {
   if (isWindows) return;
   try {
@@ -268,6 +337,13 @@ function stopLaunchAgent() {
   if (isWindows) throw new Error('service-stop 仅支持 macOS launchd');
   bootoutLaunchAgent({ quiet: true });
   log.success(`launchd 后端已停止: ${LAUNCHD_LABEL}`);
+}
+
+async function restartLaunchAgent() {
+  if (isWindows) throw new Error('service-restart 仅支持 macOS launchd');
+  await waitForBackendDrain();
+  stopLaunchAgent();
+  await startLaunchAgent();
 }
 
 function showLaunchAgentStatus() {
@@ -659,8 +735,7 @@ async function main() {
       break;
 
     case 'service-restart':
-      stopLaunchAgent();
-      await startLaunchAgent();
+      await restartLaunchAgent();
       break;
 
     case 'service-status':

@@ -36,12 +36,14 @@ func (s *responsesStreamRuntime) ensureMessageItemAdded() {
 	if s.messageAdded {
 		return
 	}
+	s.closeReasoningItem()
 	itemID := s.ensureMessageItemID()
 	item := map[string]any{
-		"id":     itemID,
-		"type":   "message",
-		"role":   "assistant",
-		"status": "in_progress",
+		"id":      itemID,
+		"type":    "message",
+		"role":    "assistant",
+		"status":  "in_progress",
+		"content": []any{},
 	}
 	s.sendEvent(
 		"response.output_item.added",
@@ -62,7 +64,7 @@ func (s *responsesStreamRuntime) ensureMessageContentPartAdded() {
 			s.ensureMessageItemID(),
 			s.ensureMessageOutputIndex(),
 			0,
-			map[string]any{"type": "output_text", "text": ""},
+			map[string]any{"type": "output_text", "text": "", "annotations": []any{}, "logprobs": []any{}},
 		),
 	)
 	s.messagePartAdded = true
@@ -111,7 +113,7 @@ func (s *responsesStreamRuntime) closeMessageItem() {
 				itemID,
 				outputIndex,
 				0,
-				map[string]any{"type": "output_text", "text": text},
+				map[string]any{"type": "output_text", "text": text, "annotations": []any{}, "logprobs": []any{}},
 			),
 		)
 		s.messagePartAdded = false
@@ -123,8 +125,10 @@ func (s *responsesStreamRuntime) closeMessageItem() {
 		"status": "completed",
 		"content": []map[string]any{
 			{
-				"type": "output_text",
-				"text": text,
+				"type":        "output_text",
+				"text":        text,
+				"annotations": []any{},
+				"logprobs":    []any{},
 			},
 		},
 	}
@@ -182,6 +186,7 @@ func (s *responsesStreamRuntime) ensureFunctionItemAdded(callIndex int, name str
 	if fnName == "" {
 		return
 	}
+	s.closeReasoningItem()
 	outputIndex := s.ensureFunctionOutputIndex(callIndex)
 	itemID := s.ensureFunctionItemID(callIndex)
 	callID := s.ensureToolCallID(callIndex)

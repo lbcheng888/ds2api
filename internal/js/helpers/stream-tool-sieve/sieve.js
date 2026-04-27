@@ -13,6 +13,12 @@ const {
   hasOpenXMLToolTag,
   findPartialXMLToolTagStart,
 } = require('./sieve-xml');
+const {
+  findVisibleJSONToolSegmentStart,
+  findPartialVisibleJSONToolSegmentStart,
+  consumeVisibleJSONToolCapture,
+  visibleJSONToolCaptureMayContinue,
+} = require('./visible-json');
 function processToolSieveChunk(state, chunk, toolNames) {
   if (!state) {
     return [];
@@ -63,7 +69,10 @@ function processToolSieveChunk(state, chunk, toolNames) {
     if (!pending) {
       break;
     }
-    const start = findToolSegmentStart(state, pending);
+    let start = findToolSegmentStart(state, pending);
+    if (start < 0) {
+      start = findVisibleJSONToolSegmentStart(state, pending, insideCodeFenceWithState);
+    }
     if (start >= 0) {
       const prefix = pending.slice(0, start);
       if (prefix) {
@@ -144,6 +153,13 @@ function splitSafeContentForToolDetection(state, s) {
     }
     return ['', text];
   }
+  const jsonIdx = findPartialVisibleJSONToolSegmentStart(state, text, insideCodeFenceWithState);
+  if (jsonIdx >= 0) {
+    if (jsonIdx > 0) {
+      return [text.slice(0, jsonIdx), text.slice(jsonIdx)];
+    }
+    return ['', text];
+  }
   return [text, ''];
 }
 
@@ -187,6 +203,13 @@ function consumeToolCapture(state, toolNames) {
   }
   // If XML tags are present but block is incomplete, keep buffering.
   if (hasOpenXMLToolTag(captured)) {
+    return { ready: false, prefix: '', calls: [], suffix: '' };
+  }
+  const jsonResult = consumeVisibleJSONToolCapture(captured, toolNames);
+  if (jsonResult.ready) {
+    return jsonResult;
+  }
+  if (visibleJSONToolCaptureMayContinue(captured)) {
     return { ready: false, prefix: '', calls: [], suffix: '' };
   }
 

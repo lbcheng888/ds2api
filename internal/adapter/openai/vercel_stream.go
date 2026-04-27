@@ -14,6 +14,7 @@ import (
 
 	"ds2api/internal/auth"
 	"ds2api/internal/config"
+	"ds2api/internal/protocol"
 	"ds2api/internal/util"
 )
 
@@ -60,7 +61,8 @@ func (h *Handler) handleVercelStreamPrepare(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusBadRequest, "stream must be true")
 		return
 	}
-	stdReq, err := normalizeOpenAIChatRequest(h.Store, req, requestTraceID(r))
+	profile := protocol.DetectClientProfile(r, req)
+	stdReq, err := normalizeOpenAIChatRequestWithProfile(h.Store, req, requestTraceID(r), profile)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error())
 		return
@@ -100,6 +102,7 @@ func (h *Handler) handleVercelStreamPrepare(w http.ResponseWriter, r *http.Reque
 		"session_id":       sessionID,
 		"lease_id":         leaseID,
 		"model":            stdReq.ResponseModel,
+		"client_profile":   stdReq.ClientProfile,
 		"final_prompt":     stdReq.FinalPrompt,
 		"thinking_enabled": stdReq.Thinking,
 		"search_enabled":   stdReq.Search,

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"ds2api/internal/toolcall"
 )
 
 // LineResult is the normalized parse result for one DeepSeek SSE line.
@@ -168,9 +170,55 @@ func parseLateToolTitleContent(raw []byte) (string, bool) {
 
 func looksLikeLateToolTitleContent(content string) bool {
 	lower := strings.ToLower(content)
+	if !hasLateToolTitleCallMarker(lower) {
+		return false
+	}
+	if !hasClosedLateToolTitleInput(content) {
+		return false
+	}
+	for _, call := range toolcall.ParseToolCalls(content, nil) {
+		if len(call.Input) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLateToolTitleCallMarker(lower string) bool {
 	return strings.Contains(lower, "<tool_call") ||
 		strings.Contains(lower, "<tool ") ||
 		strings.Contains(lower, "<invoke") ||
 		strings.Contains(lower, "<function_call") ||
 		strings.Contains(lower, "<tool_use")
+}
+
+func hasClosedLateToolTitleInput(content string) bool {
+	lower := strings.ToLower(content)
+	for _, tag := range []string{
+		"parameter",
+		"parameters",
+		"arguments",
+		"args",
+		"input",
+		"file_path",
+		"filepath",
+		"path",
+		"command",
+		"cmd",
+		"pattern",
+		"glob",
+		"limit",
+		"offset",
+		"description",
+		"prompt",
+		"subagent_type",
+		"content",
+		"old_string",
+		"new_string",
+	} {
+		if strings.Contains(lower, "</"+tag+">") {
+			return true
+		}
+	}
+	return false
 }

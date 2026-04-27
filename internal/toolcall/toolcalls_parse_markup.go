@@ -12,16 +12,20 @@ var xmlToolCallPattern = regexp.MustCompile(`(?is)<tool_call>\s*(.*?)\s*</tool_c
 var xmlToolCallOpenPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?tool_call\b[^>]*>`)
 var xmlToolCallClosePattern = regexp.MustCompile(`(?is)</(?:[a-z0-9_:-]+:)?tool_call>`)
 var xmlToolCallsClosePattern = regexp.MustCompile(`(?is)</(?:[a-z0-9_:-]+:)?tool_calls>`)
+var missingToolCallOpenAnglePattern = regexp.MustCompile(`(?is)(^|[^</])\b(tool_calls|tool_call)\s*>`)
+var looseDirectXMLToolElementOpenPattern = regexp.MustCompile(`(?is)^<([a-z0-9_:-]+)\b[^>]*>`)
+var looseWrapperParameterValuePattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?parameters\b[^>]*>\s*<([a-z0-9_\-.]+)\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?parameters>`)
 var functionCallPattern = regexp.MustCompile(`(?is)<function_call>\s*([^<]+?)\s*</function_call>`)
-var functionParamPattern = regexp.MustCompile(`(?is)<function\s+parameter\s+name="([^"]+)"\s*>\s*(.*?)\s*</function\s+parameter>`)
-var antmlFunctionCallPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_]+:)?function_call[^>]*(?:name|function)="([^"]+)"[^>]*>\s*(.*?)\s*</(?:[a-z0-9_]+:)?function_call>`)
-var antmlArgumentPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_]+:)?argument\s+name="([^"]+)"\s*>\s*(.*?)\s*</(?:[a-z0-9_]+:)?argument>`)
-var invokeCallPattern = regexp.MustCompile(`(?is)<invoke\s+name="([^"]+)"\s*>(.*?)</invoke>`)
-var invokeParamPattern = regexp.MustCompile(`(?is)<parameter\s+name="([^"]+)"\s*>\s*(.*?)\s*</parameter>`)
+var functionParamPattern = regexp.MustCompile(`(?is)<function\s+parameter\b([^>]*)>\s*(.*?)\s*</function\s+parameter>`)
+var antmlFunctionCallPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_]+:)?function_call\b([^>]*)>\s*(.*?)\s*</(?:[a-z0-9_]+:)?function_call>`)
+var antmlArgumentPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_]+:)?argument\b([^>]*)>\s*(.*?)\s*</(?:[a-z0-9_]+:)?argument>`)
+var invokeCallPattern = regexp.MustCompile(`(?is)<invoke\b([^>]*)>(.*?)</invoke>`)
+var invokeParamPattern = regexp.MustCompile(`(?is)<parameter\b([^>]*)>\s*(.*?)\s*</parameter>`)
 var directToolElementPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?tool\b([^>]*)>(.*?)</(?:[a-z0-9_:-]+:)?tool>`)
 var namedParameterPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?(?:parameter|argument|param)\b([^>]*)>(.*?)</(?:[a-z0-9_:-]+:)?(?:parameter|argument|param)>`)
-var parameterNameAttrPattern = regexp.MustCompile(`(?is)\bname\s*=\s*"([^"]+)"`)
-var toolUseFunctionPattern = regexp.MustCompile(`(?is)<tool_use>\s*<function\s+name="([^"]+)"\s*>(.*?)</function>\s*</tool_use>`)
+var selfClosingNamedParameterPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?(?:parameter|argument|param)\b([^>]*)/>`)
+var markupAttrPattern = regexp.MustCompile(`(?is)\b([a-z0-9_:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>/]+))`)
+var toolUseFunctionPattern = regexp.MustCompile(`(?is)<tool_use>\s*<function\b([^>]*)>(.*?)</function>\s*</tool_use>`)
 var toolUseNameParametersPattern = regexp.MustCompile(`(?is)<tool_use>\s*<tool_name>\s*([^<]+?)\s*</tool_name>\s*<parameters>\s*(.*?)\s*</parameters>\s*</tool_use>`)
 var toolUseFunctionNameParametersPattern = regexp.MustCompile(`(?is)<tool_use>\s*<function_name>\s*([^<]+?)\s*</function_name>\s*<parameters>\s*(.*?)\s*</parameters>\s*</tool_use>`)
 var toolUseToolNameBodyPattern = regexp.MustCompile(`(?is)<tool_use>\s*<tool_name>\s*([^<]+?)\s*</tool_name>\s*(.*?)\s*</tool_use>`)
@@ -33,6 +37,7 @@ var xmlToolNamePatterns = []*regexp.Regexp{
 }
 
 func parseXMLToolCalls(text string) []ParsedToolCall {
+	text = RepairMalformedToolCallXML(text)
 	text = repairMissingToolCallClose(text)
 	if calls := parseDirectToolElementCalls(text); len(calls) > 0 {
 		return calls
@@ -83,10 +88,7 @@ func parseDirectToolElementCalls(text string) []ParsedToolCall {
 		if len(m) < 3 {
 			continue
 		}
-		name := ""
-		if attrMatch := toolCallMarkupAttrPattern.FindStringSubmatch(m[1]); len(attrMatch) >= 3 {
-			name = strings.TrimSpace(html.UnescapeString(attrMatch[2]))
-		}
+		name := markupAttrValue(m[1], "name", "function", "tool")
 		if name == "" {
 			continue
 		}
@@ -150,6 +152,9 @@ func parseSingleXMLToolCall(block string) (ParsedToolCall, bool) {
 	}
 
 	if call, ok := parseDirectXMLToolElement(inner); ok {
+		return call, true
+	}
+	if call, ok := parseLooseDirectXMLToolElement(inner); ok {
 		return call, true
 	}
 
@@ -241,6 +246,58 @@ func parseSingleXMLToolCall(block string) (ParsedToolCall, bool) {
 	return ParsedToolCall{Name: strings.TrimSpace(html.UnescapeString(name)), Input: params}, true
 }
 
+func RepairMalformedToolCallXML(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	lower := strings.ToLower(text)
+	if !strings.Contains(lower, "tool_call") {
+		return text
+	}
+	if !strings.Contains(lower, "<tool_call") &&
+		!strings.Contains(lower, "</tool_call") &&
+		!strings.Contains(lower, "<tool ") &&
+		!strings.Contains(lower, "<invoke") &&
+		!strings.Contains(lower, "<function_call") {
+		return text
+	}
+	return missingToolCallOpenAnglePattern.ReplaceAllString(text, `${1}<${2}>`)
+}
+
+func parseLooseDirectXMLToolElement(inner string) (ParsedToolCall, bool) {
+	trimmed := strings.TrimSpace(inner)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "<") {
+		return ParsedToolCall{}, false
+	}
+	start := looseDirectXMLToolElementOpenPattern.FindStringSubmatchIndex(trimmed)
+	if len(start) < 4 {
+		return ParsedToolCall{}, false
+	}
+	name := strings.TrimSpace(trimmed[start[2]:start[3]])
+	if name == "" || isXMLToolMetadataTag(name) {
+		return ParsedToolCall{}, false
+	}
+	if idx := strings.LastIndex(name, ":"); idx >= 0 && idx+1 < len(name) {
+		name = name[idx+1:]
+	}
+	body := strings.TrimSpace(trimmed[start[1]:])
+	closeTag := "</" + strings.ToLower(name) + ">"
+	if closeIdx := strings.LastIndex(strings.ToLower(body), closeTag); closeIdx >= 0 {
+		body = strings.TrimSpace(body[:closeIdx])
+	}
+	input := extractXMLToolParamsByRegex(body)
+	if len(input) == 0 || isOnlyRawValue(input, body) {
+		input = parseMarkupKVObject(body)
+	}
+	if len(input) == 0 {
+		input = parseStructuredToolCallInput(body)
+	}
+	if input == nil {
+		input = map[string]any{}
+	}
+	return ParsedToolCall{Name: name, Input: input}, true
+}
+
 func stripTopLevelXMLParameters(inner string) string {
 	out := strings.TrimSpace(inner)
 	for {
@@ -289,10 +346,45 @@ func extractXMLToolParamsByRegex(inner string) map[string]any {
 		return named
 	}
 	parsed := parseMarkupInput(raw)
+	if len(parsed) == 0 || isOnlyRawValue(parsed, raw) {
+		loose := parseLooseWrapperParameterValues(inner)
+		if len(loose) > 0 {
+			for k, v := range parseMarkupKVObject(stripTopLevelXMLParameters(inner)) {
+				loose[k] = v
+			}
+			return loose
+		}
+	}
 	if parsed == nil {
 		return map[string]any{}
 	}
 	return parsed
+}
+
+func parseLooseWrapperParameterValues(inner string) map[string]any {
+	matches := looseWrapperParameterValuePattern.FindAllStringSubmatch(strings.TrimSpace(inner), -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for _, m := range matches {
+		if len(m) < 3 {
+			continue
+		}
+		key := strings.TrimSpace(m[1])
+		if key == "" || isXMLToolMetadataTag(key) {
+			continue
+		}
+		value := parseMarkupValue(m[2])
+		if value == nil {
+			continue
+		}
+		appendMarkupValue(out, key, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func extractLooseMarkupArguments(inner string) string {
@@ -395,21 +487,13 @@ func xmlToolNameAttribute(start xml.StartElement) string {
 }
 
 func parseNamedMarkupParameters(raw string) map[string]any {
-	matches := namedParameterPattern.FindAllStringSubmatch(strings.TrimSpace(raw), -1)
-	if len(matches) == 0 {
-		return nil
-	}
 	out := map[string]any{}
+	matches := namedParameterPattern.FindAllStringSubmatch(strings.TrimSpace(raw), -1)
 	for _, m := range matches {
 		if len(m) < 3 {
 			continue
 		}
-		attr := strings.TrimSpace(m[1])
-		nameMatch := parameterNameAttrPattern.FindStringSubmatch(attr)
-		if len(nameMatch) < 2 {
-			continue
-		}
-		key := strings.TrimSpace(html.UnescapeString(nameMatch[1]))
+		key := markupAttrValue(m[1], "name")
 		if key == "" {
 			continue
 		}
@@ -418,6 +502,20 @@ func parseNamedMarkupParameters(raw string) map[string]any {
 			continue
 		}
 		appendMarkupValue(out, key, value)
+	}
+	for _, m := range selfClosingNamedParameterPattern.FindAllStringSubmatch(strings.TrimSpace(raw), -1) {
+		if len(m) < 2 {
+			continue
+		}
+		key := markupAttrValue(m[1], "name")
+		if key == "" {
+			continue
+		}
+		value := markupAttrValue(m[1], "value")
+		if value == "" {
+			continue
+		}
+		appendMarkupValue(out, key, html.UnescapeString(value))
 	}
 	if len(out) == 0 {
 		return nil
@@ -439,7 +537,7 @@ func parseFunctionCallTagStyle(text string) (ParsedToolCall, bool) {
 		if len(pm) < 3 {
 			continue
 		}
-		key := strings.TrimSpace(pm[1])
+		key := markupAttrValue(pm[1], "name")
 		val := extractRawTagValue(pm[2])
 		if key != "" {
 			if parsed := parseStructuredToolCallInput(val); len(parsed) > 0 {
@@ -475,7 +573,7 @@ func parseSingleAntmlFunctionCallMatch(m []string) (ParsedToolCall, bool) {
 	if len(m) < 3 {
 		return ParsedToolCall{}, false
 	}
-	name := strings.TrimSpace(html.UnescapeString(m[1]))
+	name := markupAttrValue(m[1], "name", "function")
 	if name == "" {
 		return ParsedToolCall{}, false
 	}
@@ -490,7 +588,7 @@ func parseSingleAntmlFunctionCallMatch(m []string) (ParsedToolCall, bool) {
 		if len(am) < 3 {
 			continue
 		}
-		k := strings.TrimSpace(am[1])
+		k := markupAttrValue(am[1], "name")
 		v := extractRawTagValue(am[2])
 		if k != "" {
 			input[k] = v
@@ -517,7 +615,7 @@ func parseInvokeFunctionCallStyle(text string) (ParsedToolCall, bool) {
 	if len(m) < 3 {
 		return ParsedToolCall{}, false
 	}
-	name := strings.TrimSpace(html.UnescapeString(m[1]))
+	name := markupAttrValue(m[1], "name", "function", "tool")
 	if name == "" {
 		return ParsedToolCall{}, false
 	}
@@ -526,7 +624,7 @@ func parseInvokeFunctionCallStyle(text string) (ParsedToolCall, bool) {
 		if len(pm) < 3 {
 			continue
 		}
-		k := strings.TrimSpace(pm[1])
+		k := markupAttrValue(pm[1], "name")
 		v := extractRawTagValue(pm[2])
 		if k != "" {
 			if parsed := parseStructuredToolCallInput(v); len(parsed) > 0 {
@@ -555,7 +653,7 @@ func parseToolUseFunctionStyle(text string) (ParsedToolCall, bool) {
 	if len(m) < 3 {
 		return ParsedToolCall{}, false
 	}
-	name := strings.TrimSpace(html.UnescapeString(m[1]))
+	name := markupAttrValue(m[1], "name", "function", "tool")
 	if name == "" {
 		return ParsedToolCall{}, false
 	}
@@ -565,7 +663,7 @@ func parseToolUseFunctionStyle(text string) (ParsedToolCall, bool) {
 		if len(pm) < 3 {
 			continue
 		}
-		k := strings.TrimSpace(pm[1])
+		k := markupAttrValue(pm[1], "name")
 		v := extractRawTagValue(pm[2])
 		if k != "" {
 			if parsed := parseStructuredToolCallInput(v); len(parsed) > 0 {
@@ -639,6 +737,33 @@ func parseToolUseToolNameBodyStyle(text string) (ParsedToolCall, bool) {
 		}
 	}
 	return ParsedToolCall{Name: name, Input: input}, true
+}
+
+func markupAttrValue(attrs string, names ...string) string {
+	if strings.TrimSpace(attrs) == "" {
+		return ""
+	}
+	for _, m := range markupAttrPattern.FindAllStringSubmatch(attrs, -1) {
+		if len(m) < 5 {
+			continue
+		}
+		key := strings.TrimSpace(m[1])
+		if key == "" {
+			continue
+		}
+		for _, want := range names {
+			if !strings.EqualFold(key, strings.TrimSpace(want)) {
+				continue
+			}
+			for i := 2; i <= 4; i++ {
+				if m[i] != "" {
+					return strings.TrimSpace(html.UnescapeString(m[i]))
+				}
+			}
+			return ""
+		}
+	}
+	return ""
 }
 
 func parseXMLChildKV(body string) map[string]any {

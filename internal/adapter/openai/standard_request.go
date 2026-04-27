@@ -5,11 +5,16 @@ import (
 	"strings"
 
 	"ds2api/internal/config"
+	"ds2api/internal/protocol"
 	"ds2api/internal/toolcall"
 	"ds2api/internal/util"
 )
 
 func normalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID string) (util.StandardRequest, error) {
+	return normalizeOpenAIChatRequestWithProfile(store, req, traceID, protocol.ClientProfile{Name: protocol.ProfileUnknown})
+}
+
+func normalizeOpenAIChatRequestWithProfile(store ConfigReader, req map[string]any, traceID string, profile protocol.ClientProfile) (util.StandardRequest, error) {
 	model, _ := req["model"].(string)
 	messagesRaw, _ := req["messages"].([]any)
 	if strings.TrimSpace(model) == "" || len(messagesRaw) == 0 {
@@ -41,6 +46,7 @@ func normalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID 
 	}
 	allowMetaAgentTools := store != nil && store.CompatAllowMetaAgentTools()
 	messagesRaw = appendOpenAIResponseFormatInstruction(messagesRaw, req["response_format"])
+	messagesRaw = appendOpenAIClientProfileInstruction(messagesRaw, profile)
 	finalPrompt, toolNames := buildOpenAIFinalPromptWithPolicy(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled, allowMetaAgentTools)
 	toolNames = ensureToolDetectionEnabled(toolNames, req["tools"])
 	if !toolPolicy.IsNone() {
@@ -68,10 +74,15 @@ func normalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID 
 		Search:              searchEnabled,
 		RefFileIDs:          refFileIDs,
 		PassThrough:         passThrough,
+		ClientProfile:       profile.Name,
 	}, nil
 }
 
 func normalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, traceID string) (util.StandardRequest, error) {
+	return normalizeOpenAIResponsesRequestWithProfile(store, req, traceID, protocol.ClientProfile{Name: protocol.ProfileUnknown})
+}
+
+func normalizeOpenAIResponsesRequestWithProfile(store ConfigReader, req map[string]any, traceID string, profile protocol.ClientProfile) (util.StandardRequest, error) {
 	model, _ := req["model"].(string)
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -114,6 +125,7 @@ func normalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 		return util.StandardRequest{}, err
 	}
 	messagesRaw = appendOpenAIResponseFormatInstruction(messagesRaw, req["response_format"])
+	messagesRaw = appendOpenAIClientProfileInstruction(messagesRaw, profile)
 	finalPrompt, toolNames := buildOpenAIFinalPromptWithPolicy(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled, allowMetaAgentTools)
 	toolNames = ensureToolDetectionEnabled(toolNames, req["tools"])
 	if !toolPolicy.IsNone() {
@@ -141,7 +153,19 @@ func normalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 		Search:              searchEnabled,
 		RefFileIDs:          refFileIDs,
 		PassThrough:         passThrough,
+		ClientProfile:       profile.Name,
 	}, nil
+}
+
+func appendOpenAIClientProfileInstruction(messages []any, profile protocol.ClientProfile) []any {
+	instruction := protocol.ClientProfilePromptInstruction(profile)
+	if strings.TrimSpace(instruction) == "" {
+		return messages
+	}
+	out := make([]any, 0, len(messages)+1)
+	out = append(out, map[string]any{"role": "system", "content": instruction})
+	out = append(out, messages...)
+	return out
 }
 
 func ensureToolDetectionEnabled(toolNames []string, toolsRaw any) []string {

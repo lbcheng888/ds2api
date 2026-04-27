@@ -7,6 +7,10 @@ const {
   parseMarkupToolCalls,
   stripFencedCodeBlocks,
 } = require('./parse_payload');
+const {
+  parseVisibleJSONToolCalls,
+  looksLikeVisibleJSONToolCallSyntax,
+} = require('./visible-json');
 
 const TOOL_MARKUP_PREFIXES = ['<tool_call', '<function_call', '<invoke'];
 
@@ -46,8 +50,10 @@ function parseToolCallsDetailed(text, toolNames) {
     return result;
   }
 
-  // XML markup parsing only.
-  const parsed = parseMarkupToolCalls(normalized);
+  let parsed = parseMarkupToolCalls(normalized);
+  if (parsed.length === 0) {
+    parsed = parseVisibleJSONToolCalls(normalized);
+  }
   if (parsed.length === 0) {
     return result;
   }
@@ -74,8 +80,10 @@ function parseStandaloneToolCallsDetailed(text, toolNames) {
     return result;
   }
 
-  // XML markup parsing only.
-  const parsed = parseMarkupToolCalls(trimmed);
+  let parsed = parseMarkupToolCalls(trimmed);
+  if (parsed.length === 0) {
+    parsed = parseVisibleJSONToolCalls(trimmed);
+  }
   if (parsed.length === 0) {
     return result;
   }
@@ -113,7 +121,8 @@ function filterToolCallsDetailed(parsed, toolNames) {
 
 function looksLikeToolCallSyntax(text) {
   const lower = toStringSafe(text).toLowerCase();
-  return TOOL_MARKUP_PREFIXES.some((prefix) => lower.includes(prefix));
+  return TOOL_MARKUP_PREFIXES.some((prefix) => lower.includes(prefix)) ||
+    looksLikeVisibleJSONToolCallSyntax(text);
 }
 
 function shouldSkipToolCallParsingForCodeFenceExample(text) {

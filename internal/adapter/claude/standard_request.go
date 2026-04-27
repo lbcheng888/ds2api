@@ -6,6 +6,7 @@ import (
 
 	"ds2api/internal/config"
 	"ds2api/internal/deepseek"
+	"ds2api/internal/toolcall"
 	"ds2api/internal/util"
 )
 
@@ -56,6 +57,7 @@ func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNorma
 			Messages:            payload["messages"].([]any),
 			FinalPrompt:         finalPrompt,
 			ToolNames:           toolNames,
+			ToolSchemas:         toolcall.ExtractParameterSchemas(toolsRequested),
 			Stream:              util.ToBool(req["stream"]),
 			Thinking:            thinkingEnabled,
 			ReasoningEffort:     claudeReasoningEffort(store, req, thinkingEnabled),

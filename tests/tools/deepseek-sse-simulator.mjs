@@ -8,6 +8,7 @@ const require = createRequire(import.meta.url);
 const chatStream = require('../../api/chat-stream.js');
 const { parseChunkForContent } = chatStream.__test;
 const { trimContinuationOverlap } = chatStream.__test;
+const TOOL_SYNTAX_PATTERN = /<\s*(?:tool_call|tool_calls|tool_use|invoke|function_call)\b/gi;
 
 function parseArgs(argv) {
   const out = {
@@ -21,6 +22,9 @@ function parseArgs(argv) {
     failOnMissingFinish: true,
     failOnBaselineMismatch: true,
     failOnTokenMismatch: false,
+    includeFailures: false,
+    allSamples: false,
+    skipEmptySamples: true,
     showOutput: false,
     writeReplayText: false,
   };
@@ -48,6 +52,12 @@ function parseArgs(argv) {
       out.failOnTokenMismatch = true;
     } else if (a === '--no-fail-on-token-mismatch') {
       out.failOnTokenMismatch = false;
+    } else if (a === '--include-failures') {
+      out.includeFailures = true;
+    } else if (a === '--all-samples') {
+      out.allSamples = true;
+    } else if (a === '--fail-on-empty-sample') {
+      out.skipEmptySamples = false;
     } else if (a === '--show-output') {
       out.showOutput = true;
     } else if (a === '--write-replay-text' || a === '--write-processed-text') {
@@ -76,7 +86,34 @@ function loadManifest(root) {
   }
 }
 
-function resolveSampleDirs(root, sampleID) {
+function allSampleDirs(root) {
+  return fs.readdirSync(root)
+    .map((name) => path.join(root, name))
+    .filter((p) => fs.statSync(p).isDirectory())
+    .filter((p) => fs.existsSync(path.join(p, 'upstream.stream.sse')))
+    .sort();
+}
+
+function failureSampleDirs(root) {
+  return allSampleDirs(root)
+    .filter((p) => path.basename(p).startsWith('failure-'));
+}
+
+function mergeSampleDirs(primary, extra) {
+  const seen = new Set(primary.map((p) => path.resolve(p)));
+  const out = [...primary];
+  for (const dir of extra) {
+    const key = path.resolve(dir);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(dir);
+  }
+  return out.sort();
+}
+
+function resolveSampleDirs(root, sampleID, opts = {}) {
   if (!fs.existsSync(root)) {
     return { dirs: [], manifestPath: '' };
   }
@@ -88,6 +125,10 @@ function resolveSampleDirs(root, sampleID) {
       throw new Error(`[sim] sample missing: ${sampleID}`);
     }
     return { dirs: [dir], manifestPath: '' };
+  }
+
+  if (opts.allSamples) {
+    return { dirs: allSampleDirs(root), manifestPath: '' };
   }
 
   const manifest = loadManifest(root);
@@ -106,15 +147,11 @@ function resolveSampleDirs(root, sampleID) {
     if (missing.length > 0) {
       throw new Error(`[sim] manifest sample(s) missing: ${missing.join(', ')}`);
     }
-    return { dirs, manifestPath: manifest.manifestPath };
+    const selected = opts.includeFailures ? mergeSampleDirs(dirs, failureSampleDirs(root)) : dirs;
+    return { dirs: selected, manifestPath: manifest.manifestPath };
   }
 
-  const dirs = fs.readdirSync(root)
-    .map((name) => path.join(root, name))
-    .filter((p) => fs.statSync(p).isDirectory())
-    .filter((p) => fs.existsSync(path.join(p, 'upstream.stream.sse')))
-    .sort();
-  return { dirs, manifestPath: '' };
+  return { dirs: allSampleDirs(root), manifestPath: '' };
 }
 
 function parseSSE(raw) {
@@ -242,6 +279,9 @@ function parseDeepSeekReplay(raw) {
     leakedFinishedText: outputText.includes('FINISHED'),
     leakedReferenceMarkers: /\[reference:/i.test(outputText),
     referenceLeakCount: (outputText.match(/\[reference:/gi) || []).length,
+    reasoningChars: thinkingText.length,
+    visibleChars: textOutput.length,
+    toolSyntaxCount: (outputText.match(TOOL_SYNTAX_PATTERN) || []).length,
   };
 }
 
@@ -434,6 +474,7 @@ function loadBaselineSample(dir, baselineRoot) {
 function replaySample(dir, opts) {
   const raw = fs.readFileSync(path.join(dir, 'upstream.stream.sse'), 'utf8');
   const rawResult = parseDeepSeekReplay(raw);
+  const emptySample = raw.trim() === '' || (rawResult.events === 0 && rawResult.parsedChunks === 0);
 
   let replayOutputPath = '';
   if (opts.outputRoot) {
@@ -461,8 +502,11 @@ function replaySample(dir, opts) {
   const baselinePreview = baselineResult ? previewText(baselineResult.outputText, 280) : '';
   const errors = [];
 
-  if (opts.failOnMissingFinish && !rawResult.sawFinish) {
+  if (!emptySample && opts.failOnMissingFinish && !rawResult.sawFinish) {
     errors.push('missing finish signal');
+  }
+  if (emptySample && !opts.skipEmptySamples) {
+    errors.push('empty upstream stream');
   }
   if (opts.failOnLeak && rawResult.leakedFinishedText) {
     errors.push('FINISHED leaked into output text');
@@ -476,12 +520,17 @@ function replaySample(dir, opts) {
   if (opts.failOnTokenMismatch && rawResult.tokenMismatch) {
     errors.push(`token mismatch expected=${rawResult.expectedOutputTokens} parsed=${rawResult.parsedOutputTokens}`);
   }
+  const category = classifyReplayResult(rawResult, errors, emptySample);
 
   return {
     sample_id: path.basename(dir),
+    category,
     raw_events: rawResult.events,
     raw_parsed_chunks: rawResult.parsedChunks,
     raw_saw_finish: rawResult.sawFinish,
+    raw_reasoning_chars: rawResult.reasoningChars,
+    raw_visible_chars: rawResult.visibleChars,
+    raw_tool_syntax_count: rawResult.toolSyntaxCount,
     raw_expected_output_tokens: rawResult.expectedOutputTokens,
     raw_parsed_output_tokens: rawResult.parsedOutputTokens,
     raw_token_mismatch: rawResult.tokenMismatch,
@@ -502,7 +551,31 @@ function replaySample(dir, opts) {
     replay_output_text: rawResult.outputText,
     replay_output_path: replayOutputPath,
     baseline_output_text: baselineResult ? baselineResult.outputText : '',
+    skipped: emptySample && opts.skipEmptySamples,
+    skip_reason: emptySample && opts.skipEmptySamples ? 'empty upstream stream' : '',
   };
+}
+
+function classifyReplayResult(rawResult, errors, emptySample) {
+  if (emptySample) {
+    return 'empty_stream';
+  }
+  if (errors.some((err) => String(err).includes('missing finish'))) {
+    return 'missing_finish';
+  }
+  if (rawResult.toolSyntaxCount > 0) {
+    return 'tool_syntax_candidate';
+  }
+  if (rawResult.reasoningChars > 0 && rawResult.visibleChars === 0) {
+    return 'reasoning_without_visible_output';
+  }
+  if (rawResult.visibleChars === 0) {
+    return 'empty_visible_output';
+  }
+  if (rawResult.leakedReferenceMarkers) {
+    return 'reference_marker_leak';
+  }
+  return 'ok';
 }
 
 function previewText(text, limit) {
@@ -521,7 +594,7 @@ function main() {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     opts.outputRoot = path.join('artifacts/raw-stream-sim', `adhoc-${stamp}`);
   }
-  const { dirs, manifestPath } = resolveSampleDirs(opts.samplesRoot, opts.sampleId);
+  const { dirs, manifestPath } = resolveSampleDirs(opts.samplesRoot, opts.sampleId, opts);
   if (dirs.length === 0) {
     console.error(`[sim] no samples found: ${opts.samplesRoot}`);
     process.exit(1);
@@ -534,8 +607,12 @@ function main() {
     output_root: opts.outputRoot,
     baseline_root: opts.baselineRoot,
     sample_id: opts.sampleId,
+    include_failures: opts.includeFailures,
+    all_samples: opts.allSamples,
+    skip_empty_samples: opts.skipEmptySamples,
     total: dirs.length,
     failed: 0,
+    skipped: 0,
     samples: [],
   };
 
@@ -546,14 +623,21 @@ function main() {
   for (const dir of dirs) {
     const sample = replaySample(dir, opts);
     const errors = [...sample.errors];
+    if (sample.skipped) {
+      report.skipped += 1;
+    }
     if (errors.length > 0) {
       report.failed += 1;
     }
     report.samples.push({
       sample_id: sample.sample_id,
+      category: sample.category,
       raw_events: sample.raw_events,
       raw_parsed_chunks: sample.raw_parsed_chunks,
       raw_saw_finish: sample.raw_saw_finish,
+      raw_reasoning_chars: sample.raw_reasoning_chars,
+      raw_visible_chars: sample.raw_visible_chars,
+      raw_tool_syntax_count: sample.raw_tool_syntax_count,
       raw_expected_output_tokens: sample.raw_expected_output_tokens,
       raw_parsed_output_tokens: sample.raw_parsed_output_tokens,
       raw_token_mismatch: sample.raw_token_mismatch,
@@ -570,17 +654,19 @@ function main() {
       baseline_output_matches_replay: sample.baseline_output_matches_replay,
       baseline_output_preview: sample.baseline_output_preview,
       replay_output_path: sample.replay_output_path,
+      skipped: sample.skipped,
+      skip_reason: sample.skip_reason,
       ok: errors.length === 0,
       errors,
     });
 
-    const status = sample.ok ? 'OK' : 'FAIL';
+    const status = sample.skipped ? 'SKIP' : sample.ok ? 'OK' : 'FAIL';
     const leakNote = sample.raw_leaked_reference_markers ? ` refLeaks=${sample.raw_reference_leak_count}` : '';
     const matchNote = sample.baseline_available
       ? ` baseline=${sample.baseline_output_matches_replay ? 'match' : 'mismatch'}`
       : ' baseline=missing';
     const note = errors.length > 0 ? ` errors=${errors.join(';')}` : '';
-    console.log(`[sim] ${status} ${sample.sample_id} events=${sample.raw_events} parsed=${sample.raw_parsed_chunks} tokens=${sample.raw_parsed_output_tokens}/${sample.raw_expected_output_tokens} chars=${sample.raw_output_chars}${leakNote}${matchNote}${note}`);
+    console.log(`[sim] ${status} ${sample.sample_id} category=${sample.category} events=${sample.raw_events} parsed=${sample.raw_parsed_chunks} tokens=${sample.raw_parsed_output_tokens}/${sample.raw_expected_output_tokens} chars=${sample.raw_output_chars}${leakNote}${matchNote}${note}`);
     if (opts.showOutput) {
       console.log(`[sim] replay output for ${sample.sample_id}:`);
       console.log(sample.replay_output_text || '(empty)');
@@ -595,7 +681,8 @@ function main() {
     console.error(`[sim] ${report.failed}/${report.total} samples failed`);
     process.exit(2);
   }
-  console.log(`[sim] all ${report.total} samples passed`);
+  const skipNote = report.skipped > 0 ? ` (${report.skipped} skipped)` : '';
+  console.log(`[sim] all ${report.total} samples passed${skipNote}`);
 }
 
 main();

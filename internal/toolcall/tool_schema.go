@@ -37,6 +37,10 @@ func NormalizeCallsForSchemasWithMeta(calls []ParsedToolCall, schemas ParameterS
 	if len(calls) == 0 {
 		return nil
 	}
+	availableToolNames := toolNamesFromSchemas(schemas)
+	if len(availableToolNames) > 0 {
+		calls = RewriteCallsForAvailableTools(calls, availableToolNames)
+	}
 	out := make([]ParsedToolCall, 0, len(calls))
 	backgroundAgentCalls := 0
 	for _, call := range calls {
@@ -61,13 +65,15 @@ func NormalizeCallsForSchemasWithMeta(calls []ParsedToolCall, schemas ParameterS
 		if input == nil {
 			input = map[string]any{}
 		}
+		input = normalizeToolInputStrings(input)
 		if schema, ok := schemas[name]; ok && len(schema) > 0 {
 			normalized, valid := normalizeObjectForSchema(input, schema)
 			if !valid {
 				continue
 			}
 			input = normalized
-		} else if !knownToolCallHasRequiredFields(name, input) {
+		}
+		if !knownToolCallHasRequiredFields(name, input) {
 			continue
 		}
 		out = append(out, ParsedToolCall{Name: name, Input: input})
@@ -75,7 +81,24 @@ func NormalizeCallsForSchemasWithMeta(calls []ParsedToolCall, schemas ParameterS
 	return out
 }
 
+func toolNamesFromSchemas(schemas ParameterSchemas) []string {
+	if len(schemas) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(schemas))
+	for name := range schemas {
+		if strings.TrimSpace(name) != "" {
+			out = append(out, strings.TrimSpace(name))
+		}
+	}
+	return out
+}
+
 func knownToolCallHasRequiredFields(name string, input map[string]any) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "read_file", "readfile":
+		return strings.TrimSpace(localPathFromReadFileInput(input)) != ""
+	}
 	required := knownRequiredToolFields(name)
 	if len(required) == 0 {
 		return true
@@ -103,6 +126,10 @@ func knownRequiredToolFields(name string) []string {
 		return []string{"todos"}
 	case "bash":
 		return []string{"command"}
+	case "exec_command":
+		return []string{"cmd"}
+	case "read_mcp_resource":
+		return []string{"server", "uri"}
 	case "read":
 		return []string{"filepath"}
 	case "grep":
@@ -228,6 +255,7 @@ func normalizeObjectForSchema(input map[string]any, schema map[string]any) (map[
 		}
 		return cloneSchemaMap(input), true
 	}
+	input = repairGenericParameterForSchema(input, properties, required)
 
 	out := map[string]any{}
 	for name, propSchema := range properties {
@@ -250,6 +278,50 @@ func normalizeObjectForSchema(input map[string]any, schema map[string]any) (map[
 		}
 	}
 	return out, true
+}
+
+func repairGenericParameterForSchema(input map[string]any, properties map[string]map[string]any, required map[string]struct{}) map[string]any {
+	if len(input) == 0 || len(properties) == 0 || len(required) == 0 {
+		return input
+	}
+	genericKey := ""
+	var genericValue any
+	for _, key := range []string{"parameter", "argument", "param"} {
+		if _, declared := properties[key]; declared {
+			continue
+		}
+		value, ok := input[key]
+		if !ok || isEmptyKnownRequiredValue(value) {
+			continue
+		}
+		if genericKey != "" {
+			return input
+		}
+		genericKey = key
+		genericValue = value
+	}
+	if genericKey == "" {
+		return input
+	}
+	missing := ""
+	for name := range required {
+		if _, ok := inputValueForSchemaProperty(input, name, properties); ok {
+			continue
+		}
+		if missing != "" {
+			return input
+		}
+		missing = name
+	}
+	if missing == "" {
+		return input
+	}
+	if _, ok := properties[missing]; !ok {
+		return input
+	}
+	out := cloneSchemaMap(input)
+	out[missing] = genericValue
+	return out
 }
 
 func inputValueForSchemaProperty(input map[string]any, name string, properties map[string]map[string]any) (any, bool) {
@@ -381,7 +453,7 @@ func normalizeValueForSchemaType(value any, schema map[string]any, typ string) (
 	case "string":
 		switch v := value.(type) {
 		case string:
-			return v, true
+			return normalizeToolStringValue(v), true
 		case bool:
 			return strconv.FormatBool(v), true
 		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
@@ -642,6 +714,47 @@ func valueMatchesEnum(value any, schema map[string]any) bool {
 		}
 	}
 	return false
+}
+
+func normalizeToolInputStrings(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return input
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = normalizeToolInputValueStrings(value)
+	}
+	return out
+}
+
+func normalizeToolInputValueStrings(value any) any {
+	switch v := value.(type) {
+	case string:
+		return normalizeToolStringValue(v)
+	case map[string]any:
+		return normalizeToolInputStrings(v)
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = normalizeToolInputValueStrings(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func normalizeToolStringValue(value string) string {
+	trimmed := strings.TrimSpace(value)
+	const cdataOpen = "<![CDATA["
+	if !strings.HasPrefix(trimmed, cdataOpen) {
+		return value
+	}
+	body := strings.TrimPrefix(trimmed, cdataOpen)
+	if idx := strings.Index(body, "]]>"); idx >= 0 {
+		return body[:idx]
+	}
+	return strings.TrimSuffix(strings.TrimSpace(body), "]]")
 }
 
 func cloneSchemaMap(input map[string]any) map[string]any {

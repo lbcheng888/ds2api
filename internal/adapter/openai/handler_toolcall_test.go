@@ -43,6 +43,45 @@ func TestFormatFinalStreamToolCallsDropsSchemaInvalidCall(t *testing.T) {
 	}
 }
 
+func TestFormatFinalStreamToolCallsAcceptsRooInvokeTaskParameters(t *testing.T) {
+	schemas := toolcall.ParameterSchemas{
+		"task": {
+			"type": "object",
+			"properties": map[string]any{
+				"description":   map[string]any{"type": "string"},
+				"prompt":        map[string]any{"type": "string"},
+				"subagent_type": map[string]any{"type": "string"},
+				"max_retries":   map[string]any{"type": "integer"},
+			},
+			"required": []any{"description", "prompt", "subagent_type"},
+		},
+	}
+	raw := `<tool_calls>
+<invoke name="task">
+<parameter name="description" string="true">审查cheng语言代码结构</parameter>
+<parameter name="prompt" string="true">探索 /Users/lbcheng/cheng-lang 项目的完整目录结构。</parameter>
+<parameter name="subagent_type" string="true">explore</parameter>
+<parameter name="max_retries" string="false">2</parameter>
+</invoke>
+</tool_calls>`
+	calls := toolcall.ParseToolCalls(raw, []string{"task"})
+	got := formatFinalStreamToolCallsWithStableIDs(calls, nil, schemas, true)
+	if len(got) != 1 {
+		t.Fatalf("expected one formatted task tool call, got %#v", got)
+	}
+	fn, _ := got[0]["function"].(map[string]any)
+	if fn["name"] != "task" {
+		t.Fatalf("expected function name task, got %#v", got[0])
+	}
+	args, _ := fn["arguments"].(string)
+	if !strings.Contains(args, `"description":"审查cheng语言代码结构"`) {
+		t.Fatalf("expected description argument, got %s", args)
+	}
+	if !strings.Contains(args, `"max_retries":2`) {
+		t.Fatalf("expected numeric max_retries argument, got %s", args)
+	}
+}
+
 func TestInjectToolPromptSkipsMetaAgentTools(t *testing.T) {
 	tools := []any{
 		map[string]any{

@@ -30,6 +30,23 @@ func BuildToolCallInstructions(toolNames []string) string {
 			used["ex3"] = true
 		}
 	}
+	if !used["ex1"] {
+		if used["ex2"] {
+			ex1 = ex2
+		} else if name := firstPromptToolName(toolNames); name != "" {
+			ex1 = name
+		}
+	}
+	if !used["ex2"] {
+		if name := firstPromptToolName(toolNames); name != "" {
+			ex2 = name
+		}
+	}
+	if !used["ex3"] {
+		if name := firstPromptToolName(toolNames); name != "" {
+			ex3 = name
+		}
+	}
 	ex1Params := exampleReadParams(ex1)
 	ex2Params := exampleWriteOrExecParams(ex2)
 	ex3Params := exampleInteractiveParams(ex3)
@@ -62,7 +79,7 @@ RULES:
 13) Do not call TaskCreate, TaskUpdate, TodoWrite, or TodoRead. They only update the client's task UI and do not inspect, edit, run, or verify code.
 14) A response whose only tool calls are task-tracking tools is invalid. If you need a plan, write it briefly in reasoning, then call real work tools such as Read, Grep, Glob, Bash, Edit, MultiEdit, Agent, or TaskOutput.
 15) Never use placeholder argument values such as file_path, path, TODO, or /path/to/file. Tool arguments must contain concrete values from the current request or tool results.
-16) If you need to inspect, read, search, edit, run, implement, or verify anything, emit the next <tool_calls> block in this same response. Do not end with future-tense text such as "I'll read", "I'll implement", "let me run", or "next I will".
+16) If you need to inspect, read, search, edit, run, implement, patch, or verify anything, emit the next <tool_calls> block in this same response. Do not end with future-tense or setup text such as "I'll read", "I'll implement", "let me run", "next I will", "只需要补", "需要改", or "还要新增".
 17) With tools available, a response that only promises future action is invalid. Either call the needed tool now, or provide the final answer if the work is actually complete.
 18) For Edit/MultiEdit-style tools, old_string must be copied exactly from the latest file content you read, including whitespace and newlines. It must be unique in that file. If an edit fails, read that file again before retrying; do not retry with the same old_string.
 19) Prefer small, targeted Edit/MultiEdit replacements over replacing long stale blocks. Never build old_string from a diff hunk or from memory; use the current file text.
@@ -70,6 +87,11 @@ RULES:
 21) If the user asks to optimize, improve, fix, continue, proceed, "请优化", "继续", "按建议推进", or "直接改", choose the highest-priority actionable change from prior findings and call the needed tools now.
 22) Do not use question/ask_followup_question to ask the user to pick among your own recommended directions after they asked to optimize or proceed. Use question only for a true blocker such as missing credentials, destructive approval, or mutually exclusive product requirements.
 23) If you receive <task-notification> or need to wait for background agents, call the available TaskOutput-style tool with concrete task_id values now. Do not answer only with reasoning or future-tense waiting text.
+24) Do not use read_mcp_resource for file:// URLs, skill:// URIs, local disk paths, or skill files. Use Read/read/Grep/Glob/Bash/exec_command-style tools for local files. Only use read_mcp_resource for MCP resources from a real listed MCP server, and its resource parameter is uri, not url.
+25) Search budget: do not repeat semantically identical Search/Grep/Glob/Bash rg calls. Changing escaping, whitespace, grouping, or directory spelling does not make it a new search.
+26) Once Search/Grep/Bash rg returns a useful file path or file:line result, the next tool call must read a small bounded window around that location, edit that location, or run a targeted verification. Do not keep broadening the same regex.
+27) If two searches produce no new file path or file:line result, stop searching and proceed from the existing candidate files.
+28) Do not invent absolute repository paths. Use the current working directory, paths supplied by the user, or paths returned by tools. If a path contains a generated suffix such as repo-<hash> or project-<hash>, verify it exists with Bash before Read/Edit; otherwise use a cwd-relative path.
 
 PARAMETER SHAPES:
 - string => <name>value</name>
@@ -141,6 +163,17 @@ func matchAny(name string, candidates ...string) bool {
 		}
 	}
 	return false
+}
+
+func firstPromptToolName(toolNames []string) string {
+	for _, name := range toolNames {
+		name = strings.TrimSpace(name)
+		if name == "" || IsTaskTrackingToolName(name) {
+			continue
+		}
+		return name
+	}
+	return ""
 }
 
 func exampleReadParams(name string) string {

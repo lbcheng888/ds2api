@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	openaifmt "ds2api/internal/format/openai"
+	"ds2api/internal/toolcall"
 )
 
 func (s *responsesStreamRuntime) nextSequence() int {
@@ -58,12 +59,20 @@ func (s *responsesStreamRuntime) processToolStreamEvents(events []toolStreamEven
 			s.emitFunctionCallDeltaEvents(filtered)
 		}
 		if len(evt.ToolCalls) > 0 {
-			if normalizedToolCallsExceedInputBytes(evt.ToolCalls, nil, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
+			if _, message, code, ok := invalidTaskOutputCallDetail(evt.ToolCalls, s.finalPrompt); ok {
+				s.failResponse(message, code)
+				return
+			}
+			normalized := toolcall.NormalizeCallsForSchemasWithMeta(evt.ToolCalls, s.toolSchemas, s.allowMetaAgentTools)
+			if len(normalized) == 0 {
+				continue
+			}
+			if normalizedToolCallsExceedInputBytes(normalized, s.toolSchemas, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
 				_, message, code := toolCallTooLargeError()
 				s.failResponse(message, code)
 				return
 			}
-			s.emitFunctionCallDoneEvents(evt.ToolCalls)
+			s.emitFunctionCallDoneEvents(normalized)
 			if resetAfterToolCalls {
 				s.resetStreamToolCallState()
 			}

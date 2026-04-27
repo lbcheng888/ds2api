@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"ds2api/internal/toolcall"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -121,6 +123,178 @@ func TestProcessToolSieveXMLWithLeadingText(t *testing.T) {
 	}
 }
 
+func TestProcessToolSieveInterceptsVisibleJSONToolArrayWithoutLeak(t *testing.T) {
+	var state toolStreamSieveState
+	chunk := `Let me read the next slices.
+[
+  {
+    "tool": "Read",
+    "arguments": {
+      "file_path": "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng",
+      "offset": 345,
+      "limit": 65
+    }
+  },
+  {
+    "tool": "Read",
+    "arguments": {
+      "file_path": "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng",
+      "offset": 773,
+      "limit": 30
+    }
+  }
+]`
+	events := processToolSieveChunk(&state, chunk, []string{"Read"})
+	events = append(events, flushToolSieve(&state, []string{"Read"})...)
+
+	var textContent strings.Builder
+	var calls []toolcall.ParsedToolCall
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		calls = append(calls, evt.ToolCalls...)
+	}
+	if !strings.Contains(textContent.String(), "Let me read the next slices.") {
+		t.Fatalf("expected leading text to be preserved, got %q", textContent.String())
+	}
+	if strings.Contains(textContent.String(), `"tool"`) || strings.Contains(textContent.String(), "file_path") {
+		t.Fatalf("visible JSON tool call leaked to text: %q", textContent.String())
+	}
+	if len(calls) != 2 || calls[0].Name != "Read" || calls[1].Name != "Read" {
+		t.Fatalf("expected two Read calls, got %#v", calls)
+	}
+	if fmt.Sprint(calls[0].Input["offset"]) != "345" || fmt.Sprint(calls[1].Input["offset"]) != "773" {
+		t.Fatalf("expected offsets to be preserved, got %#v", calls)
+	}
+}
+
+func TestProcessToolSieveInterceptsChunkedVisibleJSONToolArray(t *testing.T) {
+	var state toolStreamSieveState
+	chunks := []string{
+		"Reading next.\n",
+		"[\n",
+		"  {\"tool\":\"Read\",",
+		"\"arguments\":{\"file_path\":\"/tmp/a.cheng\",",
+		"\"offset\":345,\"limit\":65}}",
+		"]\nDone",
+	}
+	var events []toolStreamEvent
+	for _, chunk := range chunks {
+		events = append(events, processToolSieveChunk(&state, chunk, []string{"Read"})...)
+	}
+	events = append(events, flushToolSieve(&state, []string{"Read"})...)
+
+	var textContent strings.Builder
+	var calls []toolcall.ParsedToolCall
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		calls = append(calls, evt.ToolCalls...)
+	}
+	if strings.Contains(textContent.String(), `"tool"`) || strings.Contains(textContent.String(), "/tmp/a.cheng") {
+		t.Fatalf("chunked visible JSON tool call leaked to text: %q", textContent.String())
+	}
+	if !strings.Contains(textContent.String(), "Reading next.") || !strings.Contains(textContent.String(), "Done") {
+		t.Fatalf("expected surrounding text to be preserved, got %q", textContent.String())
+	}
+	if len(calls) != 1 || calls[0].Name != "Read" || calls[0].Input["file_path"] != "/tmp/a.cheng" {
+		t.Fatalf("expected one chunked Read call, got %#v", calls)
+	}
+}
+
+func TestProcessToolSieveInterceptsVisibleJSONToolObjectSequenceWithoutLeak(t *testing.T) {
+	var state toolStreamSieveState
+	chunk := `Let me read the next slices.
+{
+  "tool": "Read",
+  "arguments": {
+    "file_path": "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng",
+    "offset": 345,
+    "limit": 65
+  }
+}
+{
+  "tool": "Read",
+  "arguments": {
+    "file_path": "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng",
+    "offset": 773,
+    "limit": 30
+  }
+}`
+	events := processToolSieveChunk(&state, chunk, []string{"Read"})
+	events = append(events, flushToolSieve(&state, []string{"Read"})...)
+
+	var textContent strings.Builder
+	var calls []toolcall.ParsedToolCall
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		calls = append(calls, evt.ToolCalls...)
+	}
+	if !strings.Contains(textContent.String(), "Let me read the next slices.") {
+		t.Fatalf("expected leading text to be preserved, got %q", textContent.String())
+	}
+	if strings.Contains(textContent.String(), `"tool"`) || strings.Contains(textContent.String(), "file_path") {
+		t.Fatalf("visible JSON object tool call leaked to text: %q", textContent.String())
+	}
+	if len(calls) != 2 || calls[0].Name != "Read" || calls[1].Name != "Read" {
+		t.Fatalf("expected two Read calls, got %#v", calls)
+	}
+	if fmt.Sprint(calls[0].Input["offset"]) != "345" || fmt.Sprint(calls[1].Input["offset"]) != "773" {
+		t.Fatalf("expected offsets to be preserved, got %#v", calls)
+	}
+}
+
+func TestProcessToolSieveInterceptsChunkedVisibleJSONToolObjectSequence(t *testing.T) {
+	var state toolStreamSieveState
+	chunks := []string{
+		"Reading next.\n",
+		"{\"tool\":\"Read\",",
+		"\"arguments\":{\"file_path\":\"/tmp/a.cheng\",",
+		"\"offset\":345,\"limit\":65}}\n",
+		"{\"tool\":\"Read\",\"arguments\":{\"file_path\":\"/tmp/b.cheng\",",
+		"\"offset\":773,\"limit\":30}}\nDone",
+	}
+	var events []toolStreamEvent
+	for _, chunk := range chunks {
+		events = append(events, processToolSieveChunk(&state, chunk, []string{"Read"})...)
+	}
+	events = append(events, flushToolSieve(&state, []string{"Read"})...)
+
+	var textContent strings.Builder
+	var calls []toolcall.ParsedToolCall
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		calls = append(calls, evt.ToolCalls...)
+	}
+	if strings.Contains(textContent.String(), `"tool"`) || strings.Contains(textContent.String(), "/tmp/a.cheng") {
+		t.Fatalf("chunked visible JSON object tool call leaked to text: %q", textContent.String())
+	}
+	if !strings.Contains(textContent.String(), "Reading next.") || !strings.Contains(textContent.String(), "Done") {
+		t.Fatalf("expected surrounding text to be preserved, got %q", textContent.String())
+	}
+	if len(calls) != 2 || calls[0].Input["file_path"] != "/tmp/a.cheng" || calls[1].Input["file_path"] != "/tmp/b.cheng" {
+		t.Fatalf("expected two chunked Read calls, got %#v", calls)
+	}
+}
+
+func TestProcessToolSievePassesThroughFencedVisibleJSONToolArray(t *testing.T) {
+	var state toolStreamSieveState
+	input := "Example:\n```json\n[{\"tool\":\"Read\",\"arguments\":{\"file_path\":\"/tmp/a.cheng\"}}]\n```\nDone."
+	events := processToolSieveChunk(&state, input, []string{"Read"})
+	events = append(events, flushToolSieve(&state, []string{"Read"})...)
+
+	var textContent strings.Builder
+	var toolCalls int
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		toolCalls += len(evt.ToolCalls)
+	}
+	if toolCalls != 0 {
+		t.Fatalf("expected fenced JSON tool example to stay text, got %d calls events=%#v", toolCalls, events)
+	}
+	if textContent.String() != input {
+		t.Fatalf("expected fenced JSON to pass through unchanged, got %q", textContent.String())
+	}
+}
+
 func TestProcessToolSievePassesThroughNonToolXMLBlock(t *testing.T) {
 	var state toolStreamSieveState
 	chunk := `<tool_call><title>示例 XML</title><body>plain text xml payload</body></tool_call>`
@@ -185,6 +359,34 @@ func TestProcessToolSieveRepairsMissingToolCallCloseBeforeWrapperClose(t *testin
 	}
 	if toolCalls != 1 {
 		t.Fatalf("expected one repaired tool call, got %d events=%#v", toolCalls, events)
+	}
+}
+
+func TestProcessToolSieveRepairsMissingWrapperAngleAndLooseDirectTools(t *testing.T) {
+	var state toolStreamSieveState
+	chunk := `Let me inspect first.tool_calls>
+  <tool_call>
+    <exec_command>
+      <parameters><cmd>ls -la /Users/lbcheng/cheng-lang/</parameters><justification>List root</justification></parameters>
+    </tool_call>
+</tool_calls>`
+	events := processToolSieveChunk(&state, chunk, []string{"exec_command"})
+	events = append(events, flushToolSieve(&state, []string{"exec_command"})...)
+
+	var textContent strings.Builder
+	var calls []toolcall.ParsedToolCall
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		calls = append(calls, evt.ToolCalls...)
+	}
+	if !strings.Contains(textContent.String(), "Let me inspect first.") {
+		t.Fatalf("expected prefix text to be preserved, got %q", textContent.String())
+	}
+	if strings.Contains(textContent.String(), "tool_calls>") || strings.Contains(textContent.String(), "<tool_call") {
+		t.Fatalf("expected malformed tool XML to be intercepted, got %q", textContent.String())
+	}
+	if len(calls) != 1 || calls[0].Name != "exec_command" || calls[0].Input["cmd"] != "ls -la /Users/lbcheng/cheng-lang/" {
+		t.Fatalf("expected repaired exec_command call, got %#v", calls)
 	}
 }
 

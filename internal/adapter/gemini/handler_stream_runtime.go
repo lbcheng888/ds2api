@@ -10,6 +10,7 @@ import (
 	"ds2api/internal/deepseek"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
+	textclean "ds2api/internal/textclean"
 )
 
 //nolint:unused // retained for native Gemini stream handling path.
@@ -65,8 +66,9 @@ type geminiStreamRuntime struct {
 	stripReferenceMarkers bool
 	toolNames             []string
 
-	thinking strings.Builder
-	text     strings.Builder
+	outputSanitizer textclean.StreamSanitizer
+	thinking        strings.Builder
+	text            strings.Builder
 }
 
 //nolint:unused // retained for native Gemini stream handling path.
@@ -117,7 +119,7 @@ func (s *geminiStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 
 	contentSeen := false
 	for _, p := range parsed.Parts {
-		cleanedText := cleanVisibleOutput(p.Text, s.stripReferenceMarkers)
+		cleanedText := cleanVisibleOutput(s.outputSanitizer.Sanitize(p.Text), s.stripReferenceMarkers)
 		if cleanedText == "" {
 			continue
 		}

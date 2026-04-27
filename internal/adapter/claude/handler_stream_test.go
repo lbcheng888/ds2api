@@ -350,6 +350,76 @@ func TestHandleClaudeStreamRealtimeDetectsToolUseWithLeadingProse(t *testing.T) 
 	t.Fatalf("expected stop_reason=tool_use, body=%s", rec.Body.String())
 }
 
+func TestHandleClaudeStreamRealtimeDropsReadWithoutFilePath(t *testing.T) {
+	h := &Handler{}
+	resp := makeClaudeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"<tool_call><tool_name>Read</tool_name><parameters></parameters></tool_call>"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "use tool"}}, false, false, []string{"Read"})
+
+	frames := parseClaudeFrames(t, rec.Body.String())
+	for _, f := range findClaudeFrames(frames, "content_block_start") {
+		contentBlock, _ := f.Payload["content_block"].(map[string]any)
+		if contentBlock["type"] == "tool_use" {
+			t.Fatalf("expected invalid Read without file_path to be dropped, body=%s", rec.Body.String())
+		}
+	}
+	for _, f := range findClaudeFrames(frames, "message_delta") {
+		delta, _ := f.Payload["delta"].(map[string]any)
+		if delta["stop_reason"] == "tool_use" {
+			t.Fatalf("expected stop_reason not to be tool_use for invalid Read, body=%s", rec.Body.String())
+		}
+	}
+}
+
+func TestHandleClaudeStreamRealtimeNormalizesToolUseWithSchema(t *testing.T) {
+	h := &Handler{}
+	payload := `<tool_call><tool_name>Read</tool_name><parameters><file_path><![CDATA[/tmp/a.txt]]></file_path><offset>345</offset><limit>65</limit><extra>drop</extra></parameters></tool_call>`
+	resp := makeClaudeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"`+strings.ReplaceAll(payload, `"`, `\"`)+`"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+	schemas := map[string]map[string]any{
+		"Read": {
+			"type": "object",
+			"properties": map[string]any{
+				"file_path": map[string]any{"type": "string"},
+				"offset":    map[string]any{"type": "integer"},
+				"limit":     map[string]any{"type": "integer"},
+			},
+			"required": []any{"file_path"},
+		},
+	}
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "use tool"}}, false, false, []string{"Read"}, schemas)
+
+	frames := parseClaudeFrames(t, rec.Body.String())
+	for _, f := range findClaudeFrames(frames, "content_block_delta") {
+		delta, _ := f.Payload["delta"].(map[string]any)
+		if delta["type"] != "input_json_delta" {
+			continue
+		}
+		var input map[string]any
+		if err := json.Unmarshal([]byte(asString(delta["partial_json"])), &input); err != nil {
+			t.Fatalf("decode input_json_delta failed: %v", err)
+		}
+		if input["file_path"] != "/tmp/a.txt" || input["offset"] != float64(345) || input["limit"] != float64(65) {
+			t.Fatalf("expected normalized Read input, got %#v", input)
+		}
+		if _, ok := input["extra"]; ok {
+			t.Fatalf("expected extra field dropped, got %#v", input)
+		}
+		return
+	}
+	t.Fatalf("expected input_json_delta for Read, body=%s", rec.Body.String())
+}
+
 func TestHandleClaudeStreamRealtimeIgnoresUnclosedFencedToolExample(t *testing.T) {
 	h := &Handler{}
 	resp := makeClaudeSSEHTTPResponse(

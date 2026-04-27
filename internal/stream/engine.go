@@ -75,7 +75,6 @@ func ConsumeSSE(cfg ConsumeConfig, hooks ConsumeHooks) {
 	}
 
 	hasContent := false
-	hasAction := false
 	lastContent := time.Now()
 	lastAction := lastContent
 	keepaliveCount := 0
@@ -108,7 +107,7 @@ func ConsumeSSE(cfg ConsumeConfig, hooks ConsumeHooks) {
 				finalize(StopReasonIdleTimeout, nil)
 				return
 			}
-			if cfg.ActionTimeout > 0 && hasContent && !hasAction && time.Since(lastAction) > cfg.ActionTimeout {
+			if cfg.ActionTimeout > 0 && hasContent && time.Since(lastAction) > cfg.ActionTimeout {
 				finalize(StopReasonNoActionTimeout, nil)
 				return
 			}
@@ -130,7 +129,6 @@ func ConsumeSSE(cfg ConsumeConfig, hooks ConsumeHooks) {
 				keepaliveCount = 0
 			}
 			if decision.ActionSeen {
-				hasAction = true
 				lastAction = time.Now()
 			}
 			if decision.Stop {

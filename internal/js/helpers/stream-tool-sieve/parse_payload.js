@@ -3,7 +3,8 @@
 const TOOL_CALL_MARKUP_BLOCK_PATTERN = /<(?:[a-z0-9_:-]+:)?(tool_call|function_call|invoke)\b([^>]*)>([\s\S]*?)<\/(?:[a-z0-9_:-]+:)?\1>/gi;
 const TOOL_CALL_MARKUP_SELFCLOSE_PATTERN = /<(?:[a-z0-9_:-]+:)?invoke\b([^>]*)\/>/gi;
 const TOOL_CALL_MARKUP_KV_PATTERN = /<(?:[a-z0-9_:-]+:)?([a-z0-9_.-]+)\b[^>]*>([\s\S]*?)<\/(?:[a-z0-9_:-]+:)?\1>/gi;
-const TOOL_CALL_MARKUP_ATTR_PATTERN = /(name|function|tool)\s*=\s*"([^"]+)"/i;
+const MARKUP_ATTR_PATTERN = /\b([a-z0-9_:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>/]+))/gi;
+const NAMED_PARAMETER_PATTERN = /<(?:[a-z0-9_:-]+:)?(?:parameter|argument|param)\b([^>]*)>([\s\S]*?)<\/(?:[a-z0-9_:-]+:)?(?:parameter|argument|param)>/gi;
 const TOOL_CALL_MARKUP_NAME_PATTERNS = [
   /<(?:[a-z0-9_:-]+:)?tool_name\b[^>]*>([\s\S]*?)<\/(?:[a-z0-9_:-]+:)?tool_name>/i,
   /<(?:[a-z0-9_:-]+:)?function_name\b[^>]*>([\s\S]*?)<\/(?:[a-z0-9_:-]+:)?function_name>/i,
@@ -71,10 +72,7 @@ function parseMarkupSingleToolCall(attrs, inner) {
     }
   }
   let name = '';
-  const attrMatch = attrs.match(TOOL_CALL_MARKUP_ATTR_PATTERN);
-  if (attrMatch && attrMatch[2]) {
-    name = toStringSafe(attrMatch[2]).trim();
-  }
+  name = markupAttrValue(attrs, ['name', 'function', 'tool']);
   if (!name) {
     name = extractRawTagValue(findMarkupTagValue(inner, TOOL_CALL_MARKUP_NAME_PATTERNS));
   }
@@ -83,8 +81,11 @@ function parseMarkupSingleToolCall(attrs, inner) {
   }
 
   let input = {};
+  const named = parseNamedMarkupParameters(inner);
   const argsRaw = findMarkupTagValue(inner, TOOL_CALL_MARKUP_ARGS_PATTERNS);
-  if (argsRaw) {
+  if (Object.keys(named).length > 0) {
+    input = named;
+  } else if (argsRaw) {
     input = parseMarkupInput(argsRaw);
   } else {
     const kv = parseMarkupKVObject(inner);
@@ -101,6 +102,10 @@ function parseMarkupInput(raw) {
     return {};
   }
   // Prioritize XML-style KV tags (e.g., <arg>val</arg>)
+  const named = parseNamedMarkupParameters(s);
+  if (Object.keys(named).length > 0) {
+    return named;
+  }
   const kv = parseMarkupKVObject(s);
   if (Object.keys(kv).length > 0) {
     return kv;
@@ -115,6 +120,42 @@ function parseMarkupInput(raw) {
   }
 
   return { _raw: extractRawTagValue(s) };
+}
+
+function parseNamedMarkupParameters(text) {
+  const raw = toStringSafe(text).trim();
+  if (!raw) {
+    return {};
+  }
+  const out = {};
+  for (const m of raw.matchAll(NAMED_PARAMETER_PATTERN)) {
+    const key = markupAttrValue(toStringSafe(m[1]), ['name']);
+    if (!key) {
+      continue;
+    }
+    const value = parseMarkupValue(m[2]);
+    if (value === undefined || value === null) {
+      continue;
+    }
+    appendMarkupValue(out, key, value);
+  }
+  return out;
+}
+
+function markupAttrValue(attrs, names) {
+  const raw = toStringSafe(attrs);
+  if (!raw) {
+    return '';
+  }
+  MARKUP_ATTR_PATTERN.lastIndex = 0;
+  for (const m of raw.matchAll(MARKUP_ATTR_PATTERN)) {
+    const key = toStringSafe(m[1]).trim().toLowerCase();
+    if (!key || !names.some((name) => key === toStringSafe(name).trim().toLowerCase())) {
+      continue;
+    }
+    return unescapeHtml(toStringSafe(m[2] ?? m[3] ?? m[4])).trim();
+  }
+  return '';
 }
 
 function parseMarkupKVObject(text) {

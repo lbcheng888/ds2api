@@ -89,7 +89,7 @@ func TestParseDeepSeekContentLineContent(t *testing.T) {
 
 func TestParseDeepSeekContentLineWithEventExtractsToolTitle(t *testing.T) {
 	res := ParseDeepSeekContentLineWithEvent(
-		[]byte(`data: {"content":"tool_calls\n<tool_call>\n<tool_name>Read</tool_name>"}`),
+		[]byte(`data: {"content":"tool_calls\n<tool_call>\n<tool_name>Read</tool_name>\n<parameter name=\"file_path\">/tmp/a.txt</parameter>"}`),
 		"title",
 		false,
 		"text",
@@ -99,6 +99,21 @@ func TestParseDeepSeekContentLineWithEventExtractsToolTitle(t *testing.T) {
 	}
 	if len(res.Parts) != 1 || res.Parts[0].Type != "text" || res.Parts[0].Text == "" {
 		t.Fatalf("unexpected title parts: %#v", res.Parts)
+	}
+}
+
+func TestParseDeepSeekContentLineWithEventIgnoresTruncatedToolTitle(t *testing.T) {
+	res := ParseDeepSeekContentLineWithEvent(
+		[]byte(`data: {"content":"<tool_calls>\n  <tool_call>\n    <tool_name>Read</tool_name>\n    <parameters>\n      <file_path>/Users/lbcheng/cheng-lang/src/"}`),
+		"title",
+		false,
+		"text",
+	)
+	if res.LateToolTitle {
+		t.Fatalf("expected truncated late title to be ignored: %#v", res)
+	}
+	if len(res.Parts) != 0 {
+		t.Fatalf("expected no title parts, got %#v", res.Parts)
 	}
 }
 

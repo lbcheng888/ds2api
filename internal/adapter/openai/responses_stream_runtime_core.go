@@ -9,6 +9,7 @@ import (
 	openaifmt "ds2api/internal/format/openai"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
+	textclean "ds2api/internal/textclean"
 	"ds2api/internal/util"
 )
 
@@ -22,6 +23,7 @@ type responsesStreamRuntime struct {
 	model               string
 	finalPrompt         string
 	toolNames           []string
+	toolSchemas         toolcall.ParameterSchemas
 	traceID             string
 	toolChoice          util.ToolChoicePolicy
 	allowMetaAgentTools bool
@@ -37,6 +39,7 @@ type responsesStreamRuntime struct {
 	toolCallsDoneEmitted bool
 
 	sieve             toolStreamSieveState
+	outputSanitizer   textclean.StreamSanitizer
 	thinking          strings.Builder
 	text              strings.Builder
 	visibleText       strings.Builder
@@ -47,6 +50,10 @@ type responsesStreamRuntime struct {
 	functionDone      map[int]bool
 	functionAdded     map[int]bool
 	functionNames     map[int]string
+	reasoningItemID   string
+	reasoningOutputID int
+	reasoningAdded    bool
+	reasoningDone     bool
 	messageItemID     string
 	messageOutputID   int
 	nextOutputID      int
@@ -70,6 +77,7 @@ func newResponsesStreamRuntime(
 	searchEnabled bool,
 	stripReferenceMarkers bool,
 	toolNames []string,
+	toolSchemas toolcall.ParameterSchemas,
 	bufferToolContent bool,
 	emitEarlyToolDeltas bool,
 	bufferedToolMaxBytes int,
@@ -90,6 +98,7 @@ func newResponsesStreamRuntime(
 		searchEnabled:         searchEnabled,
 		stripReferenceMarkers: stripReferenceMarkers,
 		toolNames:             toolNames,
+		toolSchemas:           toolSchemas,
 		bufferToolContent:     bufferToolContent,
 		emitEarlyToolDeltas:   emitEarlyToolDeltas,
 		bufferedToolMaxBytes:  bufferedToolMaxBytes,
@@ -100,38 +109,13 @@ func newResponsesStreamRuntime(
 		functionDone:          map[int]bool{},
 		functionAdded:         map[int]bool{},
 		functionNames:         map[int]string{},
+		reasoningOutputID:     -1,
 		messageOutputID:       -1,
 		toolChoice:            toolChoice,
 		allowMetaAgentTools:   allowMetaAgentTools,
 		traceID:               traceID,
 		persistResponse:       persistResponse,
 	}
-}
-
-func (s *responsesStreamRuntime) failResponse(message, code string) {
-	s.failed = true
-	capture := annotateFailureCaptureHeaders(s.w, s.sessionID)
-	message = withFailureCaptureMessage(message, capture)
-	failedResp := map[string]any{
-		"id":          s.responseID,
-		"type":        "response",
-		"object":      "response",
-		"model":       s.model,
-		"status":      "failed",
-		"output":      []any{},
-		"output_text": "",
-		"error": map[string]any{
-			"message": message,
-			"type":    "invalid_request_error",
-			"code":    code,
-			"param":   nil,
-		},
-	}
-	if s.persistResponse != nil {
-		s.persistResponse(failedResp)
-	}
-	s.sendEvent("response.failed", openaifmt.BuildResponsesFailedPayload(s.responseID, s.model, message, code))
-	s.sendDone()
 }
 
 func (s *responsesStreamRuntime) finalize() {
@@ -146,7 +130,7 @@ func (s *responsesStreamRuntime) finalize() {
 	if strings.TrimSpace(finalText) == "" {
 		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(s.finalPrompt, s.toolNames, s.allowMetaAgentTools); repaired != "" {
 			finalText = repaired
-		} else if promoted := executableToolCallTextFromThinking(finalThinking, s.toolNames, nil, s.allowMetaAgentTools); promoted != "" {
+		} else if promoted := executableToolCallTextFromThinking(finalThinking, s.toolNames, s.toolSchemas, s.allowMetaAgentTools); promoted != "" {
 			finalText = promoted
 		}
 	}
@@ -156,12 +140,16 @@ func (s *responsesStreamRuntime) finalize() {
 	}
 
 	textParsed := toolcall.ParseStandaloneToolCallsDetailed(finalText, s.toolNames)
-	if normalizedToolCallsExceedInputBytes(textParsed.Calls, nil, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
+	if normalizedToolCallsExceedInputBytes(textParsed.Calls, s.toolSchemas, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
 		_, message, code := toolCallTooLargeError()
 		s.failResponse(message, code)
 		return
 	}
-	detected := toolcall.NormalizeCallsForSchemasWithMeta(textParsed.Calls, nil, s.allowMetaAgentTools)
+	if _, message, code, ok := invalidTaskOutputCallDetail(textParsed.Calls, s.finalPrompt); ok {
+		s.failResponse(message, code)
+		return
+	}
+	detected := toolcall.NormalizeCallsForSchemasWithMeta(textParsed.Calls, s.toolSchemas, s.allowMetaAgentTools)
 	s.logToolPolicyRejections(textParsed)
 
 	if len(detected) > 0 {
@@ -176,7 +164,7 @@ func (s *responsesStreamRuntime) finalize() {
 		return
 	}
 	if len(detected) == 0 && !s.toolCallsEmitted {
-		if _, message, code, ok := futureActionMissingToolCallDetail(finalText, s.toolNames, nil, s.allowMetaAgentTools); ok {
+		if _, message, code, ok := futureActionMissingToolCallDetail(finalText, s.finalPrompt, s.toolNames, s.toolSchemas, s.allowMetaAgentTools); ok {
 			s.failResponse(message, code)
 			return
 		}
@@ -196,6 +184,7 @@ func (s *responsesStreamRuntime) finalize() {
 		return
 	}
 	s.closeIncompleteFunctionItems()
+	s.closeReasoningItem()
 
 	obj := s.buildCompletedResponseObject(finalThinking, finalText, detected)
 	if s.persistResponse != nil {
@@ -251,7 +240,7 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 	contentSeen := false
 	actionSeen := false
 	for _, p := range parsed.Parts {
-		cleanedText := cleanVisibleOutput(p.Text, s.stripReferenceMarkers)
+		cleanedText := cleanVisibleOutput(s.outputSanitizer.Sanitize(p.Text), s.stripReferenceMarkers)
 		if cleanedText == "" {
 			continue
 		}
@@ -268,7 +257,7 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 				continue
 			}
 			s.thinking.WriteString(trimmed)
-			s.sendEvent("response.reasoning.delta", openaifmt.BuildResponsesReasoningDeltaPayload(s.responseID, trimmed))
+			s.ensureReasoningItemAdded()
 			continue
 		}
 

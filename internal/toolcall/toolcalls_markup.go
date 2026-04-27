@@ -15,7 +15,6 @@ var toolCallMarkupTagPatternByName = map[string]*regexp.Regexp{
 }
 var toolCallMarkupSelfClosingPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?invoke\b([^>]*)/>`)
 var toolCallMarkupKVPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?([a-z0-9_\-.]+)\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?([a-z0-9_\-.]+)>`)
-var toolCallMarkupAttrPattern = regexp.MustCompile(`(?is)(name|function|tool)\s*=\s*"([^"]+)"`)
 var anyTagPattern = regexp.MustCompile(`(?is)<[^>]+>`)
 var toolCallMarkupNameTagNames = []string{"name", "function", "tool_name", "function_name", "tool_call_name"}
 var toolCallMarkupNamePatternByTag = map[string]*regexp.Regexp{
@@ -102,9 +101,7 @@ func parseMarkupSingleToolCall(attrs string, inner string) ParsedToolCall {
 	}
 
 	name := ""
-	if m := toolCallMarkupAttrPattern.FindStringSubmatch(attrs); len(m) >= 3 {
-		name = strings.TrimSpace(m[2])
-	}
+	name = markupAttrValue(attrs, "name", "function", "tool")
 	if name == "" {
 		name = findMarkupTagValue(stripTopLevelXMLParameters(inner), toolCallMarkupNameTagNames, toolCallMarkupNamePatternByTag)
 	}
@@ -141,7 +138,7 @@ func parseMarkupKVObject(text string) map[string]any {
 		if key == "" {
 			continue
 		}
-		if !strings.EqualFold(key, endKey) && !isLooseParameterClose(key, endKey) {
+		if !strings.EqualFold(key, endKey) && !isLooseParameterClose(key, endKey) && !isLooseValueClose(key, endKey) {
 			continue
 		}
 		value := parseMarkupValue(m[2])
@@ -154,6 +151,18 @@ func parseMarkupKVObject(text string) map[string]any {
 		return nil
 	}
 	return out
+}
+
+func isLooseValueClose(key, endKey string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	endKey = strings.ToLower(strings.TrimSpace(endKey))
+	if key == "" || endKey == "" || key == endKey {
+		return false
+	}
+	if isXMLToolMetadataTag(key) || isXMLToolMetadataTag(endKey) {
+		return false
+	}
+	return true
 }
 
 func isLooseParameterClose(key, endKey string) bool {

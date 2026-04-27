@@ -40,6 +40,7 @@ type Meta struct {
 	Source        string         `json:"source,omitempty"`
 	Request       any            `json:"request"`
 	Capture       CaptureSummary `json:"capture"`
+	Analysis      *Analysis      `json:"analysis,omitempty"`
 }
 
 type PersistOptions struct {
@@ -108,6 +109,7 @@ func Persist(opts PersistOptions) (SavedSample, error) {
 		Source:        strings.TrimSpace(opts.Source),
 		Request:       opts.Request,
 		Capture:       capture,
+		Analysis:      AnalyzeUpstreamBody(opts.UpstreamBody),
 	}
 	metaBytes, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {

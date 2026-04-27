@@ -2,18 +2,17 @@ package openai
 
 import (
 	"html"
+	"net/http"
 	"regexp"
 	"strings"
 
+	"ds2api/internal/protocol"
 	"ds2api/internal/toolcall"
 )
 
 var taskNotificationBlockPattern = regexp.MustCompile(`(?is)<task-notification\b[^>]*>(.*?)</task-notification>`)
 var taskIDTagPattern = regexp.MustCompile(`(?is)<task[-_]?id\b[^>]*>(.*?)</task[-_]?id>`)
 var taskIDAttrPattern = regexp.MustCompile(`(?is)\btask[-_]?id\s*=\s*["']([^"']+)["']`)
-var taskIDJSONPattern = regexp.MustCompile(`(?is)["']task[-_]?id["']\s*:\s*["']([^"']+)["']`)
-var taskOutputLineIDPattern = regexp.MustCompile(`(?is)\bTask\s+Output(?:\s*\([^)]*\))?\s+([a-z0-9_-]{8,})\b`)
-var prefixedTaskIDPattern = regexp.MustCompile(`(?is)\b(task[_-][a-z0-9_-]{4,})\b`)
 
 func synthesizeTaskOutputToolCallTextFromTaskNotification(finalPrompt string, toolNames []string, allowMetaAgentTools bool) string {
 	calls := synthesizeTaskOutputToolCallsFromTaskNotification(finalPrompt, toolNames, allowMetaAgentTools)
@@ -72,10 +71,8 @@ func synthesizeTaskOutputToolCallsFromAgentWaiting(finalPrompt, finalText string
 	if !ok {
 		return nil
 	}
-	ids := extractRunningTaskOutputIDs(finalPrompt)
-	if len(ids) == 0 {
-		ids = extractAllTaskIDs(recentTaskPromptWindow(finalPrompt))
-	}
+	states := protocol.ExtractTaskStates(finalPrompt)
+	ids := protocol.TaskIDsWithStatus(states, protocol.TaskStatusRunning)
 	if len(ids) == 0 {
 		return nil
 	}
@@ -94,6 +91,70 @@ func synthesizeTaskOutputToolCallsFromAgentWaiting(finalPrompt, finalText string
 		})
 	}
 	return calls
+}
+
+func invalidTaskOutputCallDetail(calls []toolcall.ParsedToolCall, finalPrompt string) (int, string, string, bool) {
+	invalid := invalidTaskOutputIDs(calls, finalPrompt)
+	if len(invalid) == 0 {
+		return 0, "", "", false
+	}
+	return http.StatusBadGateway,
+		"Upstream model requested TaskOutput for an unknown or inactive task_id.",
+		upstreamInvalidToolCallCode,
+		true
+}
+
+func invalidTaskOutputIDs(calls []toolcall.ParsedToolCall, finalPrompt string) []string {
+	if len(calls) == 0 {
+		return nil
+	}
+	allowed := allowedTaskOutputIDSet(finalPrompt)
+	invalid := []string{}
+	for _, call := range calls {
+		if canonicalTaskOutputToolName(call.Name) != "taskoutput" {
+			continue
+		}
+		id := protocol.CleanTaskID(taskOutputInputString(call.Input["task_id"]))
+		if id == "" {
+			id = protocol.CleanTaskID(taskOutputInputString(call.Input["taskId"]))
+		}
+		if id == "" {
+			continue
+		}
+		if _, ok := allowed[id]; !ok {
+			invalid = append(invalid, id)
+		}
+	}
+	return invalid
+}
+
+func allowedTaskOutputIDSet(finalPrompt string) map[string]struct{} {
+	allowed := map[string]struct{}{}
+	for _, state := range protocol.ExtractTaskStates(finalPrompt) {
+		if state.Status != protocol.TaskStatusRunning && state.Status != protocol.TaskStatusCompleted {
+			continue
+		}
+		id := protocol.CleanTaskID(state.TaskID)
+		if id != "" {
+			allowed[id] = struct{}{}
+		}
+	}
+	latestUser := html.UnescapeString(latestUserPromptBlock(finalPrompt))
+	if strings.Contains(strings.ToLower(latestUser), "<task-notification") {
+		for _, id := range extractTaskNotificationIDs(latestUser) {
+			if id != "" {
+				allowed[id] = struct{}{}
+			}
+		}
+	}
+	return allowed
+}
+
+func taskOutputInputString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 func looksLikeAgentWaitingText(text string) bool {
@@ -200,97 +261,6 @@ func extractTaskNotificationIDs(text string) []string {
 	return out
 }
 
-func extractAllTaskIDs(text string) []string {
-	seen := map[string]struct{}{}
-	out := []string{}
-	addID := func(raw string) {
-		id := cleanSyntheticTaskID(raw)
-		if id == "" {
-			return
-		}
-		if _, exists := seen[id]; exists {
-			return
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	for _, id := range extractTaskNotificationIDs(text) {
-		addID(id)
-	}
-	for _, pattern := range []*regexp.Regexp{taskIDAttrPattern, taskIDTagPattern, taskIDJSONPattern, taskOutputLineIDPattern, prefixedTaskIDPattern} {
-		for _, match := range pattern.FindAllStringSubmatch(text, -1) {
-			if len(match) >= 2 {
-				addID(match[1])
-			}
-		}
-	}
-	return out
-}
-
-func extractRunningTaskOutputIDs(text string) []string {
-	text = recentTaskPromptWindow(text)
-	seen := map[string]struct{}{}
-	out := []string{}
-	matches := taskOutputLineIDPattern.FindAllStringSubmatchIndex(text, -1)
-	for i, match := range matches {
-		if len(match) < 4 {
-			continue
-		}
-		windowStart := match[1]
-		windowEnd := len(text)
-		if i+1 < len(matches) {
-			windowEnd = matches[i+1][0]
-		}
-		if windowEnd-windowStart > 800 {
-			windowEnd = windowStart + 800
-		}
-		if !taskOutputWindowStillRunning(text[windowStart:windowEnd]) {
-			continue
-		}
-		id := cleanSyntheticTaskID(text[match[2]:match[3]])
-		if id == "" {
-			continue
-		}
-		if _, exists := seen[id]; exists {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	return out
-}
-
-func taskOutputWindowStillRunning(text string) bool {
-	lower := strings.ToLower(text)
-	for _, phrase := range []string{
-		"still running",
-		"still in progress",
-		"task is running",
-		"not done",
-		"not completed",
-	} {
-		if strings.Contains(lower, phrase) {
-			return true
-		}
-	}
-	return strings.Contains(text, "仍在运行") ||
-		strings.Contains(text, "正在运行") ||
-		strings.Contains(text, "尚未完成") ||
-		strings.Contains(text, "未完成")
-}
-
-func recentTaskPromptWindow(text string) string {
-	const max = 20000
-	if len(text) <= max {
-		return text
-	}
-	return text[len(text)-max:]
-}
-
 func cleanSyntheticTaskID(raw string) string {
-	id := strings.TrimSpace(html.UnescapeString(raw))
-	if id == "" || strings.Contains(id, "<") || strings.Contains(id, ">") {
-		return ""
-	}
-	return id
+	return protocol.CleanTaskID(raw)
 }

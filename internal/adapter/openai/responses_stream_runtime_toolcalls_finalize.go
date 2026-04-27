@@ -64,6 +64,18 @@ func (s *responsesStreamRuntime) buildCompletedResponseObject(finalThinking, fin
 	}
 	indexed := make([]indexedItem, 0, len(calls)+1)
 
+	if s.reasoningAdded {
+		indexed = append(indexed, indexedItem{
+			index: s.ensureReasoningOutputIndex(),
+			item: map[string]any{
+				"id":      s.ensureReasoningItemID(),
+				"type":    "reasoning",
+				"status":  "completed",
+				"summary": []any{},
+			},
+		})
+	}
+
 	if s.messageAdded {
 		text := s.visibleText.String()
 		indexed = append(indexed, indexedItem{
@@ -75,8 +87,10 @@ func (s *responsesStreamRuntime) buildCompletedResponseObject(finalThinking, fin
 				"status": "completed",
 				"content": []map[string]any{
 					{
-						"type": "output_text",
-						"text": text,
+						"type":        "output_text",
+						"text":        text,
+						"annotations": []any{},
+						"logprobs":    []any{},
 					},
 				},
 			},
@@ -91,8 +105,10 @@ func (s *responsesStreamRuntime) buildCompletedResponseObject(finalThinking, fin
 		}
 		if finalText != "" {
 			content = append(content, map[string]any{
-				"type": "output_text",
-				"text": finalText,
+				"type":        "output_text",
+				"text":        finalText,
+				"annotations": []any{},
+				"logprobs":    []any{},
 			})
 		}
 		if len(content) > 0 {

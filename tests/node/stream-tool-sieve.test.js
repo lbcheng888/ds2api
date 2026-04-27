@@ -49,12 +49,103 @@ test('parseToolCalls parses XML markup tool call', () => {
   assert.deepEqual(calls[0].input, { path: 'README.MD' });
 });
 
+test('parseToolCalls parses Roo invoke typed parameter attributes', () => {
+  const payload = [
+    '<tool_calls>',
+    '<invoke name="task">',
+    '<parameter name="description" string="true">审查cheng语言代码结构</parameter>',
+    '<parameter name="prompt" string="true">探索 /Users/lbcheng/cheng-lang 项目的完整目录结构。</parameter>',
+    '<parameter name="subagent_type" string="true">explore</parameter>',
+    '<parameter name="max_retries" string="false">2</parameter>',
+    '</invoke>',
+    '</tool_calls>',
+  ].join('\n');
+  const calls = parseToolCalls(payload, ['task']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'task');
+  assert.equal(calls[0].input.description, '审查cheng语言代码结构');
+  assert.equal(calls[0].input.prompt, '探索 /Users/lbcheng/cheng-lang 项目的完整目录结构。');
+  assert.equal(calls[0].input.subagent_type, 'explore');
+  assert.equal(calls[0].input.max_retries, 2);
+});
+
+test('parseToolCalls parses single-quoted and unquoted parameter attributes', () => {
+  const payload = [
+    '<tool_calls>',
+    "<invoke name='task'>",
+    '<parameter name=description string=true>审查cheng语言代码结构</parameter>',
+    "<parameter name='prompt' string='true'>探索 /Users/lbcheng/cheng-lang 项目的完整目录结构。</parameter>",
+    '<parameter name=subagent_type string=true>explore</parameter>',
+    '</invoke>',
+    '</tool_calls>',
+  ].join('\n');
+  const calls = parseToolCalls(payload, ['task']);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].input, {
+    description: '审查cheng语言代码结构',
+    prompt: '探索 /Users/lbcheng/cheng-lang 项目的完整目录结构。',
+    subagent_type: 'explore',
+  });
+});
+
 test('parseToolCalls ignores JSON tool_calls payload (XML-only)', () => {
   const payload = JSON.stringify({
     tool_calls: [{ name: 'read_file', input: { path: 'README.MD' } }],
   });
   const calls = parseToolCalls(payload, ['read_file']);
   assert.equal(calls.length, 0);
+});
+
+test('parseToolCalls parses visible JSON tool array', () => {
+  const payload = JSON.stringify([
+    {
+      tool: 'Read',
+      arguments: {
+        file_path: '/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng',
+        offset: 345,
+        limit: 65,
+      },
+    },
+    {
+      tool: 'Read',
+      arguments: {
+        file_path: '/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng',
+        offset: 773,
+        limit: 30,
+      },
+    },
+  ]);
+  const calls = parseToolCalls(payload, ['Read']);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].name, 'Read');
+  assert.equal(calls[0].input.offset, 345);
+  assert.equal(calls[1].input.limit, 30);
+});
+
+test('parseToolCalls parses visible JSON tool object sequence', () => {
+  const payload = [
+    JSON.stringify({
+      tool: 'Read',
+      arguments: {
+        file_path: '/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng',
+        offset: 345,
+        limit: 65,
+      },
+    }),
+    JSON.stringify({
+      tool: 'Read',
+      arguments: {
+        file_path: '/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng',
+        offset: 773,
+        limit: 30,
+      },
+    }),
+  ].join('\n');
+  const calls = parseToolCalls(payload, ['Read']);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].name, 'Read');
+  assert.equal(calls[0].input.offset, 345);
+  assert.equal(calls[1].input.limit, 30);
 });
 
 test('parseToolCalls ignores tool_call payloads that exist only inside fenced code blocks', () => {
@@ -65,6 +156,12 @@ test('parseToolCalls ignores tool_call payloads that exist only inside fenced co
     '```',
   ].join('\n');
   const calls = parseToolCalls(text, ['read_file']);
+  assert.equal(calls.length, 0);
+});
+
+test('parseToolCalls ignores visible JSON tool arrays inside fenced code blocks', () => {
+  const text = '```json\n[{"tool":"Read","arguments":{"file_path":"/tmp/a.cheng"}}]\n```';
+  const calls = parseToolCalls(text, ['Read']);
   assert.equal(calls.length, 0);
 });
 
@@ -129,6 +226,92 @@ test('sieve passes JSON tool_calls payload through as text (XML-only)', () => {
   assert.equal(leakedText.includes('tool_calls'), true);
 });
 
+test('sieve emits tool_calls for visible JSON tool array without leaking text', () => {
+  const events = runSieve(
+    [
+      'Let me read next.\n',
+      '[{"tool":"Read","arguments":{"file_path":"/tmp/a.cheng","offset":345,"limit":65}}]',
+      '\nDone.',
+    ],
+    ['Read'],
+  );
+  const leakedText = collectText(events);
+  const finalCalls = events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
+  assert.equal(leakedText.includes('"tool"'), false);
+  assert.equal(leakedText.includes('/tmp/a.cheng'), false);
+  assert.equal(leakedText.includes('Let me read next.'), true);
+  assert.equal(leakedText.includes('Done.'), true);
+  assert.equal(finalCalls.length, 1);
+  assert.equal(finalCalls[0].name, 'Read');
+  assert.equal(finalCalls[0].input.file_path, '/tmp/a.cheng');
+});
+
+test('sieve emits tool_calls when visible JSON tool array spans chunks', () => {
+  const events = runSieve(
+    [
+      'Reading next.\n',
+      '[\n',
+      '{"tool":"Read",',
+      '"arguments":{"file_path":"/tmp/a.cheng",',
+      '"offset":345,"limit":65}}',
+      ']\nDone',
+    ],
+    ['Read'],
+  );
+  const leakedText = collectText(events);
+  const finalCalls = events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
+  assert.equal(leakedText.includes('"tool"'), false);
+  assert.equal(leakedText.includes('/tmp/a.cheng'), false);
+  assert.equal(leakedText.includes('Reading next.'), true);
+  assert.equal(leakedText.includes('Done'), true);
+  assert.equal(finalCalls.length, 1);
+  assert.equal(finalCalls[0].input.offset, 345);
+});
+
+test('sieve emits tool_calls for visible JSON object sequence without leaking text', () => {
+  const events = runSieve(
+    [
+      'Let me read next.\n',
+      '{"tool":"Read","arguments":{"file_path":"/tmp/a.cheng","offset":345,"limit":65}}\n',
+      '{"tool":"Read","arguments":{"file_path":"/tmp/b.cheng","offset":773,"limit":30}}',
+      '\nDone.',
+    ],
+    ['Read'],
+  );
+  const leakedText = collectText(events);
+  const finalCalls = events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
+  assert.equal(leakedText.includes('"tool"'), false);
+  assert.equal(leakedText.includes('/tmp/a.cheng'), false);
+  assert.equal(leakedText.includes('Let me read next.'), true);
+  assert.equal(leakedText.includes('Done.'), true);
+  assert.equal(finalCalls.length, 2);
+  assert.equal(finalCalls[0].input.file_path, '/tmp/a.cheng');
+  assert.equal(finalCalls[1].input.offset, 773);
+});
+
+test('sieve emits tool_calls when visible JSON object sequence spans chunks', () => {
+  const events = runSieve(
+    [
+      'Reading next.\n',
+      '{"tool":"Read",',
+      '"arguments":{"file_path":"/tmp/a.cheng",',
+      '"offset":345,"limit":65}}\n',
+      '{"tool":"Read","arguments":{"file_path":"/tmp/b.cheng",',
+      '"offset":773,"limit":30}}\nDone',
+    ],
+    ['Read'],
+  );
+  const leakedText = collectText(events);
+  const finalCalls = events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
+  assert.equal(leakedText.includes('"tool"'), false);
+  assert.equal(leakedText.includes('/tmp/a.cheng'), false);
+  assert.equal(leakedText.includes('Reading next.'), true);
+  assert.equal(leakedText.includes('Done'), true);
+  assert.equal(finalCalls.length, 2);
+  assert.equal(finalCalls[0].input.offset, 345);
+  assert.equal(finalCalls[1].input.limit, 30);
+});
+
 test('sieve keeps embedded invalid tool-like json as normal text to avoid stream stalls', () => {
   const events = runSieve(
     [
@@ -144,6 +327,15 @@ test('sieve keeps embedded invalid tool-like json as normal text to avoid stream
   assert.equal(leakedText.includes('前置正文D。'), true);
   assert.equal(leakedText.includes('后置正文E。'), true);
   assert.equal(leakedText.toLowerCase().includes('tool_calls'), true);
+});
+
+test('sieve keeps fenced visible JSON tool array as text', () => {
+  const input = 'Example:\n```json\n[{"tool":"Read","arguments":{"file_path":"/tmp/a.cheng"}}]\n```\nDone.';
+  const events = runSieve([input], ['Read']);
+  const leakedText = collectText(events);
+  const hasToolCall = events.some((evt) => evt.type === 'tool_calls' && evt.calls?.length > 0);
+  assert.equal(hasToolCall, false);
+  assert.equal(leakedText, input);
 });
 
 test('sieve passes malformed executable-looking XML through as text', () => {

@@ -50,6 +50,7 @@ func (h *Handler) getDevDiagnostics(w http.ResponseWriter, r *http.Request) {
 		"capture_chains":   captures,
 		"capture_count":    len(captureChains),
 		"dev_capture_on":   devcapture.Global().Enabled(),
+		"runtime_profile":  h.runtimeDiagnosticsProfile(),
 		"replay_help":      "Use ./tests/scripts/compare-raw-stream-sample.sh <sample-id> to replay one failure sample.",
 		"generated_at_utc": time.Now().UTC().Format(time.RFC3339),
 	}
@@ -96,6 +97,29 @@ func listFailureSamples(root string, limit int) ([]map[string]any, error) {
 	return out, nil
 }
 
+func (h *Handler) runtimeDiagnosticsProfile() map[string]any {
+	if h == nil || h.Store == nil {
+		return map[string]any{}
+	}
+	recommended := defaultRuntimeRecommended(len(h.Store.Accounts()), h.Store.RuntimeAccountMaxInflight())
+	return map[string]any{
+		"account_max_inflight":              h.Store.RuntimeAccountMaxInflight(),
+		"account_max_queue":                 h.Store.RuntimeAccountMaxQueue(recommended),
+		"global_max_inflight":               h.Store.RuntimeGlobalMaxInflight(recommended),
+		"token_refresh_interval_hours":      h.Store.RuntimeTokenRefreshIntervalHours(),
+		"account_failure_cooldown_seconds":  h.Store.RuntimeAccountFailureCooldownSeconds(),
+		"stream_max_duration_seconds":       h.Store.RuntimeStreamMaxDurationSeconds(),
+		"reasoning_only_timeout_seconds":    h.Store.RuntimeReasoningOnlyTimeoutSeconds(),
+		"buffered_tool_content_max_bytes":   h.Store.RuntimeBufferedToolContentMaxBytes(),
+		"allow_meta_agent_tools":            h.Store.CompatAllowMetaAgentTools(),
+		"default_reasoning_effort":          h.Store.CompatDefaultReasoningEffort(),
+		"strip_reference_markers":           h.Store.CompatStripReferenceMarkers(),
+		"history_split_enabled":             h.Store.HistorySplitEnabled(),
+		"history_split_trigger_after_turns": h.Store.HistorySplitTriggerAfterTurns(),
+		"auto_delete_mode":                  h.Store.AutoDeleteMode(),
+	}
+}
+
 type failureSampleItem struct {
 	SortUnix int64
 	Payload  map[string]any
@@ -128,6 +152,12 @@ func readFailureSample(root, sampleID string) (failureSampleItem, bool) {
 		}
 	}
 	code := strings.TrimPrefix(strings.TrimSpace(meta.Source), "openai/failure/")
+	analysis := meta.Analysis
+	if analysis == nil {
+		if raw, err := os.ReadFile(filepath.Join(dir, "upstream.stream.sse")); err == nil {
+			analysis = rawsample.AnalyzeUpstreamBody(raw)
+		}
+	}
 	payload := map[string]any{
 		"sample_id":       sampleID,
 		"sample_dir":      dir,
@@ -136,11 +166,20 @@ func readFailureSample(root, sampleID string) (failureSampleItem, bool) {
 		"captured_at_utc": capturedAt,
 		"source":          strings.TrimSpace(meta.Source),
 		"error_code":      nilIfEmpty(code),
+		"analysis":        analysis,
+		"category":        sampleCategory(analysis),
 		"capture":         meta.Capture,
 		"request_summary": failureRequestSummary(meta.Request),
 		"replay_command":  "./tests/scripts/compare-raw-stream-sample.sh " + sampleID,
 	}
 	return failureSampleItem{SortUnix: sortUnix, Payload: payload}, true
+}
+
+func sampleCategory(analysis *rawsample.Analysis) any {
+	if analysis == nil || strings.TrimSpace(analysis.Category) == "" {
+		return nil
+	}
+	return analysis.Category
 }
 
 func isFailureSample(sampleID, source string) bool {

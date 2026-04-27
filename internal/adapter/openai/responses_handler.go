@@ -15,6 +15,7 @@ import (
 	"ds2api/internal/config"
 	"ds2api/internal/deepseek"
 	openaifmt "ds2api/internal/format/openai"
+	"ds2api/internal/protocol"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
 	"ds2api/internal/util"
@@ -80,10 +81,14 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	traceID := requestTraceID(r)
-	stdReq, err := normalizeOpenAIResponsesRequest(h.Store, req, traceID)
+	profile := protocol.DetectClientProfile(r, req)
+	stdReq, err := normalizeOpenAIResponsesRequestWithProfile(h.Store, req, traceID, profile)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if stdReq.ClientProfile != "" {
+		w.Header().Set("X-Ds2-Client-Profile", stdReq.ClientProfile)
 	}
 	stdReq, err = h.applyHistorySplit(r.Context(), a, stdReq)
 	if err != nil {
@@ -100,13 +105,13 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 
 	responseID := "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	if stdReq.Stream {
-		h.handleResponsesStream(w, r, resp, owner, sessionID, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
+		h.handleResponsesStream(w, r, resp, owner, sessionID, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
 		return
 	}
-	h.handleResponsesNonStream(w, resp, owner, sessionID, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
+	h.handleResponsesNonStream(w, resp, owner, sessionID, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
 }
 
-func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, sessionID, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
+func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, sessionID, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -134,7 +139,7 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	if !result.ContentFilter && strings.TrimSpace(sanitizedText) == "" {
 		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(finalPrompt, toolNames, allowMetaAgentTools); repaired != "" {
 			sanitizedText = repaired
-		} else if promoted := executableToolCallTextFromThinking(sanitizedThinking, toolNames, nil, allowMetaAgentTools); promoted != "" {
+		} else if promoted := executableToolCallTextFromThinking(sanitizedThinking, toolNames, toolSchemas, allowMetaAgentTools); promoted != "" {
 			sanitizedText = promoted
 		}
 	}
@@ -143,13 +148,17 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, sessionID)
 		return
 	}
-	if status, message, code, ok := futureActionMissingToolCallDetail(sanitizedText, toolNames, nil, allowMetaAgentTools); ok {
+	if status, message, code, ok := futureActionMissingToolCallDetail(sanitizedText, finalPrompt, toolNames, toolSchemas, allowMetaAgentTools); ok {
 		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, sessionID)
 		return
 	}
 	textParsed := toolcall.ParseStandaloneToolCallsDetailed(sanitizedText, toolNames)
-	if normalizedToolCallsExceedInputBytes(textParsed.Calls, nil, allowMetaAgentTools, runtimeBufferedToolContentMaxBytes(h.Store)) {
+	if normalizedToolCallsExceedInputBytes(textParsed.Calls, toolSchemas, allowMetaAgentTools, runtimeBufferedToolContentMaxBytes(h.Store)) {
 		status, message, code := toolCallTooLargeError()
+		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, sessionID)
+		return
+	}
+	if status, message, code, ok := invalidTaskOutputCallDetail(textParsed.Calls, finalPrompt); ok {
 		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, sessionID)
 		return
 	}
@@ -166,7 +175,7 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	writeJSON(w, http.StatusOK, responseObj)
 }
 
-func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, resp *http.Response, owner, sessionID, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
+func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, resp *http.Response, owner, sessionID, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -200,6 +209,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		searchEnabled,
 		stripReferenceMarkers,
 		toolNames,
+		toolSchemas,
 		bufferToolContent,
 		emitEarlyToolDeltas,
 		runtimeBufferedToolContentMaxBytes(h.Store),

@@ -10,6 +10,7 @@ import (
 
 	"ds2api/internal/config"
 	streamengine "ds2api/internal/stream"
+	"ds2api/internal/toolcall"
 	"ds2api/internal/translatorcliproxy"
 	"ds2api/internal/util"
 
@@ -123,12 +124,16 @@ func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store C
 	return true
 }
 
-func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Request, resp *http.Response, model string, messages []any, thinkingEnabled, searchEnabled bool, toolNames []string) {
+func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Request, resp *http.Response, model string, messages []any, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemasOpt ...toolcall.ParameterSchemas) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		writeClaudeError(w, http.StatusInternalServerError, string(body))
 		return
+	}
+	var toolSchemas toolcall.ParameterSchemas
+	if len(toolSchemasOpt) > 0 {
+		toolSchemas = toolSchemasOpt[0]
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -151,6 +156,7 @@ func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Requ
 		searchEnabled,
 		h.compatStripReferenceMarkers(),
 		toolNames,
+		toolSchemas,
 	)
 	streamRuntime.sendMessageStart()
 

@@ -137,6 +137,48 @@ func TestAccountHealthStatusReportsCooldowns(t *testing.T) {
 	if health[0].CooldownRemainingSeconds <= 0 {
 		t.Fatalf("expected positive remaining cooldown, got %#v", health[0])
 	}
+	if health[0].FailureCount != 1 || health[0].ConsecutiveFailures != 1 {
+		t.Fatalf("expected failure counters, got %#v", health[0])
+	}
+	if health[0].LastFailureUnix <= 0 {
+		t.Fatalf("expected last failure timestamp, got %#v", health[0])
+	}
+}
+
+func TestAccountHealthStatusTracksSuccesses(t *testing.T) {
+	t.Setenv("DS2API_CONFIG_JSON", `{
+		"keys":["managed-key"],
+		"accounts":[{"email":"acc1@test.com","password":"pwd","token":"token"}]
+	}`)
+	store := config.LoadStore()
+	pool := account.NewPool(store)
+	r := NewResolver(store, pool, func(_ context.Context, acc config.Account) (string, error) {
+		return "token-" + acc.Identifier(), nil
+	})
+	req, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("x-api-key", "managed-key")
+
+	a, err := r.Determine(req)
+	if err != nil {
+		t.Fatalf("determine failed: %v", err)
+	}
+	r.MarkAccountFailure(a)
+	r.MarkAccountSuccess(a)
+	r.Release(a)
+
+	health := r.AccountHealthStatus()
+	if len(health) != 1 {
+		t.Fatalf("expected one health entry, got %#v", health)
+	}
+	if health[0].Status != "healthy" {
+		t.Fatalf("expected healthy status after success, got %#v", health[0])
+	}
+	if health[0].SuccessCount != 1 || health[0].FailureCount != 1 || health[0].ConsecutiveFailures != 0 {
+		t.Fatalf("unexpected counters after success, got %#v", health[0])
+	}
+	if health[0].LastSuccessUnix <= 0 || health[0].LastFailureUnix <= 0 {
+		t.Fatalf("expected timestamps after success and failure, got %#v", health[0])
+	}
 }
 
 func TestDetermineCallerWithManagedKeySkipsAccountAcquire(t *testing.T) {

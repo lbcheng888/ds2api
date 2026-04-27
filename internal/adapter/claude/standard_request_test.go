@@ -37,6 +37,36 @@ func TestNormalizeClaudeRequest(t *testing.T) {
 	}
 }
 
+func TestNormalizeClaudeRequestExtractsToolSchemas(t *testing.T) {
+	t.Setenv("DS2API_CONFIG_JSON", `{}`)
+	store := config.LoadStore()
+	req := map[string]any{
+		"model": "claude-sonnet-4-5",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+		"tools": []any{
+			map[string]any{
+				"name": "Read",
+				"input_schema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"file_path": map[string]any{"type": "string"},
+					},
+					"required": []any{"file_path"},
+				},
+			},
+		},
+	}
+	norm, err := normalizeClaudeRequest(store, req)
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if _, ok := norm.Standard.ToolSchemas["Read"]; !ok {
+		t.Fatalf("expected Read schema to be extracted, got %#v", norm.Standard.ToolSchemas)
+	}
+}
+
 func TestNormalizeClaudeRequestUsesDefaultReasoningEffort(t *testing.T) {
 	t.Setenv("DS2API_CONFIG_JSON", `{"compat":{"default_reasoning_effort":"max"}}`)
 	store := config.LoadStore()

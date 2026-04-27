@@ -84,6 +84,51 @@ Task Output(non-blocking) running_task_3
 	}
 }
 
+func TestSynthesizeTaskOutputFromAgentWaitingDoesNotReuseMissingTaskID(t *testing.T) {
+	prompt := `Task Output ae1f00a446213300f
+Error: No task found with ID: ae1f00a446213300f`
+	got := synthesizeTaskOutputToolCallsFromAgentWaiting(prompt, "等待剩余代理完成后汇总。", []string{"TaskOutput"}, true)
+	if len(got) != 0 {
+		t.Fatalf("expected no synthetic TaskOutput for missing task id, got %#v", got)
+	}
+}
+
+func TestInvalidTaskOutputCallDetailRejectsUnknownTaskID(t *testing.T) {
+	prompt := `Task Output(non-blocking) a5e2ba8830a7d773d
+Task is still running.
+Task Output a5e2ba8830a7d773d
+Error: No task found with ID: a5e2ba8830a7d773d`
+	calls := []toolcall.ParsedToolCall{{
+		Name:  "TaskOutput",
+		Input: map[string]any{"task_id": "a5e2ba8830a7d773d"},
+	}}
+	if _, _, code, ok := invalidTaskOutputCallDetail(calls, prompt); !ok || code != upstreamInvalidToolCallCode {
+		t.Fatalf("expected unknown TaskOutput to be rejected, ok=%v code=%q", ok, code)
+	}
+}
+
+func TestInvalidTaskOutputCallDetailAllowsRunningAndNotificationTaskIDs(t *testing.T) {
+	prompt := `Task Output(non-blocking) running_task_1
+Task is still running.
+<｜User｜><task-notification><task_id>done_task_2</task_id><status>completed</status></task-notification><｜Assistant｜>`
+	calls := []toolcall.ParsedToolCall{
+		{Name: "TaskOutput", Input: map[string]any{"task_id": "running_task_1"}},
+		{Name: "TaskOutput", Input: map[string]any{"task_id": "done_task_2"}},
+	}
+	if _, _, _, ok := invalidTaskOutputCallDetail(calls, prompt); ok {
+		t.Fatalf("expected known TaskOutput ids to pass")
+	}
+}
+
+func TestSynthesizeTaskOutputFromAgentWaitingRequiresExplicitRunningState(t *testing.T) {
+	prompt := `Async agent launched successfully.
+agentId: a644b314cca1a0eb0`
+	got := synthesizeTaskOutputToolCallsFromAgentWaiting(prompt, "等待 agent 返回后汇总。", []string{"TaskOutput"}, true)
+	if len(got) != 0 {
+		t.Fatalf("expected no synthetic TaskOutput without running state, got %#v", got)
+	}
+}
+
 func TestSynthesizeTaskOutputFromAgentWaitingDoesNotHideMalformedToolCall(t *testing.T) {
 	prompt := `Task Output(non-blocking) a43c25c4d63ec3d42`
 	text := "3 of 4 background agents completed.\n\n<tool_calls>\n<tool_calls>"
@@ -131,6 +176,28 @@ func TestHandleNonStreamConvertsTaskNotificationThinkingOnlyToTaskOutput(t *test
 	}
 	if args["task_id"] != "task_done" || args["block"] != false || args["timeout"] != float64(5000) {
 		t.Fatalf("unexpected args %#v", args)
+	}
+}
+
+func TestHandleNonStreamRejectsUnknownTaskOutputCall(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		sseContentLine(`<tool_calls><tool_call><tool_name>TaskOutput</tool_name><parameters><task_id>a3505bdfc13bcc88f</task_id></parameters></tool_call></tool_calls>`),
+		`data: [DONE]`,
+	)
+	prompt := `Task Output a3505bdfc13bcc88f
+Error: No task found with ID: a3505bdfc13bcc88f`
+	rec := httptest.NewRecorder()
+
+	h.handleNonStream(rec, resp, "cid-unknown-task-output", "deepseek-chat", prompt, false, false, []string{"TaskOutput"}, taskOutputTestSchemas, util.DefaultToolChoicePolicy(), true, nil)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected status 502, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	out := decodeJSONBody(t, rec.Body.String())
+	errObj, _ := out["error"].(map[string]any)
+	if asString(errObj["code"]) != upstreamInvalidToolCallCode {
+		t.Fatalf("expected code=%s, got %#v", upstreamInvalidToolCallCode, out)
 	}
 }
 

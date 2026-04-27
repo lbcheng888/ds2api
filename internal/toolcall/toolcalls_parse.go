@@ -38,17 +38,22 @@ func parseToolCallsDetailedXMLOnly(text string, availableToolNames []string) Too
 	if trimmed == "" {
 		return result
 	}
+	trimmed = RepairMalformedToolCallXML(trimmed)
 	result.SawToolCallSyntax = LooksLikeToolCallSyntax(trimmed)
 	trimmed = stripFencedCodeBlocks(trimmed)
 	trimmed = strings.TrimSpace(trimmed)
 	if trimmed == "" {
 		return result
 	}
+	trimmed = RepairMalformedToolCallXML(trimmed)
 	trimmed = repairMissingToolCallClose(trimmed)
 
 	parsed := parseXMLToolCalls(trimmed)
 	if len(parsed) == 0 {
 		parsed = parseMarkupToolCalls(trimmed)
+	}
+	if len(parsed) == 0 {
+		parsed = parseVisibleJSONToolCalls(trimmed)
 	}
 	if len(parsed) == 0 {
 		return result
@@ -64,9 +69,16 @@ func parseToolCallsDetailedXMLOnly(text string, availableToolNames []string) Too
 
 func filterToolCallsDetailed(parsed []ParsedToolCall, availableToolNames []string) ([]ParsedToolCall, []string) {
 	out := make([]ParsedToolCall, 0, len(parsed))
+	rejectedNames := make([]string, 0)
 	for _, tc := range parsed {
 		if tc.Input == nil {
 			tc.Input = map[string]any{}
+		}
+		if rewritten, ok := rewriteUnavailableLocalReadFileCallForAvailable(tc, availableToolNames); ok {
+			tc = rewritten
+		}
+		if rewritten, ok := rewriteLocalResourceReadCallForAvailable(tc, availableToolNames); ok {
+			tc = rewritten
 		}
 		if strings.TrimSpace(tc.Name) == "" {
 			name, ok := inferToolNameFromKnownRequiredFields(tc.Input, availableToolNames)
@@ -74,10 +86,43 @@ func filterToolCallsDetailed(parsed []ParsedToolCall, availableToolNames []strin
 				continue
 			}
 			tc.Name = name
+		} else if name, ok := resolveToolNameForAvailable(tc.Name, availableToolNames); ok {
+			tc.Name = name
+		} else {
+			rejectedNames = append(rejectedNames, strings.TrimSpace(tc.Name))
+			continue
+		}
+		if rewritten, ok := rewriteLocalResourceReadCallForAvailable(tc, availableToolNames); ok {
+			tc = rewritten
 		}
 		out = append(out, tc)
 	}
-	return out, nil
+	return out, rejectedNames
+}
+
+func resolveToolNameForAvailable(name string, availableToolNames []string) (string, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", false
+	}
+	if len(availableToolNames) == 0 {
+		return name, true
+	}
+	for _, candidate := range availableToolNames {
+		candidate = strings.TrimSpace(candidate)
+		if strings.EqualFold(candidate, name) {
+			return name, true
+		}
+	}
+	for _, alias := range knownToolNameAliases(strings.ToLower(name)) {
+		for _, candidate := range availableToolNames {
+			candidate = strings.TrimSpace(candidate)
+			if strings.EqualFold(candidate, alias) {
+				return candidate, true
+			}
+		}
+	}
+	return "", false
 }
 
 func inferToolNameFromKnownRequiredFields(input map[string]any, availableToolNames []string) (string, bool) {
@@ -136,7 +181,8 @@ func looksLikeToolCallSyntax(text string) bool {
 		strings.Contains(lower, "<attempt_completion") ||
 		strings.Contains(lower, "<ask_followup_question") ||
 		strings.Contains(lower, "<new_task") ||
-		strings.Contains(lower, "<result")
+		strings.Contains(lower, "<result") ||
+		looksLikeVisibleJSONToolCallSyntax(text)
 }
 
 func LooksLikeToolCallSyntax(text string) bool {

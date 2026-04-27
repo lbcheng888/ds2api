@@ -1,6 +1,9 @@
 package toolcall
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNormalizeCallsForSchemasDropsMissingRequiredTaskFields(t *testing.T) {
 	schemas := ParameterSchemas{
@@ -61,10 +64,28 @@ func TestNormalizeCallsForSchemasDropsKnownEmptyRequiredFieldsWithoutSchema(t *t
 		{Name: "Agent", Input: map[string]any{}},
 		{Name: "TaskOutput", Input: map[string]any{}},
 		{Name: "Bash", Input: map[string]any{}},
+		{Name: "Read", Input: map[string]any{}},
+		{Name: "read_file", Input: map[string]any{}},
 		{Name: "TaskCreate", Input: map[string]any{"subject": "Review"}},
 	}
 	if got := NormalizeCallsForSchemasWithMeta(calls, nil, true); len(got) != 0 {
 		t.Fatalf("expected known empty required-field calls to be dropped, got %#v", got)
+	}
+}
+
+func TestNormalizeCallsForSchemasDropsKnownEmptyRequiredFieldsEvenWhenSchemaIsLoose(t *testing.T) {
+	schemas := ParameterSchemas{
+		"Read": {
+			"type": "object",
+			"properties": map[string]any{
+				"file_path": map[string]any{"type": "string"},
+				"limit":     map[string]any{"type": "integer"},
+			},
+		},
+	}
+	calls := []ParsedToolCall{{Name: "Read", Input: map[string]any{}}}
+	if got := NormalizeCallsForSchemas(calls, schemas); len(got) != 0 {
+		t.Fatalf("expected loose schema Read without file_path to be dropped, got %#v", got)
 	}
 }
 
@@ -73,6 +94,8 @@ func TestNormalizeCallsForSchemasKeepsKnownRequiredFieldsWithoutSchema(t *testin
 		{Name: "Agent", Input: map[string]any{"description": "Explore", "prompt": "Inspect files"}},
 		{Name: "TaskOutput", Input: map[string]any{"task_id": "task_123"}},
 		{Name: "Bash", Input: map[string]any{"command": "pwd"}},
+		{Name: "Read", Input: map[string]any{"file_path": "README.md"}},
+		{Name: "read_file", Input: map[string]any{"path": "README.md"}},
 		{Name: "TaskCreate", Input: map[string]any{"subject": "Review", "description": "Find issues"}},
 	}
 	got := NormalizeCallsForSchemasWithMeta(calls, nil, true)
@@ -206,6 +229,38 @@ func TestNormalizeCallsForSchemasResolvesKnownToolAliases(t *testing.T) {
 	}
 }
 
+func TestNormalizeCallsForSchemasMapsNamelessParameterToSingleMissingRequiredField(t *testing.T) {
+	schemas := ParameterSchemas{
+		"Grep": {
+			"type": "object",
+			"properties": map[string]any{
+				"pattern":     map[string]any{"type": "string"},
+				"path":        map[string]any{"type": "string"},
+				"output_mode": map[string]any{"type": "string"},
+			},
+			"required": []any{"pattern"},
+		},
+	}
+	calls := []ParsedToolCall{{
+		Name: "Grep",
+		Input: map[string]any{
+			"parameter":   "MachOTextObjectWrite|ElfTextObjectWrite",
+			"path":        "⁄Users/lbcheng/cheng-lang/src/core/backend",
+			"output_mode": "content",
+		},
+	}}
+	got := NormalizeCallsForSchemas(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected repaired Grep call, got %#v", got)
+	}
+	if got[0].Input["pattern"] != "MachOTextObjectWrite|ElfTextObjectWrite" {
+		t.Fatalf("expected nameless parameter to become pattern, got %#v", got[0].Input)
+	}
+	if got[0].Input["path"] != "/Users/lbcheng/cheng-lang/src/core/backend" {
+		t.Fatalf("expected path slashes normalized, got %#v", got[0].Input)
+	}
+}
+
 func TestNormalizeCallsForSchemasMapsEquivalentPropertyNamesAndPathSlashes(t *testing.T) {
 	schemas := ParameterSchemas{
 		"Read": {
@@ -236,6 +291,85 @@ func TestNormalizeCallsForSchemasMapsEquivalentPropertyNamesAndPathSlashes(t *te
 	}
 	if got[0].Input["limit"] != int64(10) {
 		t.Fatalf("expected integer limit, got %#v", got[0].Input)
+	}
+}
+
+func TestNormalizeCallsForSchemasStripsCDATAWrappersFromStringFields(t *testing.T) {
+	schemas := ParameterSchemas{
+		"Bash": {
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{"type": "string"},
+			},
+			"required": []any{"command"},
+		},
+	}
+	calls := []ParsedToolCall{{
+		Name:  "Bash",
+		Input: map[string]any{"command": `<![CDATA[grep -rn "uir_egraph" /tmp | head -20]]`},
+	}}
+	got := NormalizeCallsForSchemas(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected normalized Bash call, got %#v", got)
+	}
+	if got[0].Input["command"] != `grep -rn "uir_egraph" /tmp | head -20` {
+		t.Fatalf("expected CDATA wrapper stripped from command, got %#v", got[0].Input)
+	}
+}
+
+func TestNormalizeCallsForSchemasStripsCDATAWrappersWithoutSchema(t *testing.T) {
+	calls := []ParsedToolCall{{
+		Name:  "Bash",
+		Input: map[string]any{"command": `<![CDATA[grep -rn "uir_vec_cost" /tmp | head -20]]>`},
+	}}
+	got := NormalizeCallsForSchemas(calls, nil)
+	if len(got) != 1 {
+		t.Fatalf("expected normalized Bash call, got %#v", got)
+	}
+	if got[0].Input["command"] != `grep -rn "uir_vec_cost" /tmp | head -20` {
+		t.Fatalf("expected CDATA wrapper stripped without schema, got %#v", got[0].Input)
+	}
+}
+
+func TestNormalizeCallsForSchemasRewritesLocalResourceRead(t *testing.T) {
+	schemas := ParameterSchemas{
+		"read_mcp_resource": {
+			"type": "object",
+			"properties": map[string]any{
+				"server": map[string]any{"type": "string"},
+				"uri":    map[string]any{"type": "string"},
+			},
+			"required": []any{"server", "uri"},
+		},
+		"exec_command": {
+			"type": "object",
+			"properties": map[string]any{
+				"cmd": map[string]any{"type": "string"},
+			},
+			"required": []any{"cmd"},
+		},
+	}
+	calls := []ParsedToolCall{{
+		Name: "read_mcp_resource",
+		Input: map[string]any{
+			"server": "skill-creator",
+			"uri":    "/Users/lbcheng/.codex/skills/cheng语言/SKILL.md",
+			"tool_parameters": map[string]any{
+				"server": "skill-creator",
+				"uri":    "/Users/lbcheng/.codex/skills/cheng语言/SKILL.md",
+			},
+		},
+	}}
+	got := NormalizeCallsForSchemas(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected one rewritten call, got %#v", got)
+	}
+	if got[0].Name != "exec_command" {
+		t.Fatalf("expected exec_command, got %#v", got[0])
+	}
+	cmd, _ := got[0].Input["cmd"].(string)
+	if !strings.Contains(cmd, `sed -n '1,200p'`) || !strings.Contains(cmd, `/Users/lbcheng/.codex/skills/cheng语言/SKILL.md`) {
+		t.Fatalf("expected bounded local read command, got %#v", got[0].Input)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
+	textclean "ds2api/internal/textclean"
+	"ds2api/internal/toolcall"
 )
 
 type claudeStreamRuntime struct {
@@ -15,18 +17,20 @@ type claudeStreamRuntime struct {
 	rc       *http.ResponseController
 	canFlush bool
 
-	model     string
-	toolNames []string
-	messages  []any
+	model       string
+	toolNames   []string
+	toolSchemas toolcall.ParameterSchemas
+	messages    []any
 
 	thinkingEnabled       bool
 	searchEnabled         bool
 	bufferToolContent     bool
 	stripReferenceMarkers bool
 
-	messageID string
-	thinking  strings.Builder
-	text      strings.Builder
+	messageID       string
+	outputSanitizer textclean.StreamSanitizer
+	thinking        strings.Builder
+	text            strings.Builder
 
 	nextBlockIndex     int
 	thinkingBlockOpen  bool
@@ -47,6 +51,7 @@ func newClaudeStreamRuntime(
 	searchEnabled bool,
 	stripReferenceMarkers bool,
 	toolNames []string,
+	toolSchemas toolcall.ParameterSchemas,
 ) *claudeStreamRuntime {
 	return &claudeStreamRuntime{
 		w:                     w,
@@ -59,6 +64,7 @@ func newClaudeStreamRuntime(
 		bufferToolContent:     len(toolNames) > 0,
 		stripReferenceMarkers: stripReferenceMarkers,
 		toolNames:             toolNames,
+		toolSchemas:           toolSchemas,
 		messageID:             fmt.Sprintf("msg_%d", time.Now().UnixNano()),
 		thinkingBlockIndex:    -1,
 		textBlockIndex:        -1,
@@ -82,7 +88,7 @@ func (s *claudeStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 
 	contentSeen := false
 	for _, p := range parsed.Parts {
-		cleanedText := cleanVisibleOutput(p.Text, s.stripReferenceMarkers)
+		cleanedText := cleanVisibleOutput(s.outputSanitizer.Sanitize(p.Text), s.stripReferenceMarkers)
 		if cleanedText == "" {
 			continue
 		}

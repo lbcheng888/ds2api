@@ -11,6 +11,7 @@ import (
 	"ds2api/internal/auth"
 	"ds2api/internal/config"
 	openaifmt "ds2api/internal/format/openai"
+	"ds2api/internal/protocol"
 	"ds2api/internal/sse"
 	"ds2api/internal/toolcall"
 	"ds2api/internal/util"
@@ -58,10 +59,14 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIInlineFileError(w, err)
 		return
 	}
-	stdReq, err := normalizeOpenAIChatRequest(h.Store, req, requestTraceID(r))
+	profile := protocol.DetectClientProfile(r, req)
+	stdReq, err := normalizeOpenAIChatRequestWithProfile(h.Store, req, requestTraceID(r), profile)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if stdReq.ClientProfile != "" {
+		w.Header().Set("X-Ds2-Client-Profile", stdReq.ClientProfile)
 	}
 	stdReq, err = h.applyHistorySplit(r.Context(), a, stdReq)
 	if err != nil {
@@ -164,7 +169,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, completionID)
 		return
 	}
-	if status, message, code, ok := futureActionMissingToolCallDetail(finalText, toolNames, toolSchemas, allowMetaAgentTools); ok {
+	if status, message, code, ok := futureActionMissingToolCallDetail(finalText, finalPrompt, toolNames, toolSchemas, allowMetaAgentTools); ok {
 		if historySession != nil {
 			historySession.error(status, message, code, finalThinking, finalText)
 		}
@@ -174,6 +179,13 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 	detectedToolCalls := toolcall.ParseStandaloneToolCallsDetailed(finalText, toolNames)
 	if normalizedToolCallsExceedInputBytes(detectedToolCalls.Calls, toolSchemas, allowMetaAgentTools, runtimeBufferedToolContentMaxBytes(h.Store)) {
 		status, message, code := toolCallTooLargeError()
+		if historySession != nil {
+			historySession.error(status, message, code, finalThinking, finalText)
+		}
+		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, completionID)
+		return
+	}
+	if status, message, code, ok := invalidTaskOutputCallDetail(detectedToolCalls.Calls, finalPrompt); ok {
 		if historySession != nil {
 			historySession.error(status, message, code, finalThinking, finalText)
 		}

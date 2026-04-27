@@ -41,6 +41,19 @@ type AccountHealth struct {
 	Status                   string `json:"status"`
 	CooldownUntilUnix        int64  `json:"cooldown_until_unix,omitempty"`
 	CooldownRemainingSeconds int    `json:"cooldown_remaining_seconds,omitempty"`
+	SuccessCount             int64  `json:"success_count,omitempty"`
+	FailureCount             int64  `json:"failure_count,omitempty"`
+	ConsecutiveFailures      int64  `json:"consecutive_failures,omitempty"`
+	LastSuccessUnix          int64  `json:"last_success_unix,omitempty"`
+	LastFailureUnix          int64  `json:"last_failure_unix,omitempty"`
+}
+
+type accountHealthStats struct {
+	successCount        int64
+	failureCount        int64
+	consecutiveFailures int64
+	lastSuccess         time.Time
+	lastFailure         time.Time
 }
 
 type Resolver struct {
@@ -51,6 +64,7 @@ type Resolver struct {
 	mu               sync.Mutex
 	tokenRefreshedAt map[string]time.Time
 	accountCooldowns map[string]time.Time
+	accountStats     map[string]accountHealthStats
 }
 
 func NewResolver(store *config.Store, pool *account.Pool, login LoginFunc) *Resolver {
@@ -60,6 +74,7 @@ func NewResolver(store *config.Store, pool *account.Pool, login LoginFunc) *Reso
 		Login:            login,
 		tokenRefreshedAt: map[string]time.Time{},
 		accountCooldowns: map[string]time.Time{},
+		accountStats:     map[string]accountHealthStats{},
 	}
 }
 
@@ -235,18 +250,31 @@ func (r *Resolver) MarkAccountFailure(a *RequestAuth) {
 	if accountID == "" {
 		return
 	}
+	now := time.Now()
 	cooldown := time.Duration(r.accountFailureCooldownSeconds()) * time.Second
-	if cooldown <= 0 {
-		return
+	until := time.Time{}
+	if cooldown > 0 {
+		until = now.Add(cooldown)
 	}
-	until := time.Now().Add(cooldown)
 	r.mu.Lock()
-	if r.accountCooldowns == nil {
+	if cooldown > 0 && r.accountCooldowns == nil {
 		r.accountCooldowns = map[string]time.Time{}
 	}
-	r.accountCooldowns[accountID] = until
+	if r.accountStats == nil {
+		r.accountStats = map[string]accountHealthStats{}
+	}
+	if cooldown > 0 {
+		r.accountCooldowns[accountID] = until
+	}
+	stats := r.accountStats[accountID]
+	stats.failureCount++
+	stats.consecutiveFailures++
+	stats.lastFailure = now
+	r.accountStats[accountID] = stats
 	r.mu.Unlock()
-	config.Logger.Warn("[account_health] account cooldown started", "account", accountID, "cooldown_seconds", int(cooldown.Seconds()))
+	if cooldown > 0 {
+		config.Logger.Warn("[account_health] account cooldown started", "account", accountID, "cooldown_seconds", int(cooldown.Seconds()))
+	}
 }
 
 func (r *Resolver) MarkAccountSuccess(a *RequestAuth) {
@@ -259,6 +287,14 @@ func (r *Resolver) MarkAccountSuccess(a *RequestAuth) {
 	}
 	r.mu.Lock()
 	delete(r.accountCooldowns, accountID)
+	if r.accountStats == nil {
+		r.accountStats = map[string]accountHealthStats{}
+	}
+	stats := r.accountStats[accountID]
+	stats.successCount++
+	stats.consecutiveFailures = 0
+	stats.lastSuccess = time.Now()
+	r.accountStats[accountID] = stats
 	r.mu.Unlock()
 }
 
@@ -270,26 +306,51 @@ func (r *Resolver) AccountHealthStatus() []AccountHealth {
 	out := []AccountHealth{}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for accountID, until := range r.accountCooldowns {
+	accountIDs := map[string]struct{}{}
+	for accountID := range r.accountStats {
+		accountIDs[accountID] = struct{}{}
+	}
+	for accountID := range r.accountCooldowns {
+		accountIDs[accountID] = struct{}{}
+	}
+	for accountID := range accountIDs {
+		until := r.accountCooldowns[accountID]
+		stats := r.accountStats[accountID]
+		status := "healthy"
+		health := AccountHealth{
+			AccountID:           accountID,
+			Status:              status,
+			SuccessCount:        stats.successCount,
+			FailureCount:        stats.failureCount,
+			ConsecutiveFailures: stats.consecutiveFailures,
+			LastSuccessUnix:     unixIfSet(stats.lastSuccess),
+			LastFailureUnix:     unixIfSet(stats.lastFailure),
+		}
 		if !now.Before(until) {
 			delete(r.accountCooldowns, accountID)
+			out = append(out, health)
 			continue
 		}
 		remaining := int(time.Until(until).Seconds())
 		if remaining < 1 {
 			remaining = 1
 		}
-		out = append(out, AccountHealth{
-			AccountID:                accountID,
-			Status:                   "cooldown",
-			CooldownUntilUnix:        until.Unix(),
-			CooldownRemainingSeconds: remaining,
-		})
+		health.Status = "cooldown"
+		health.CooldownUntilUnix = until.Unix()
+		health.CooldownRemainingSeconds = remaining
+		out = append(out, health)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].AccountID < out[j].AccountID
 	})
 	return out
+}
+
+func unixIfSet(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
 }
 
 func extractCallerToken(req *http.Request) string {

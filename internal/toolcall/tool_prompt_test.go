@@ -13,6 +13,9 @@ func TestBuildToolCallInstructions_ExecCommandUsesCmdExample(t *testing.T) {
 	if !strings.Contains(out, `<parameters><cmd>pwd</cmd></parameters>`) {
 		t.Fatalf("expected cmd parameter example for exec_command, got: %s", out)
 	}
+	if strings.Contains(out, `<tool_name>read_file</tool_name>`) {
+		t.Fatalf("did not expect unavailable read_file in examples, got: %s", out)
+	}
 }
 
 func TestBuildToolCallInstructions_ExecuteCommandUsesCommandExample(t *testing.T) {
@@ -47,7 +50,7 @@ func TestBuildToolCallInstructions_OpenCodeLowercaseToolExamples(t *testing.T) {
 		`Include every field marked required in the tool schema.`,
 		`Use task/subagent tools only for genuinely independent large subtasks`,
 		`Launch at most 4 Agent/task calls`,
-		`Do not end with future-tense text`,
+		`Do not end with future-tense or setup text`,
 		`If you receive <task-notification>`,
 	} {
 		if !strings.Contains(out, want) {
@@ -152,6 +155,36 @@ func TestBuildToolCallInstructions_OptimizeMeansExecute(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected optimize execution instruction %q, got: %s", want, out)
+		}
+	}
+}
+
+func TestBuildToolCallInstructions_LocalFilesDoNotUseReadMCPResource(t *testing.T) {
+	out := BuildToolCallInstructions([]string{"read_mcp_resource", "Read", "exec_command"})
+	for _, want := range []string{
+		`Do not use read_mcp_resource for file:// URLs`,
+		`skill:// URIs`,
+		`Use Read/read/Grep/Glob/Bash/exec_command-style tools for local files`,
+		`resource parameter is uri, not url`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected local resource safety instruction %q, got: %s", want, out)
+		}
+	}
+}
+
+func TestBuildToolCallInstructions_SearchBudget(t *testing.T) {
+	out := BuildToolCallInstructions([]string{"Search", "Read", "Bash"})
+	for _, want := range []string{
+		`Search budget`,
+		`do not repeat semantically identical Search/Grep/Glob/Bash rg calls`,
+		`Once Search/Grep/Bash rg returns a useful file path or file:line result`,
+		`If two searches produce no new file path or file:line result`,
+		`Do not invent absolute repository paths`,
+		`verify it exists with Bash before Read/Edit`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected search budget instruction %q, got: %s", want, out)
 		}
 	}
 }

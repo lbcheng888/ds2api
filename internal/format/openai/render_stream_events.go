@@ -68,6 +68,7 @@ func BuildResponsesTextDeltaPayload(responseID, itemID string, outputIndex, cont
 		"output_index":  outputIndex,
 		"content_index": contentIndex,
 		"delta":         delta,
+		"logprobs":      []any{},
 	}
 }
 

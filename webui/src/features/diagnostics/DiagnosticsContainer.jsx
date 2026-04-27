@@ -36,6 +36,8 @@ export default function DiagnosticsContainer({ authFetch, onMessage }) {
     const captureChains = Array.isArray(data?.capture_chains) ? data.capture_chains : []
     const accountHealth = Array.isArray(data?.queue_status?.account_health) ? data.queue_status.account_health : []
     const coolingAccounts = accountHealth.filter(item => item?.status === 'cooldown')
+    const accountFailures = accountHealth.reduce((sum, item) => sum + Number(item?.failure_count || 0), 0)
+    const runtimeProfile = data?.runtime_profile && typeof data.runtime_profile === 'object' ? data.runtime_profile : {}
 
     const cards = useMemo(() => [
         {
@@ -109,6 +111,24 @@ export default function DiagnosticsContainer({ authFetch, onMessage }) {
                 })}
             </div>
 
+            <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                <div className="mb-3 flex items-center justify-between">
+                    <div>
+                        <h3 className="font-semibold">{t('diagnostics.runtimeProfile')}</h3>
+                        <p className="text-sm text-muted-foreground">{t('diagnostics.runtimeProfileDesc')}</p>
+                    </div>
+                    <Activity className="h-5 w-5 text-primary" />
+                </div>
+                <div className="grid gap-2 text-xs text-muted-foreground md:grid-cols-3">
+                    <div>{t('diagnostics.reasoningTimeout')}: {runtimeProfile.reasoning_only_timeout_seconds || '-'}</div>
+                    <div>{t('diagnostics.streamTimeout')}: {runtimeProfile.stream_max_duration_seconds || '-'}</div>
+                    <div>{t('diagnostics.defaultReasoning')}: {runtimeProfile.default_reasoning_effort || '-'}</div>
+                    <div>{t('diagnostics.metaAgents')}: {String(Boolean(runtimeProfile.allow_meta_agent_tools))}</div>
+                    <div>{t('diagnostics.historySplit')}: {String(Boolean(runtimeProfile.history_split_enabled))}</div>
+                    <div>{t('diagnostics.bufferLimit')}: {runtimeProfile.buffered_tool_content_max_bytes || '-'}</div>
+                </div>
+            </section>
+
             <section className="rounded-xl border border-border bg-card shadow-sm">
                 <div className="flex items-center justify-between border-b border-border px-5 py-4">
                     <div>
@@ -131,6 +151,11 @@ export default function DiagnosticsContainer({ authFetch, onMessage }) {
                                                 {sample.error_code}
                                             </span>
                                         )}
+                                        {sample.category && (
+                                            <span className="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+                                                {sample.category}
+                                            </span>
+                                        )}
                                     </div>
                                     <p className="mt-1 text-xs text-muted-foreground">{sample.captured_at_utc || '-'}</p>
                                 </div>
@@ -149,9 +174,52 @@ export default function DiagnosticsContainer({ authFetch, onMessage }) {
                                 </div>
                                 <code className="block break-all text-xs text-foreground">{sample.replay_command}</code>
                             </div>
+                            {sample.analysis && (
+                                <div className="grid gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground md:grid-cols-3">
+                                    <div>{t('diagnostics.events')}: {sample.analysis.event_count || 0}</div>
+                                    <div>{t('diagnostics.visibleChars')}: {sample.analysis.visible_chars || 0}</div>
+                                    <div>{t('diagnostics.reasoningChars')}: {sample.analysis.reasoning_chars || 0}</div>
+                                </div>
+                            )}
                             <div className="grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
                                 <div className="break-all">{t('diagnostics.metaPath')}: {sample.meta_path}</div>
                                 <div className="break-all">{t('diagnostics.upstreamPath')}: {sample.upstream_path}</div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </section>
+
+            <section className="rounded-xl border border-border bg-card shadow-sm">
+                <div className="flex items-center justify-between border-b border-border px-5 py-4">
+                    <div>
+                        <h3 className="font-semibold">{t('diagnostics.accountHealth')}</h3>
+                        <p className="text-sm text-muted-foreground">{t('diagnostics.accountHealthDesc', { failures: accountFailures })}</p>
+                    </div>
+                    <ShieldAlert className="h-5 w-5 text-amber-500" />
+                </div>
+                <div className="divide-y divide-border">
+                    {accountHealth.length === 0 ? (
+                        <div className="px-5 py-8 text-sm text-muted-foreground">{t('diagnostics.noAccountHealth')}</div>
+                    ) : accountHealth.map(item => (
+                        <div key={item.account_id} className="grid gap-3 px-5 py-4 lg:grid-cols-[minmax(0,1fr)_auto]">
+                            <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span className="break-all font-mono text-sm font-semibold text-foreground">{item.account_id}</span>
+                                    <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${item.status === 'cooldown' ? 'border-amber-500/20 bg-amber-500/10 text-amber-500' : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-500'}`}>
+                                        {item.status}
+                                    </span>
+                                </div>
+                                {item.cooldown_remaining_seconds > 0 && (
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                        {t('accountManager.cooldownRemaining').replace('{seconds}', String(item.cooldown_remaining_seconds))}
+                                    </p>
+                                )}
+                            </div>
+                            <div className="grid grid-cols-3 gap-3 text-xs text-muted-foreground">
+                                <div>{t('diagnostics.successes')}: {item.success_count || 0}</div>
+                                <div>{t('diagnostics.failures')}: {item.failure_count || 0}</div>
+                                <div>{t('diagnostics.consecutiveFailures')}: {item.consecutive_failures || 0}</div>
                             </div>
                         </div>
                     ))}

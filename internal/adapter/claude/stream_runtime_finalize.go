@@ -51,6 +51,7 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 		if len(detected) == 0 && finalText == "" && finalThinking != "" {
 			detected = toolcall.ParseStandaloneToolCalls(finalThinking, s.toolNames)
 		}
+		detected = toolcall.NormalizeCallsForSchemasWithMeta(detected, s.toolSchemas, true)
 		if len(detected) > 0 {
 			stopReason = "tool_use"
 			for i, tc := range detected {

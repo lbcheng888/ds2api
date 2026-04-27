@@ -39,6 +39,8 @@ type ConfigStore interface {
 	AutoDeleteMode() string
 	HistorySplitEnabled() bool
 	HistorySplitTriggerAfterTurns() int
+	CompatAllowMetaAgentTools() bool
+	CompatDefaultReasoningEffort() string
 	CompatStripReferenceMarkers() bool
 	AutoDeleteSessions() bool
 }

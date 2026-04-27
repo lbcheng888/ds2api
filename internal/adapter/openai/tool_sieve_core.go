@@ -65,6 +65,9 @@ func processToolSieveChunkWithMeta(state *toolStreamSieveState, chunk string, to
 			break
 		}
 		start := findToolSegmentStart(state, pending)
+		if start < 0 {
+			start = findVisibleJSONToolSegmentStart(state, pending)
+		}
 		if start >= 0 {
 			prefix := pending[:start]
 			if prefix != "" {
@@ -155,6 +158,12 @@ func splitSafeContentForToolDetection(state *toolStreamSieveState, s string) (sa
 		}
 		return "", s
 	}
+	if jsonIdx := findPartialVisibleJSONToolSegmentStart(state, s); jsonIdx >= 0 {
+		if jsonIdx > 0 {
+			return s[:jsonIdx], s[jsonIdx:]
+		}
+		return "", s
+	}
 	return s, ""
 }
 
@@ -199,6 +208,12 @@ func consumeToolCapture(state *toolStreamSieveState, toolNames []string, allowMe
 	}
 	// If XML tags are present but block is incomplete, keep buffering.
 	if hasOpenXMLToolTag(captured) {
+		return "", nil, "", false
+	}
+	if jsonPrefix, jsonCalls, jsonSuffix, jsonReady := consumeVisibleJSONToolCapture(captured, toolNames, allowMetaAgentTools); jsonReady {
+		return jsonPrefix, jsonCalls, jsonSuffix, true
+	}
+	if visibleJSONToolCaptureMayContinue(captured) {
 		return "", nil, "", false
 	}
 	return "", nil, "", false

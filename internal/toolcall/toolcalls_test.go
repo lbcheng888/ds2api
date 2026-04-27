@@ -1,6 +1,7 @@
 package toolcall
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -27,6 +28,32 @@ func TestParseToolCallsSupportsClaudeXMLToolCall(t *testing.T) {
 	}
 	if calls[0].Input["command"] != "pwd" {
 		t.Fatalf("expected command argument, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsSupportsChildParametersWithMismatchedCloseTag(t *testing.T) {
+	text := `<tool_calls>
+  <tool_call>
+    <tool_name>Grep</tool_name>
+    <parameters>
+      <output_mode><![CDATA[content]]></output_mode>
+      <path><![CDATA[/Users/lbcheng/cheng-lang/src/core/backend]]></pattern>
+      <parameter>MachOTextObjectWrite|ElfTextObjectWrite</parameter>
+    </parameters>
+  </tool_call>
+</tool_calls>`
+	calls := ParseToolCalls(text, []string{"Grep"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	if calls[0].Name != "Grep" {
+		t.Fatalf("expected Grep, got %#v", calls[0])
+	}
+	if calls[0].Input["path"] != "/Users/lbcheng/cheng-lang/src/core/backend" {
+		t.Fatalf("expected path from loose close tag, got %#v", calls[0].Input)
+	}
+	if calls[0].Input["parameter"] != "MachOTextObjectWrite|ElfTextObjectWrite" {
+		t.Fatalf("expected nameless parameter to survive for schema repair, got %#v", calls[0].Input)
 	}
 }
 
@@ -254,6 +281,260 @@ func TestParseToolCallsSupportsLooseParameterClosingTag(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsRepairsMissingWrapperAngleAndLooseDirectToolElements(t *testing.T) {
+	text := `Let me inspect first.tool_calls>
+  <tool_call>
+    <read_mcp_resource>
+      <parameters><server>cheng</server><uri>skill://cheng语言/SKILL.md</uri></parameters>
+    </tool_call>
+  <tool_call>
+    <exec_command>
+      <parameters><cmd>find /Users/lbcheng/cheng-lang -type f | head -80</parameters><justification>Get overview</justification></parameters>
+    </tool_call>
+  <tool_call>
+    <exec_command>
+      <parameters><cmd>ls -la /Users/lbcheng/cheng-lang/</parameters><justification>List root</justification></parameters>
+    </tool_call>
+</tool_calls>`
+
+	calls := ParseToolCalls(text, []string{"read_mcp_resource", "exec_command"})
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 calls, got %#v", calls)
+	}
+	if calls[0].Name != "exec_command" {
+		t.Fatalf("expected local skill resource read to be rewritten to exec_command, got %#v", calls[0])
+	}
+	cmd, _ := calls[0].Input["cmd"].(string)
+	if !strings.Contains(cmd, `sed -n '1,200p'`) || !strings.Contains(cmd, `/Users/lbcheng/.codex/skills/cheng语言/SKILL.md`) {
+		t.Fatalf("expected bounded local skill read command, got %#v", calls[0])
+	}
+	if calls[1].Name != "exec_command" || calls[1].Input["cmd"] != "find /Users/lbcheng/cheng-lang -type f | head -80" {
+		t.Fatalf("expected first exec_command args, got %#v", calls[1])
+	}
+	if calls[2].Name != "exec_command" || calls[2].Input["cmd"] != "ls -la /Users/lbcheng/cheng-lang/" {
+		t.Fatalf("expected second exec_command args, got %#v", calls[2])
+	}
+}
+
+func TestParseToolCallsRewritesLocalFileResourceReadToReadTool(t *testing.T) {
+	text := `<tool_calls>
+  <tool_call>
+    <tool_name>read_mcp_resource</tool_name>
+    <parameters>
+      <server>codex-dev</server>
+      <url>file:///Users/lbcheng/.codex/skills/cheng%E8%AF%AD%E8%A8%80/SKILL.md</url>
+      <limit>120</limit>
+    </parameters>
+  </tool_call>
+</tool_calls>`
+
+	calls := ParseToolCalls(text, []string{"read_mcp_resource", "Read", "exec_command"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 rewritten call, got %#v", calls)
+	}
+	if calls[0].Name != "Read" {
+		t.Fatalf("expected local Read call, got %#v", calls[0])
+	}
+	if calls[0].Input["file_path"] != "/Users/lbcheng/.codex/skills/cheng语言/SKILL.md" {
+		t.Fatalf("expected decoded local file path, got %#v", calls[0].Input)
+	}
+	if calls[0].Input["limit"] != "120" {
+		t.Fatalf("expected limit to be preserved, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsRewritesLocalFileResourceReadToExecCommand(t *testing.T) {
+	text := `<tool_calls>
+  <tool_call>
+    <tool_name>codex-dev.read_mcp_resource</tool_name>
+    <parameters>
+      <server>codex-dev</server>
+      <url>file:///Users/lbcheng/.codex/skills/cheng%E8%AF%AD%E8%A8%80/SKILL.md</url>
+    </parameters>
+  </tool_call>
+</tool_calls>`
+
+	calls := ParseToolCalls(text, []string{"read_mcp_resource", "exec_command"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 rewritten call, got %#v", calls)
+	}
+	if calls[0].Name != "exec_command" {
+		t.Fatalf("expected exec_command call, got %#v", calls[0])
+	}
+	cmd, _ := calls[0].Input["cmd"].(string)
+	if !strings.Contains(cmd, `sed -n '1,200p'`) || !strings.Contains(cmd, `/Users/lbcheng/.codex/skills/cheng语言/SKILL.md`) {
+		t.Fatalf("expected bounded local read command, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsRewritesCodexSkillResourceRead(t *testing.T) {
+	text := `<tool_calls>
+  <tool_call>
+    <tool_name>read_mcp_resource</tool_name>
+    <parameters>
+      <server>codex</server>
+      <uri>skill://cheng%E8%AF%AD%E8%A8%80/SKILL.md</uri>
+    </parameters>
+  </tool_call>
+</tool_calls>`
+
+	calls := ParseToolCalls(text, []string{"read_mcp_resource", "exec_command"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 rewritten call, got %#v", calls)
+	}
+	if calls[0].Name != "exec_command" {
+		t.Fatalf("expected exec_command call, got %#v", calls[0])
+	}
+	cmd, _ := calls[0].Input["cmd"].(string)
+	if !strings.Contains(cmd, `sed -n '1,200p'`) || !strings.Contains(cmd, `.codex/skills/cheng语言/SKILL.md`) {
+		t.Fatalf("expected bounded local skill read command, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsRewritesUnavailableReadFileToExecCommand(t *testing.T) {
+	text := `<tool_calls>
+  <tool_call>
+    <tool_name>read_file</tool_name>
+    <parameters>
+      <path>/Users/lbcheng/.codex/skills/cheng语言/SKILL.md</path>
+    </parameters>
+  </tool_call>
+</tool_calls>`
+
+	calls := ParseToolCalls(text, []string{"exec_command"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 rewritten call, got %#v", calls)
+	}
+	if calls[0].Name != "exec_command" {
+		t.Fatalf("expected exec_command call, got %#v", calls[0])
+	}
+	cmd, _ := calls[0].Input["cmd"].(string)
+	if !strings.Contains(cmd, `sed -n '1,200p'`) || !strings.Contains(cmd, `.codex/skills/cheng语言/SKILL.md`) {
+		t.Fatalf("expected bounded local read command, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsSupportsSelfClosingValueParameters(t *testing.T) {
+	text := `<tool_calls>
+<tool_call>
+<tool_call_name>read_mcp_resource</tool_call_name>
+<parameter name="server" value="cheng" />
+<parameter name="uri" value="skill://cheng语言/SKILL.md" />
+</tool_call>
+</tool_calls>`
+
+	calls := ParseToolCalls(text, []string{"read_mcp_resource"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	if calls[0].Name != "read_mcp_resource" || calls[0].Input["server"] != "cheng" || calls[0].Input["uri"] != "skill://cheng语言/SKILL.md" {
+		t.Fatalf("expected self-closing value parameters, got %#v", calls[0])
+	}
+}
+
+func TestParseToolCallsSupportsVisibleJSONToolArray(t *testing.T) {
+	text := `[
+  {
+    "tool": "Read",
+    "arguments": {
+      "file_path": "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng",
+      "offset": 345,
+      "limit": 65
+    }
+  },
+  {
+    "tool": "Read",
+    "arguments": {
+      "file_path": "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng",
+      "offset": 773,
+      "limit": 30
+    }
+  }
+]`
+	calls := ParseToolCalls(text, []string{"Read"})
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 visible JSON tool calls, got %#v", calls)
+	}
+	if calls[0].Name != "Read" || calls[0].Input["file_path"] != "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng" {
+		t.Fatalf("expected first Read call with file_path, got %#v", calls[0])
+	}
+	if fmt.Sprint(calls[0].Input["offset"]) != "345" || fmt.Sprint(calls[0].Input["limit"]) != "65" {
+		t.Fatalf("expected numeric offset/limit to be preserved, got %#v", calls[0].Input)
+	}
+	if calls[1].Name != "Read" || fmt.Sprint(calls[1].Input["offset"]) != "773" || fmt.Sprint(calls[1].Input["limit"]) != "30" {
+		t.Fatalf("expected second Read call, got %#v", calls[1])
+	}
+}
+
+func TestParseToolCallsSupportsVisibleJSONToolObjectSequence(t *testing.T) {
+	text := `{
+  "tool": "Read",
+  "arguments": {
+    "file_path": "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng",
+    "offset": 345,
+    "limit": 65
+  }
+}
+{
+  "tool": "Read",
+  "arguments": {
+    "file_path": "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng",
+    "offset": 773,
+    "limit": 30
+  }
+}`
+	calls := ParseToolCalls(text, []string{"Read"})
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 visible JSON object tool calls, got %#v", calls)
+	}
+	if calls[0].Name != "Read" || fmt.Sprint(calls[0].Input["offset"]) != "345" || fmt.Sprint(calls[0].Input["limit"]) != "65" {
+		t.Fatalf("expected first Read call offset/limit, got %#v", calls[0])
+	}
+	if calls[1].Name != "Read" || fmt.Sprint(calls[1].Input["offset"]) != "773" || fmt.Sprint(calls[1].Input["limit"]) != "30" {
+		t.Fatalf("expected second Read call offset/limit, got %#v", calls[1])
+	}
+}
+
+func TestParseToolCallsIgnoresVisibleJSONToolArrayInsideFence(t *testing.T) {
+	text := "```json\n[{\"tool\":\"Read\",\"arguments\":{\"file_path\":\"/tmp/a\"}}]\n```"
+	calls := ParseToolCalls(text, []string{"Read"})
+	if len(calls) != 0 {
+		t.Fatalf("expected fenced JSON tool example to stay text, got %#v", calls)
+	}
+}
+
+func TestParseToolCallsIgnoresPlainJSONArray(t *testing.T) {
+	text := `[{"name":"not a tool","value":1}]`
+	calls := ParseToolCalls(text, []string{"Read"})
+	if len(calls) != 0 {
+		t.Fatalf("expected ordinary JSON array to stay text, got %#v", calls)
+	}
+}
+
+func TestParseToolCallsRepairsDuplicateToolCallNameOpenWithSelfClosingParams(t *testing.T) {
+	text := `<tool_calls>
+<tool_call>
+<tool_call_name>read_mcp_resource</tool_call_name>
+<tool_call_name>
+<parameter name="server" value="filesystem" />
+<parameter name="uri" value="file:///Users/lbcheng/.codex/skills/cheng%E8%AF%AD%E8%A8%80/SKILL.md" />
+</parameter>
+</tool_call>
+</tool_calls>`
+
+	calls := ParseToolCalls(text, []string{"read_mcp_resource", "exec_command"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 rewritten call, got %#v", calls)
+	}
+	if calls[0].Name != "exec_command" {
+		t.Fatalf("expected exec_command call, got %#v", calls[0])
+	}
+	cmd, _ := calls[0].Input["cmd"].(string)
+	if !strings.Contains(cmd, `sed -n '1,200p'`) || !strings.Contains(cmd, `.codex/skills/cheng语言/SKILL.md`) {
+		t.Fatalf("expected bounded local read command, got %#v", calls[0].Input)
+	}
+}
+
 func TestParseToolCallsSupportsMultilineCDATAAndRepeatedXMLTags(t *testing.T) {
 	text := `<tool_call><tool_name>write_file</tool_name><parameters><path>script.sh</path><content><![CDATA[#!/bin/bash
 echo "hello"
@@ -420,8 +701,74 @@ func TestParseToolCallsSupportsInvokeFunctionCallStyle(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsSupportsInvokeParameterTypeAttributes(t *testing.T) {
+	text := `<tool_calls>
+<invoke name="task">
+<parameter name="description" string="true">审查cheng语言代码结构</parameter>
+<parameter name="prompt" string="true">探索 /Users/lbcheng/cheng-lang 项目的完整目录结构。</parameter>
+<parameter name="subagent_type" string="true">explore</parameter>
+<parameter name="max_retries" string="false">2</parameter>
+</invoke>
+</tool_calls>`
+	calls := ParseToolCalls(text, []string{"task"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 task call, got %#v", calls)
+	}
+	if calls[0].Name != "task" {
+		t.Fatalf("expected task tool name, got %q", calls[0].Name)
+	}
+	for _, key := range []string{"description", "prompt", "subagent_type", "max_retries"} {
+		if _, ok := calls[0].Input[key]; !ok {
+			t.Fatalf("expected parameter %q in parsed input, got %#v", key, calls[0].Input)
+		}
+	}
+
+	schemas := ParameterSchemas{
+		"task": {
+			"type": "object",
+			"properties": map[string]any{
+				"description":   map[string]any{"type": "string"},
+				"prompt":        map[string]any{"type": "string"},
+				"subagent_type": map[string]any{"type": "string"},
+				"max_retries":   map[string]any{"type": "integer"},
+			},
+			"required": []any{"description", "prompt", "subagent_type"},
+		},
+	}
+	normalized := NormalizeCallsForSchemasWithMeta(calls, schemas, true)
+	if len(normalized) != 1 {
+		t.Fatalf("expected normalized task call, got %#v", normalized)
+	}
+	if normalized[0].Input["max_retries"] != int64(2) {
+		t.Fatalf("expected max_retries to normalize to int64(2), got %#v", normalized[0].Input["max_retries"])
+	}
+}
+
+func TestParseToolCallsSupportsLooseMarkupAttributeQuotes(t *testing.T) {
+	text := `<tool_calls>
+<invoke name='task'>
+<parameter name=description string=true>审查cheng语言代码结构</parameter>
+<parameter name='prompt' string='true'>探索 /Users/lbcheng/cheng-lang 项目的完整目录结构。</parameter>
+<parameter name=subagent_type string=true>explore</parameter>
+</invoke>
+</tool_calls>`
+	calls := ParseToolCalls(text, []string{"task"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 task call, got %#v", calls)
+	}
+	if calls[0].Input["description"] != "审查cheng语言代码结构" {
+		t.Fatalf("expected description from unquoted attribute, got %#v", calls[0].Input)
+	}
+	if calls[0].Input["prompt"] != "探索 /Users/lbcheng/cheng-lang 项目的完整目录结构。" {
+		t.Fatalf("expected prompt from single-quoted attribute, got %#v", calls[0].Input)
+	}
+	if calls[0].Input["subagent_type"] != "explore" {
+		t.Fatalf("expected subagent_type from unquoted attribute, got %#v", calls[0].Input)
+	}
+}
+
 func TestParseToolCallsSupportsToolUseFunctionParameterStyle(t *testing.T) {
-	text := `<tool_use><function name="search_web"><parameter name="query">test</parameter></function></tool_use>`
+	text := `<tool_use><function name='search_web'><parameter name=query type=string>test</parameter></function></tool_use>`
 	calls := ParseToolCalls(text, []string{"search_web"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)

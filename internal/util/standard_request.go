@@ -29,6 +29,7 @@ type StandardRequest struct {
 	Search              bool
 	RefFileIDs          []string
 	PassThrough         map[string]any
+	ClientProfile       string
 }
 
 type ToolChoiceMode string

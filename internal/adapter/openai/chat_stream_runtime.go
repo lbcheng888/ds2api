@@ -1,15 +1,17 @@
 package openai
 
 import (
-	"ds2api/internal/toolcall"
-	"ds2api/internal/util"
 	"encoding/json"
 	"net/http"
 	"strings"
 
 	openaifmt "ds2api/internal/format/openai"
+	"ds2api/internal/protocol"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
+	textclean "ds2api/internal/textclean"
+	"ds2api/internal/toolcall"
+	"ds2api/internal/util"
 )
 
 type chatStreamRuntime struct {
@@ -40,6 +42,7 @@ type chatStreamRuntime struct {
 	toolCallsDoneEmitted bool
 
 	toolSieve         toolStreamSieveState
+	outputSanitizer   textclean.StreamSanitizer
 	streamToolCallIDs map[int]string
 	streamToolNames   map[int]string
 	thinking          strings.Builder
@@ -55,8 +58,6 @@ type chatStreamRuntime struct {
 
 	deferRetryableProtocolFailure bool
 }
-
-const upstreamInvalidRefFileIDCode = "upstream_invalid_ref_file_id"
 
 func newChatStreamRuntime(
 	w http.ResponseWriter,
@@ -185,6 +186,10 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 	s.finalThinking = finalThinking
 	s.finalText = finalText
 	detected := toolcall.ParseStandaloneToolCallsDetailed(finalText, s.toolNames)
+	if status, message, code, ok := invalidTaskOutputCallDetail(detected.Calls, s.finalPrompt); ok {
+		s.sendFailedChunkOrDefer(status, message, code)
+		return
+	}
 	if normalizedToolCallsExceedInputBytes(detected.Calls, s.toolSchemas, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
 		status, message, code := toolCallTooLargeError()
 		s.sendFailedChunk(status, message, code)
@@ -220,6 +225,10 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 				s.sendFailedChunk(status, message, code)
 				return
 			}
+			if status, message, code, ok := invalidTaskOutputCallDetail(evt.ToolCalls, s.finalPrompt); ok {
+				s.sendFailedChunk(status, message, code)
+				return
+			}
 			formattedToolCalls := formatFinalStreamToolCallsWithStableIDs(evt.ToolCalls, s.streamToolCallIDs, s.toolSchemas, s.allowMetaAgentTools)
 			if len(formattedToolCalls) > 0 {
 				finishReason = "tool_calls"
@@ -251,7 +260,7 @@ func (s *chatStreamRuntime) finalize(finishReason string) {
 		finishReason = "tool_calls"
 	}
 	if len(formattedDetected) == 0 && !s.toolCallsEmitted {
-		if status, message, code, ok := futureActionMissingToolCallDetail(finalText, s.toolNames, s.toolSchemas, s.allowMetaAgentTools); ok {
+		if status, message, code, ok := futureActionMissingToolCallDetail(finalText, s.finalPrompt, s.toolNames, s.toolSchemas, s.allowMetaAgentTools); ok {
 			s.sendFailedChunkOrDefer(status, message, code)
 			return
 		}
@@ -308,12 +317,12 @@ func (s *chatStreamRuntime) retryableProtocolFailure() bool {
 	if s == nil {
 		return false
 	}
-	switch s.finalErrorCode {
-	case "upstream_empty_output", "upstream_no_action_timeout", upstreamMissingToolCallCode, upstreamInvalidToolCallCode, upstreamInvalidRefFileIDCode, "tool_choice_violation":
-	default:
-		return false
-	}
-	return !s.visibleContentSent && !s.toolCallsEmitted && !s.toolCallsDoneEmitted
+	return protocol.StreamState{
+		ErrorCode:         s.finalErrorCode,
+		VisibleContent:    s.visibleContentSent,
+		ToolCallsStarted:  s.toolCallsEmitted,
+		ToolCallsFinished: s.toolCallsDoneEmitted,
+	}.RetryableFailure()
 }
 
 func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedDecision {
@@ -349,7 +358,7 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 	contentSeen := false
 	actionSeen := false
 	for _, p := range parsed.Parts {
-		cleanedText := cleanVisibleOutput(p.Text, s.stripReferenceMarkers)
+		cleanedText := cleanVisibleOutput(s.outputSanitizer.Sanitize(p.Text), s.stripReferenceMarkers)
 		if s.searchEnabled && sse.IsCitation(cleanedText) {
 			continue
 		}
@@ -408,6 +417,10 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 					}
 					if normalizedToolCallsExceedInputBytes(evt.ToolCalls, s.toolSchemas, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
 						status, message, code := toolCallTooLargeError()
+						s.sendFailedChunk(status, message, code)
+						return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReasonHandlerRequested}
+					}
+					if status, message, code, ok := invalidTaskOutputCallDetail(evt.ToolCalls, s.finalPrompt); ok {
 						s.sendFailedChunk(status, message, code)
 						return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReasonHandlerRequested}
 					}

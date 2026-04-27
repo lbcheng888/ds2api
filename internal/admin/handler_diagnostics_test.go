@@ -65,6 +65,9 @@ func TestGetDevDiagnosticsListsFailureSamplesAndCaptures(t *testing.T) {
 	if got := first["error_code"]; got != "upstream_missing_tool_call" {
 		t.Fatalf("unexpected error code: %#v", got)
 	}
+	if got := first["category"]; got != "missing_finish" {
+		t.Fatalf("unexpected category: %#v", got)
+	}
 	if !strings.Contains(first["replay_command"].(string), "compare-raw-stream-sample.sh") {
 		t.Fatalf("expected replay command, got %#v", first["replay_command"])
 	}

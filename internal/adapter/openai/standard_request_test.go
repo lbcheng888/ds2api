@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"ds2api/internal/config"
+	"ds2api/internal/protocol"
 	"ds2api/internal/util"
 )
 
@@ -106,6 +107,33 @@ func TestNormalizeOpenAIChatRequestCollectsRefFileIDs(t *testing.T) {
 	}
 	if n.RefFileIDs[0] != "file-top" || n.RefFileIDs[1] != "file-attachment" || n.RefFileIDs[2] != "file-msg" {
 		t.Fatalf("unexpected file ids: %#v", n.RefFileIDs)
+	}
+}
+
+func TestNormalizeOpenAIChatRequestInjectsClientProfile(t *testing.T) {
+	store := newEmptyStoreForNormalizeTest(t)
+	req := map[string]any{
+		"model": "deepseek-chat",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "review code"},
+		},
+	}
+	n, err := normalizeOpenAIChatRequestWithProfile(store, req, "", protocol.ClientProfile{Name: protocol.ProfileClaudeCode})
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if n.ClientProfile != protocol.ProfileClaudeCode {
+		t.Fatalf("expected claude profile, got %q", n.ClientProfile)
+	}
+	if !strings.Contains(n.FinalPrompt, "Client profile: Claude Code") {
+		t.Fatalf("expected client profile instruction in final prompt, got %q", n.FinalPrompt)
+	}
+	if len(n.Messages) == 0 {
+		t.Fatalf("expected normalized messages")
+	}
+	first, _ := n.Messages[0].(map[string]any)
+	if first["role"] != "system" || !strings.Contains(asString(first["content"]), "Client profile: Claude Code") {
+		t.Fatalf("expected first message to be client profile instruction, got %#v", n.Messages[0])
 	}
 }
 

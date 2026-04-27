@@ -39,13 +39,14 @@ var xmlToolCallTagPairs = []struct{ open, close string }{
 var xmlToolCallBlockPattern = regexp.MustCompile(`(?is)(<tool_calls>\s*(?:.*?)\s*</tool_calls>|<tool_call>\s*(?:.*?)\s*</tool_call>|<invoke\b[^>]*>(?:.*?)</invoke>|<function_calls?\b[^>]*>(?:.*?)</function_calls?>|<tool_use>(?:.*?)</tool_use>|<attempt_completion>(?:.*?)</attempt_completion>|<ask_followup_question>(?:.*?)</ask_followup_question>|<new_task>(?:.*?)</new_task>)`)
 
 // xmlToolTagsToDetect is the set of XML tag prefixes used by findToolSegmentStart.
-var xmlToolTagsToDetect = []string{"<tool_calls>", "<tool_calls\n", "<tool_call>", "<tool_call\n",
+var xmlToolTagsToDetect = []string{"<tool_calls>", "<tool_calls\n", "tool_calls>", "tool_calls\n", "<tool_call>", "<tool_call\n", "tool_call>", "tool_call\n",
 	"<invoke ", "<invoke>", "<function_call", "<function_calls", "<tool_use>",
 	// Agent-style tags
 	"<attempt_completion>", "<ask_followup_question>", "<new_task>"}
 
 // consumeXMLToolCapture tries to extract complete XML tool call blocks from captured text.
 func consumeXMLToolCapture(captured string, toolNames []string, allowMetaAgentTools bool) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
+	captured = toolcall.RepairMalformedToolCallXML(captured)
 	lower := strings.ToLower(captured)
 	// Find the FIRST matching open/close pair, preferring wrapper tags.
 	// Tag pairs are ordered longest-first (e.g. <tool_calls before <tool_call)

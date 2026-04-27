@@ -33,7 +33,7 @@ func TestPersistWritesSampleFilesAndMeta(t *testing.T) {
 			URL:        "https://chat.deepseek.com/api/v0/chat/completion",
 			StatusCode: 200,
 		},
-		UpstreamBody: []byte("data: {\"v\":\"hello [reference:1]\"}\n\n" +
+		UpstreamBody: []byte("data: {\"p\":\"response/content\",\"v\":\"hello [reference:1]\"}\n\n" +
 			"data: {\"v\":\"FINISHED\",\"p\":\"response/status\"}\n\n"),
 	})
 	if err != nil {
@@ -73,7 +73,46 @@ func TestPersistWritesSampleFilesAndMeta(t *testing.T) {
 	if meta.Capture.FinishedTokenCount != 1 {
 		t.Fatalf("expected one finished token, got %+v", meta.Capture)
 	}
+	if meta.Analysis == nil {
+		t.Fatal("expected persisted analysis")
+	}
+	if meta.Analysis.Category != "ok" {
+		t.Fatalf("expected ok analysis, got %+v", meta.Analysis)
+	}
 	if strings.Contains(string(metaBytes), "\"processed\"") {
 		t.Fatalf("meta should not include processed payload: %s", string(metaBytes))
+	}
+}
+
+func TestAnalyzeUpstreamBodyClassifiesReasoningOnly(t *testing.T) {
+	analysis := AnalyzeUpstreamBody([]byte(
+		`data: {"p":"response/thinking_content","v":"I will inspect files."}` + "\n\n" +
+			`data: {"p":"response/status","v":"FINISHED"}` + "\n\n",
+	))
+	if analysis.Category != "reasoning_without_visible_output" {
+		t.Fatalf("unexpected category: %+v", analysis)
+	}
+	if !analysis.SawFinish || analysis.ReasoningChars == 0 || analysis.VisibleChars != 0 {
+		t.Fatalf("unexpected analysis counters: %+v", analysis)
+	}
+}
+
+func TestAnalyzeUpstreamBodyClassifiesToolSyntax(t *testing.T) {
+	analysis := AnalyzeUpstreamBody([]byte(
+		`data: {"p":"response/content","v":"<tool_call><tool_name>read</tool_name></tool_call>"}` + "\n\n" +
+			`data: {"p":"response/status","v":"FINISHED"}` + "\n\n",
+	))
+	if analysis.Category != "tool_syntax_candidate" {
+		t.Fatalf("unexpected category: %+v", analysis)
+	}
+	if analysis.ToolSyntaxCount != 1 {
+		t.Fatalf("expected one tool syntax hit, got %+v", analysis)
+	}
+}
+
+func TestAnalyzeUpstreamBodyClassifiesEmptyStream(t *testing.T) {
+	analysis := AnalyzeUpstreamBody(nil)
+	if analysis.Category != "empty_stream" {
+		t.Fatalf("unexpected category: %+v", analysis)
 	}
 }
