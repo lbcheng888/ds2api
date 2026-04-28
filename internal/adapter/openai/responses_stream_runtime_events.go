@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 
 	openaifmt "ds2api/internal/format/openai"
-	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/toolcall"
 )
 
