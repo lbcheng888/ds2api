@@ -1,0 +1,42 @@
+[
+  {
+    "sample_id": "failure-20260426t064137z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t210428z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260427t211613z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260428t000256z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260428t002902z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260428t011341z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260428t024629z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260428t035729z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260428t044336z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260428t050100z",
+    "expect": "tool_call"
+  }
+]

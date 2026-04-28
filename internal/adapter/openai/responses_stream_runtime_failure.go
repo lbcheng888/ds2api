@@ -3,7 +3,13 @@ package openai
 import openaifmt "ds2api/internal/format/openai"
 
 func (s *responsesStreamRuntime) failResponse(message, code string) {
+	if s.failed {
+		return
+	}
 	s.failed = true
+	if s.markFailure != nil {
+		s.markFailure()
+	}
 	s.closeReasoningItem()
 	capture := annotateFailureCaptureHeaders(s.w, s.sessionID)
 	message = withFailureCaptureMessage(message, capture)

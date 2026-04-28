@@ -236,6 +236,32 @@ func TestPoolAcquireRotatesIntoTokenlessAccounts(t *testing.T) {
 	}
 }
 
+func TestPoolAcquirePreferredUsesHealthyOrder(t *testing.T) {
+	pool := newPoolForTest(t, "1")
+
+	acc, ok := pool.AcquirePreferred("", nil, []string{"acc2@example.com", "acc1@example.com"})
+	if !ok {
+		t.Fatal("expected preferred acquire success")
+	}
+	if got := acc.Identifier(); got != "acc2@example.com" {
+		t.Fatalf("expected preferred acc2, got %q", got)
+	}
+	pool.Release(acc.Identifier())
+}
+
+func TestPoolAcquirePreferredFallsBackToRoundRobin(t *testing.T) {
+	pool := newPoolForTest(t, "1")
+
+	acc, ok := pool.AcquirePreferred("", map[string]bool{"acc2@example.com": true}, []string{"acc2@example.com"})
+	if !ok {
+		t.Fatal("expected fallback acquire success")
+	}
+	if got := acc.Identifier(); got != "acc1@example.com" {
+		t.Fatalf("expected fallback acc1, got %q", got)
+	}
+	pool.Release(acc.Identifier())
+}
+
 func TestPoolAcquireWaitQueuesAndSucceedsAfterRelease(t *testing.T) {
 	pool := newSingleAccountPoolForTest(t, "1")
 	first, ok := pool.Acquire("", nil)

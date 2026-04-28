@@ -1,6 +1,7 @@
 package openai
 
 import (
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/toolcall"
 	"encoding/json"
 	"strings"
@@ -16,17 +17,23 @@ func BuildResponseObject(responseID, model, finalPrompt, finalThinking, finalTex
 func BuildResponseObjectWithMeta(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string, allowMetaAgentTools bool) map[string]any {
 	// Strict mode: only standalone, structured tool-call payloads are treated
 	// as executable tool calls.
-	detected := toolcall.ParseStandaloneToolCallsDetailed(finalText, toolNames)
-	if len(detected.Calls) == 0 && strings.TrimSpace(finalText) == "" && strings.TrimSpace(finalThinking) != "" {
-		detected = toolcall.ParseStandaloneToolCallsDetailed(finalThinking, toolNames)
-	}
+	detected, finalText := claudecodeharness.DetectFinalToolCalls(claudecodeharness.FinalToolCallInput{
+		Text:      finalText,
+		Thinking:  finalThinking,
+		ToolNames: toolNames,
+	})
 	if !allowMetaAgentTools && toolcall.AllCallsAreMetaAgentTools(detected.Calls) {
 		finalText = toolcall.MetaAgentToolBlockedMessage()
 		detected.Calls = nil
 	}
+	detected.Calls = claudecodeharness.FilterInvalidTaskOutputCalls(detected.Calls, finalPrompt)
+	calls := toolcall.NormalizeCallsForSchemasWithMeta(detected.Calls, nil, allowMetaAgentTools)
+	return BuildResponseObjectFromToolCalls(responseID, model, finalPrompt, finalThinking, finalText, calls)
+}
+
+func BuildResponseObjectFromToolCalls(responseID, model, finalPrompt, finalThinking, finalText string, calls []toolcall.ParsedToolCall) map[string]any {
 	exposedOutputText := finalText
 	output := make([]any, 0, 2)
-	calls := toolcall.NormalizeCallsForSchemasWithMeta(detected.Calls, nil, allowMetaAgentTools)
 	if len(calls) > 0 {
 		exposedOutputText = ""
 		output = append(output, toResponsesFunctionCallItems(calls)...)
@@ -78,7 +85,7 @@ func BuildResponseObjectFromItems(responseID, model, finalPrompt, finalThinking,
 		"model":       model,
 		"output":      output,
 		"output_text": outputText,
-		"usage":       BuildResponsesUsage(finalPrompt, finalThinking, finalText),
+		"usage":       BuildResponsesUsageWithPromptCache(finalPrompt, finalThinking, finalText),
 	}
 }
 

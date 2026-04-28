@@ -51,11 +51,14 @@ func TestBuildToolCallInstructions_OpenCodeLowercaseToolExamples(t *testing.T) {
 		`Use task/subagent tools only for genuinely independent large subtasks`,
 		`Launch at most 4 Agent/task calls`,
 		`Do not end with future-tense or setup text`,
-		`If you receive <task-notification>`,
+		`no background-result collection tool is listed`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected OpenCode example to contain %s, got: %s", want, out)
 		}
+	}
+	if strings.Contains(out, `TaskOutput`) {
+		t.Fatalf("did not expect TaskOutput guidance when TaskOutput tool is unavailable, got: %s", out)
 	}
 }
 
@@ -105,6 +108,32 @@ func TestBuildToolCallInstructions_TaskOutputExampleIncludesRequiredFields(t *te
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected TaskOutput example to contain %s, got: %s", want, out)
 		}
+	}
+}
+
+func TestBuildTeamAgentInstructions(t *testing.T) {
+	out := BuildTeamAgentInstructions([]string{"Agent", "TaskOutput", "Read"})
+	for _, want := range []string{
+		`TEAM AGENTS`,
+		`launch Agent/task tool calls in this response`,
+		`at most 4 parallel Agent/task calls`,
+		`TaskOutput only for those concrete task_id values`,
+		`Never use tool_id or tool-use-id for TaskOutput`,
+		`never invent task IDs`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected Team Agents instruction %q, got: %s", want, out)
+		}
+	}
+	if got := BuildTeamAgentInstructions([]string{"Read", "Edit"}); got != "" {
+		t.Fatalf("expected no Team Agents instructions without agent tools, got %q", got)
+	}
+	agentOnly := BuildTeamAgentInstructions([]string{"Agent", "Read"})
+	if strings.Contains(agentOnly, "TaskOutput") {
+		t.Fatalf("did not expect TaskOutput guidance without TaskOutput tool, got %q", agentOnly)
+	}
+	if !strings.Contains(agentOnly, "no background-result collection tool is listed") {
+		t.Fatalf("expected no-collection-tool guidance, got %q", agentOnly)
 	}
 }
 

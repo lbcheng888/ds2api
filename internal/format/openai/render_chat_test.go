@@ -105,6 +105,59 @@ func TestBuildChatCompletionPromotesToolCallsFromThinkingWhenVisibleTextEmpty(t 
 	}
 }
 
+func TestBuildChatCompletionPromotesVisibleJSONToolSequenceWithLeadingProse(t *testing.T) {
+	text := `Let me read the plan first.
+{
+  "tool": "Read",
+  "arguments": {
+    "file_path": "/tmp/plan.md",
+    "offset": 200,
+    "limit": 200
+  }
+}
+{
+  "tool": "TaskCreate",
+  "arguments": {
+    "description": "track",
+    "prompt": "track"
+  }
+}`
+	resp := BuildChatCompletion("cid", "deepseek", "prompt", "", text, []string{"Read", "TaskCreate"}, toolcall.ParameterSchemas{
+		"Read": {
+			"type": "object",
+			"properties": map[string]any{
+				"file_path": map[string]any{"type": "string"},
+				"offset":    map[string]any{"type": "integer"},
+				"limit":     map[string]any{"type": "integer"},
+			},
+			"required": []any{"file_path"},
+		},
+		"TaskCreate": {
+			"type": "object",
+			"properties": map[string]any{
+				"description": map[string]any{"type": "string"},
+				"prompt":      map[string]any{"type": "string"},
+			},
+		},
+	}, false)
+	choices, _ := resp["choices"].([]map[string]any)
+	msg, _ := choices[0]["message"].(map[string]any)
+	if choices[0]["finish_reason"] != "tool_calls" {
+		t.Fatalf("expected tool_calls finish reason, got %#v", choices[0])
+	}
+	toolCalls, _ := msg["tool_calls"].([]map[string]any)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected only Read tool call, got %#v", msg)
+	}
+	fn, _ := toolCalls[0]["function"].(map[string]any)
+	if fn["name"] != "Read" {
+		t.Fatalf("expected Read function, got %#v", toolCalls[0])
+	}
+	if msg["content"] != nil {
+		t.Fatalf("expected nil content for tool call response, got %#v", msg["content"])
+	}
+}
+
 func TestBuildChatCompletionDeepSeekOfficialEnvelope(t *testing.T) {
 	resp := BuildChatCompletion("cid", "deepseek-v4-pro", "prompt", "think", "answer", nil, nil, false)
 	if resp["object"] != "chat.completion" {

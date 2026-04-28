@@ -6,6 +6,7 @@ import (
 
 	"ds2api/internal/config"
 	"ds2api/internal/deepseek"
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/toolcall"
 	"ds2api/internal/util"
 )
@@ -13,6 +14,7 @@ import (
 type claudeNormalizedRequest struct {
 	Standard           util.StandardRequest
 	NormalizedMessages []any
+	NormalizedPayload  map[string]any
 }
 
 func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNormalizedRequest, error) {
@@ -29,7 +31,13 @@ func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNorma
 	payload["messages"] = normalizedMessages
 	toolsRequested, _ := req["tools"].([]any)
 	allowMetaAgentTools := store != nil && store.CompatAllowMetaAgentTools()
-	payload["messages"] = injectClaudeToolPrompt(payload, normalizedMessages, toolsRequested, allowMetaAgentTools)
+	taskOutputDetectionMessages := normalizedMessages
+	if systemText, ok := payload["system"].(string); ok && strings.TrimSpace(systemText) != "" {
+		taskOutputDetectionMessages = append([]any{map[string]any{"role": "system", "content": systemText}}, normalizedMessages...)
+	}
+	preToolPrompt := deepseek.MessagesPrepareWithThinking(toMessageMaps(taskOutputDetectionMessages), false)
+	allowTaskOutput := claudecodeharness.HasAllowedTaskOutputIDs(preToolPrompt)
+	payload["messages"] = injectClaudeToolPrompt(payload, normalizedMessages, toolsRequested, allowMetaAgentTools, allowTaskOutput)
 
 	dsPayload := convertClaudeToDeepSeek(payload, store)
 	dsModel, _ := dsPayload["model"].(string)
@@ -43,7 +51,7 @@ func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNorma
 		searchEnabled = false
 	}
 	finalPrompt := deepseek.MessagesPrepareWithThinking(toMessageMaps(dsPayload["messages"]), thinkingEnabled)
-	toolNames := extractClaudeToolNames(toolsRequested, allowMetaAgentTools)
+	toolNames := extractClaudeToolNames(toolsRequested, allowMetaAgentTools, allowTaskOutput)
 	if len(toolNames) == 0 && len(toolsRequested) > 0 {
 		toolNames = []string{"__any_tool__"}
 	}
@@ -65,6 +73,7 @@ func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNorma
 			AllowMetaAgentTools: allowMetaAgentTools,
 		},
 		NormalizedMessages: normalizedMessages,
+		NormalizedPayload:  payload,
 	}, nil
 }
 
@@ -109,11 +118,11 @@ func anyString(raw any) string {
 	}
 }
 
-func injectClaudeToolPrompt(payload map[string]any, normalizedMessages []any, tools []any, allowMetaAgentTools bool) []any {
+func injectClaudeToolPrompt(payload map[string]any, normalizedMessages []any, tools []any, allowMetaAgentTools bool, allowTaskOutput bool) []any {
 	if len(tools) == 0 {
 		return normalizedMessages
 	}
-	toolPrompt := strings.TrimSpace(buildClaudeToolPrompt(tools, allowMetaAgentTools))
+	toolPrompt := strings.TrimSpace(buildClaudeToolPrompt(tools, allowMetaAgentTools, allowTaskOutput))
 	if toolPrompt == "" {
 		return normalizedMessages
 	}

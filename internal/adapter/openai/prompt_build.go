@@ -2,6 +2,7 @@ package openai
 
 import (
 	"ds2api/internal/deepseek"
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/util"
 )
 
@@ -13,7 +14,9 @@ func buildOpenAIFinalPromptWithPolicy(messagesRaw []any, toolsRaw any, traceID s
 	messages := normalizeOpenAIMessagesForPrompt(messagesRaw, traceID)
 	toolNames := []string{}
 	if tools, ok := toolsRaw.([]any); ok && len(tools) > 0 {
-		messages, toolNames = injectToolPrompt(messages, tools, toolPolicy, allowMetaAgentTools)
+		preToolPrompt := deepseek.MessagesPrepareWithThinking(messages, thinkingEnabled)
+		allowTaskOutput := claudecodeharness.HasAllowedTaskOutputIDs(preToolPrompt)
+		messages, toolNames = injectToolPrompt(messages, tools, toolPolicy, allowMetaAgentTools, allowTaskOutput)
 	}
 	return deepseek.MessagesPrepareWithThinking(messages, thinkingEnabled), toolNames
 }

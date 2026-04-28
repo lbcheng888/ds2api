@@ -420,6 +420,205 @@ func TestHandleClaudeStreamRealtimeNormalizesToolUseWithSchema(t *testing.T) {
 	t.Fatalf("expected input_json_delta for Read, body=%s", rec.Body.String())
 }
 
+func TestHandleClaudeStreamRealtimePromotesVisibleJSONToolSequenceWithLeadingProse(t *testing.T) {
+	h := &Handler{}
+	payload := `Let me read the rest of the plan and start examining the codebase in parallel.
+{
+  "tool": "Read",
+  "arguments": {
+    "file_path": "/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md",
+    "offset": 200,
+    "limit": 200
+  }
+}
+{
+  "tool": "TaskCreate",
+  "arguments": {
+    "description": "评估 cheng-plan-full 实现进度",
+    "prompt": "检查 docs/cheng-plan-full.md"
+  }
+}`
+	frame, err := json.Marshal(map[string]any{"p": "response/content", "v": payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := makeClaudeSSEHTTPResponse(
+		"data: "+string(frame),
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+	schemas := map[string]map[string]any{
+		"Read": {
+			"type": "object",
+			"properties": map[string]any{
+				"file_path": map[string]any{"type": "string"},
+				"offset":    map[string]any{"type": "integer"},
+				"limit":     map[string]any{"type": "integer"},
+			},
+			"required": []any{"file_path"},
+		},
+		"TaskCreate": {
+			"type": "object",
+			"properties": map[string]any{
+				"description": map[string]any{"type": "string"},
+				"prompt":      map[string]any{"type": "string"},
+			},
+		},
+	}
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "use tool"}}, false, false, []string{"Read", "TaskCreate"}, schemas)
+
+	body := rec.Body.String()
+	frames := parseClaudeFrames(t, body)
+	foundRead := false
+	foundTaskCreate := false
+	for _, f := range findClaudeFrames(frames, "content_block_start") {
+		contentBlock, _ := f.Payload["content_block"].(map[string]any)
+		if contentBlock["type"] != "tool_use" {
+			continue
+		}
+		switch contentBlock["name"] {
+		case "Read":
+			foundRead = true
+		case "TaskCreate":
+			foundTaskCreate = true
+		}
+	}
+	if !foundRead {
+		t.Fatalf("expected Read tool_use, body=%s", body)
+	}
+	if foundTaskCreate {
+		t.Fatalf("expected TaskCreate planning tool to be filtered, body=%s", body)
+	}
+	if strings.Contains(body, `"tool":"Read"`) || strings.Contains(body, `"tool": "Read"`) || strings.Contains(body, `"TaskCreate"`) {
+		t.Fatalf("expected visible JSON tool syntax not to leak, body=%s", body)
+	}
+	for _, f := range findClaudeFrames(frames, "content_block_delta") {
+		delta, _ := f.Payload["delta"].(map[string]any)
+		if delta["type"] != "input_json_delta" {
+			continue
+		}
+		var input map[string]any
+		if err := json.Unmarshal([]byte(asString(delta["partial_json"])), &input); err != nil {
+			t.Fatalf("decode input_json_delta failed: %v", err)
+		}
+		if input["file_path"] != "/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md" || input["offset"] != float64(200) || input["limit"] != float64(200) {
+			t.Fatalf("expected normalized Read input, got %#v", input)
+		}
+	}
+}
+
+func TestHandleClaudeStreamRealtimePromotesLooseVisibleJSONBashQuotes(t *testing.T) {
+	h := &Handler{}
+	payload := `Let me inspect files.
+{
+  "tool": "Bash",
+  "arguments": {
+    "command": "cd /Users/lbcheng/cheng-lang && git ls-files | head -80 && echo "---" && git ls-files | wc -l",
+    "description": "List tracked files and count"
+  }
+}`
+	frame, err := json.Marshal(map[string]any{"p": "response/content", "v": payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := makeClaudeSSEHTTPResponse(
+		"data: "+string(frame),
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+	schemas := map[string]map[string]any{
+		"Bash": {
+			"type": "object",
+			"properties": map[string]any{
+				"command":     map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string"},
+			},
+			"required": []any{"command"},
+		},
+	}
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "use tool"}}, false, false, []string{"Bash"}, schemas)
+
+	body := rec.Body.String()
+	frames := parseClaudeFrames(t, body)
+	foundBash := false
+	for _, f := range findClaudeFrames(frames, "content_block_start") {
+		contentBlock, _ := f.Payload["content_block"].(map[string]any)
+		if contentBlock["type"] == "tool_use" && contentBlock["name"] == "Bash" {
+			foundBash = true
+		}
+	}
+	if !foundBash {
+		t.Fatalf("expected Bash tool_use, body=%s", body)
+	}
+	if strings.Contains(body, `"tool": "Bash"`) {
+		t.Fatalf("expected loose visible JSON Bash syntax not to leak, body=%s", body)
+	}
+}
+
+func TestHandleClaudeStreamRealtimePromotesThinkingAgentJSONWithoutThinkingLeak(t *testing.T) {
+	h := &Handler{Store: mockClaudeConfig{allowMeta: true}}
+	thinking := `{
+  "tool": "Agent",
+  "arguments": {
+    "description": "Implement ELF writer backend",
+    "prompt": "Read direct_object_emit.cheng and report the design.",
+    "subagent_type": "Explore"
+  }
+}`
+	thinkingFrame, err := json.Marshal(map[string]any{"p": "response/thinking_content", "v": thinking})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := makeClaudeSSEHTTPResponse(
+		"data: "+string(thinkingFrame),
+		`data: {"p":"response/content","v":"4 个实现代理并行启动中。"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+	schemas := map[string]map[string]any{
+		"Agent": {
+			"type": "object",
+			"properties": map[string]any{
+				"description":   map[string]any{"type": "string"},
+				"prompt":        map[string]any{"type": "string"},
+				"subagent_type": map[string]any{"type": "string"},
+			},
+			"required": []any{"description", "prompt", "subagent_type"},
+		},
+	}
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "use agents"}}, true, false, []string{"Agent"}, schemas)
+
+	body := rec.Body.String()
+	frames := parseClaudeFrames(t, body)
+	foundAgent := false
+	for _, f := range findClaudeFrames(frames, "content_block_start") {
+		contentBlock, _ := f.Payload["content_block"].(map[string]any)
+		if contentBlock["type"] == "tool_use" && contentBlock["name"] == "Agent" {
+			foundAgent = true
+		}
+	}
+	if !foundAgent {
+		t.Fatalf("expected Agent tool_use, body=%s", body)
+	}
+	for _, f := range findClaudeFrames(frames, "content_block_delta") {
+		delta, _ := f.Payload["delta"].(map[string]any)
+		switch delta["type"] {
+		case "thinking_delta":
+			t.Fatalf("expected no thinking leak, body=%s", body)
+		case "text_delta":
+			if strings.Contains(asString(delta["text"]), `"tool"`) || strings.Contains(asString(delta["text"]), "Implement ELF writer backend") {
+				t.Fatalf("expected Agent JSON not to leak as text, body=%s", body)
+			}
+		}
+	}
+}
+
 func TestHandleClaudeStreamRealtimeIgnoresUnclosedFencedToolExample(t *testing.T) {
 	h := &Handler{}
 	resp := makeClaudeSSEHTTPResponse(

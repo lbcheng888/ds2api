@@ -109,7 +109,7 @@ func TestInjectToolPromptSkipsMetaAgentTools(t *testing.T) {
 			},
 		},
 	}
-	messages, names := injectToolPrompt([]map[string]any{{"role": "user", "content": "hi"}}, tools, util.ToolChoicePolicy{}, false)
+	messages, names := injectToolPrompt([]map[string]any{{"role": "user", "content": "hi"}}, tools, util.ToolChoicePolicy{}, false, false)
 	if len(names) != 1 || names[0] != "read" {
 		t.Fatalf("expected only read tool name, got %#v", names)
 	}
@@ -160,7 +160,7 @@ func TestInjectToolPromptAllowsMetaAgentToolsWhenConfigured(t *testing.T) {
 			},
 		},
 	}
-	messages, names := injectToolPrompt([]map[string]any{{"role": "user", "content": "hi"}}, tools, util.ToolChoicePolicy{}, true)
+	messages, names := injectToolPrompt([]map[string]any{{"role": "user", "content": "hi"}}, tools, util.ToolChoicePolicy{}, true, true)
 	if len(names) != 2 || names[0] != "Agent" || names[1] != "TaskOutput" {
 		t.Fatalf("expected Agent and TaskOutput tool names, got %#v", names)
 	}
@@ -178,12 +178,41 @@ func TestInjectToolPromptAllowsMetaAgentToolsWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestInjectToolPromptHidesTaskOutputWithoutTaskID(t *testing.T) {
+	tools := []any{
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "Agent",
+				"description": "Launch a subagent",
+				"parameters":  map[string]any{"type": "object"},
+			},
+		},
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "TaskOutput",
+				"description": "Fetch subagent output",
+				"parameters":  map[string]any{"type": "object"},
+			},
+		},
+	}
+	messages, names := injectToolPrompt([]map[string]any{{"role": "user", "content": "hi"}}, tools, util.ToolChoicePolicy{}, true, false)
+	if len(names) != 1 || names[0] != "Agent" {
+		t.Fatalf("expected only Agent tool name, got %#v", names)
+	}
+	system, _ := messages[0]["content"].(string)
+	if strings.Contains(system, "TaskOutput") {
+		t.Fatalf("expected TaskOutput to be hidden, got %q", system)
+	}
+}
+
 func TestInjectToolPromptSortsToolsForStableCachePrefix(t *testing.T) {
 	tools := []any{
 		map[string]any{"type": "function", "function": map[string]any{"name": "zeta", "description": "Z", "parameters": map[string]any{"type": "object"}}},
 		map[string]any{"type": "function", "function": map[string]any{"name": "alpha", "description": "A", "parameters": map[string]any{"type": "object"}}},
 	}
-	messages, names := injectToolPrompt([]map[string]any{{"role": "user", "content": "hi"}}, tools, util.ToolChoicePolicy{}, false)
+	messages, names := injectToolPrompt([]map[string]any{{"role": "user", "content": "hi"}}, tools, util.ToolChoicePolicy{}, false, false)
 	if len(names) != 2 || names[0] != "alpha" || names[1] != "zeta" {
 		t.Fatalf("expected stable sorted tool names, got %#v", names)
 	}
@@ -265,7 +294,7 @@ func TestHandleNonStreamReturns429WhenUpstreamOutputEmpty(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-empty", "deepseek-chat", "prompt", false, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil)
+	h.handleNonStream(rec, resp, "cid-empty", "deepseek-chat", "prompt", false, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil, nil)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected status 429 for empty upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -296,7 +325,7 @@ func TestHandleNonStreamFailureAnnotatesCaptureChain(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-empty-capture", "deepseek-chat", "prompt", false, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil)
+	h.handleNonStream(rec, resp, "cid-empty-capture", "deepseek-chat", "prompt", false, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil, nil)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected status 429 for empty upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -322,7 +351,7 @@ func TestHandleNonStreamReturnsContentFilterErrorWhenUpstreamFilteredWithoutOutp
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-empty-filtered", "deepseek-chat", "prompt", false, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil)
+	h.handleNonStream(rec, resp, "cid-empty-filtered", "deepseek-chat", "prompt", false, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil, nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400 for filtered upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -341,7 +370,7 @@ func TestHandleNonStreamReturns429WhenUpstreamHasOnlyThinking(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-thinking-only", "deepseek-reasoner", "prompt", true, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil)
+	h.handleNonStream(rec, resp, "cid-thinking-only", "deepseek-reasoner", "prompt", true, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil, nil)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected status 429 for thinking-only upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -360,7 +389,7 @@ func TestHandleNonStreamPromotesVisibleTextAfterReasoningClose(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-reasoning-close", "deepseek-reasoner", "prompt", true, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil)
+	h.handleNonStream(rec, resp, "cid-reasoning-close", "deepseek-reasoner", "prompt", true, false, nil, nil, util.DefaultToolChoicePolicy(), false, nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200 when visible text follows reasoning close, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -388,7 +417,7 @@ func TestHandleNonStreamRequiredToolChoiceFailure(t *testing.T) {
 		Allowed: map[string]struct{}{"Read": {}},
 	}
 
-	h.handleNonStream(rec, resp, "cid-required-tool", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, policy, false, nil)
+	h.handleNonStream(rec, resp, "cid-required-tool", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, policy, false, nil, nil)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d body=%s", rec.Code, rec.Body.String())
 	}

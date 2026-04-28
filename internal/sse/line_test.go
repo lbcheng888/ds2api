@@ -1,6 +1,9 @@
 package sse
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseDeepSeekContentLineDone(t *testing.T) {
 	res := ParseDeepSeekContentLine([]byte("data: [DONE]"), false, "text")
@@ -114,6 +117,21 @@ func TestParseDeepSeekContentLineWithEventIgnoresTruncatedToolTitle(t *testing.T
 	}
 	if len(res.Parts) != 0 {
 		t.Fatalf("expected no title parts, got %#v", res.Parts)
+	}
+}
+
+func TestParseDeepSeekContentLineWithEventKeepsCompleteCallBeforeTruncatedSibling(t *testing.T) {
+	res := ParseDeepSeekContentLineWithEvent(
+		[]byte(`data: {"content":"<tool_calls>\n<tool_call name=\"Read\">\n<parameter name=\"file_path\" string=\"true\">/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md</parameter>\n<parameter name=\"limit\" number=\"200\">200</parameter>\n</tool_call>\n<tool_call name"}`),
+		"title",
+		false,
+		"text",
+	)
+	if !res.Parsed || !res.LateToolTitle {
+		t.Fatalf("expected late title tool result: %#v", res)
+	}
+	if len(res.Parts) != 1 || !strings.Contains(res.Parts[0].Text, `tool_call name="Read"`) {
+		t.Fatalf("unexpected title parts: %#v", res.Parts)
 	}
 }
 

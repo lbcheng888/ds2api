@@ -82,18 +82,41 @@ func TestNormalizeClaudeRequestPreservesAllowMetaAgentTools(t *testing.T) {
 	if !out.Standard.AllowMetaAgentTools {
 		t.Fatalf("expected AllowMetaAgentTools=true")
 	}
-	if len(out.Standard.ToolNames) != 2 || out.Standard.ToolNames[0] != "Agent" || out.Standard.ToolNames[1] != "TaskOutput" {
-		t.Fatalf("expected Agent and TaskOutput tools preserved, got %#v", out.Standard.ToolNames)
+	if len(out.Standard.ToolNames) != 1 || out.Standard.ToolNames[0] != "Agent" {
+		t.Fatalf("expected only Agent tool before concrete task ids exist, got %#v", out.Standard.ToolNames)
 	}
 	if !containsStr(out.Standard.FinalPrompt, "Tool: Agent") {
 		t.Fatalf("expected Agent tool prompt, got %q", out.Standard.FinalPrompt)
 	}
-	if !containsStr(out.Standard.FinalPrompt, "Tool: TaskOutput") {
-		t.Fatalf("expected TaskOutput tool prompt, got %q", out.Standard.FinalPrompt)
+	if containsStr(out.Standard.FinalPrompt, "Tool: TaskOutput") {
+		t.Fatalf("expected TaskOutput hidden before concrete task ids exist, got %q", out.Standard.FinalPrompt)
 	}
 	for _, bad := range []string{"Tool: TaskCreate", "Tool: TodoWrite"} {
 		if containsStr(out.Standard.FinalPrompt, bad) {
 			t.Fatalf("expected task-tracking tool %s to be suppressed, got %q", bad, out.Standard.FinalPrompt)
 		}
+	}
+}
+
+func TestNormalizeClaudeRequestPreservesTaskOutputWhenTaskIDExists(t *testing.T) {
+	req := map[string]any{
+		"model": "deepseek-v4-pro",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "<task-notification><task-id>task123</task-id><status>completed</status></task-notification>"},
+		},
+		"tools": []any{
+			map[string]any{"name": "Agent", "description": "Launch subagent"},
+			map[string]any{"name": "TaskOutput", "description": "Fetch subagent output"},
+		},
+	}
+	out, err := normalizeClaudeRequest(mockClaudeConfig{allowMeta: true}, req)
+	if err != nil {
+		t.Fatalf("normalizeClaudeRequest error: %v", err)
+	}
+	if len(out.Standard.ToolNames) != 2 || out.Standard.ToolNames[0] != "Agent" || out.Standard.ToolNames[1] != "TaskOutput" {
+		t.Fatalf("expected Agent and TaskOutput tools when a concrete task id exists, got %#v", out.Standard.ToolNames)
+	}
+	if !containsStr(out.Standard.FinalPrompt, "Tool: TaskOutput") {
+		t.Fatalf("expected TaskOutput tool prompt, got %q", out.Standard.FinalPrompt)
 	}
 }

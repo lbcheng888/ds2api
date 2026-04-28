@@ -74,4 +74,15 @@ func TestGetDevDiagnosticsListsFailureSamplesAndCaptures(t *testing.T) {
 	if count, _ := out["capture_count"].(float64); session != nil && count < 1 {
 		t.Fatalf("expected capture count, got %#v", out["capture_count"])
 	}
+	summary, _ := out["failure_summary"].(map[string]any)
+	if total, _ := summary["total"].(float64); total != 1 {
+		t.Fatalf("expected one summarized failure sample, got %#v", summary)
+	}
+	byCode, _ := summary["by_error_code"].(map[string]any)
+	if got, _ := byCode["upstream_missing_tool_call"].(float64); got != 1 {
+		t.Fatalf("expected missing-tool summary, got %#v", byCode)
+	}
+	if metrics, _ := out["harness_metrics"].(map[string]any); metrics == nil {
+		t.Fatalf("expected harness metrics, got %#v", out["harness_metrics"])
+	}
 }

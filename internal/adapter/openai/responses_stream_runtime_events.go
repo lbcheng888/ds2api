@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	openaifmt "ds2api/internal/format/openai"
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/toolcall"
 )
 
@@ -43,6 +44,14 @@ func (s *responsesStreamRuntime) sendDone() {
 func (s *responsesStreamRuntime) processToolStreamEvents(events []toolStreamEvent, emitContent bool, resetAfterToolCalls bool) {
 	for _, evt := range events {
 		if s.failed {
+			return
+		}
+		if evt.ErrorMessage != "" {
+			code := evt.ErrorCode
+			if code == "" {
+				code = "upstream_invalid_tool_call"
+			}
+			s.failResponse(evt.ErrorMessage, code)
 			return
 		}
 		if emitContent && evt.Content != "" {

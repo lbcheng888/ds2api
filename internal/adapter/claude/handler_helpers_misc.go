@@ -1,6 +1,7 @@
 package claude
 
 import (
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/toolcall"
 	"fmt"
 	"strings"
@@ -16,7 +17,7 @@ func hasSystemMessage(messages []any) bool {
 	return false
 }
 
-func extractClaudeToolNames(tools []any, allowMetaAgentTools bool) []string {
+func extractClaudeToolNames(tools []any, allowMetaAgentTools bool, allowTaskOutput bool) []string {
 	out := make([]string, 0, len(tools))
 	for _, t := range tools {
 		m, ok := t.(map[string]any)
@@ -24,7 +25,13 @@ func extractClaudeToolNames(tools []any, allowMetaAgentTools bool) []string {
 			continue
 		}
 		name, _, _ := extractClaudeToolMeta(m)
-		if name != "" && !toolcall.IsTaskTrackingToolName(name) && (allowMetaAgentTools || !toolcall.IsMetaAgentToolName(name)) {
+		if name == "" || toolcall.IsTaskTrackingToolName(name) {
+			continue
+		}
+		if claudecodeharness.CanonicalTaskOutputToolName(name) == "taskoutput" && !allowTaskOutput {
+			continue
+		}
+		if allowMetaAgentTools || !toolcall.IsMetaAgentToolName(name) {
 			out = append(out, name)
 		}
 	}

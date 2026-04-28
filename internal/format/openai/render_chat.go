@@ -1,6 +1,7 @@
 package openai
 
 import (
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/toolcall"
 	"strings"
 	"time"
@@ -13,15 +14,21 @@ func DeepSeekSystemFingerprint() string {
 }
 
 func BuildChatCompletion(completionID, model, finalPrompt, finalThinking, finalText string, toolNames []string, toolSchemas toolcall.ParameterSchemas, allowMetaAgentTools bool) map[string]any {
-	detected := toolcall.ParseStandaloneToolCallsDetailed(finalText, toolNames)
-	if len(detected.Calls) == 0 && strings.TrimSpace(finalText) == "" && strings.TrimSpace(finalThinking) != "" {
-		detected = toolcall.ParseStandaloneToolCallsDetailed(finalThinking, toolNames)
-	}
+	detected, finalText := claudecodeharness.DetectFinalToolCalls(claudecodeharness.FinalToolCallInput{
+		Text:      finalText,
+		Thinking:  finalThinking,
+		ToolNames: toolNames,
+	})
 	if !allowMetaAgentTools && toolcall.AllCallsAreMetaAgentTools(detected.Calls) {
 		finalText = toolcall.MetaAgentToolBlockedMessage()
 		detected.Calls = nil
 	}
+	detected.Calls = claudecodeharness.FilterInvalidTaskOutputCalls(detected.Calls, finalPrompt)
 	calls := toolcall.NormalizeCallsForSchemasWithMeta(detected.Calls, toolSchemas, allowMetaAgentTools)
+	return BuildChatCompletionFromToolCalls(completionID, model, finalPrompt, finalThinking, finalText, calls)
+}
+
+func BuildChatCompletionFromToolCalls(completionID, model, finalPrompt, finalThinking, finalText string, calls []toolcall.ParsedToolCall) map[string]any {
 	finishReason := "stop"
 	messageObj := map[string]any{"role": "assistant", "content": finalText}
 	if strings.TrimSpace(finalThinking) != "" {
@@ -40,7 +47,7 @@ func BuildChatCompletion(completionID, model, finalPrompt, finalThinking, finalT
 		"model":              model,
 		"system_fingerprint": DeepSeekSystemFingerprint(),
 		"choices":            []map[string]any{{"index": 0, "message": messageObj, "finish_reason": finishReason}},
-		"usage":              BuildChatUsage(finalPrompt, finalThinking, finalText),
+		"usage":              BuildChatUsageWithPromptCache(finalPrompt, finalThinking, finalText),
 	}
 }
 

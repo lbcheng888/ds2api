@@ -1,15 +1,16 @@
 package openai
 
 import (
-	"ds2api/internal/toolcall"
 	"net/http"
 	"strings"
 
 	"ds2api/internal/config"
 	openaifmt "ds2api/internal/format/openai"
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
 	textclean "ds2api/internal/textclean"
+	"ds2api/internal/toolcall"
 	"ds2api/internal/util"
 )
 
@@ -61,6 +62,7 @@ type responsesStreamRuntime struct {
 	messagePartAdded  bool
 	sequence          int
 	failed            bool
+	markFailure       func()
 
 	persistResponse func(obj map[string]any)
 }
@@ -84,6 +86,7 @@ func newResponsesStreamRuntime(
 	toolChoice util.ToolChoicePolicy,
 	allowMetaAgentTools bool,
 	traceID string,
+	markFailure func(),
 	persistResponse func(obj map[string]any),
 ) *responsesStreamRuntime {
 	return &responsesStreamRuntime{
@@ -114,6 +117,7 @@ func newResponsesStreamRuntime(
 		toolChoice:            toolChoice,
 		allowMetaAgentTools:   allowMetaAgentTools,
 		traceID:               traceID,
+		markFailure:           markFailure,
 		persistResponse:       persistResponse,
 	}
 }
@@ -124,33 +128,31 @@ func (s *responsesStreamRuntime) finalize() {
 	}
 	finalThinking := s.thinking.String()
 	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
-	if repaired := synthesizeTaskOutputToolCallTextFromAgentWaiting(s.finalPrompt, finalText, s.toolNames, s.allowMetaAgentTools); repaired != "" {
-		finalText = repaired
-	}
-	if strings.TrimSpace(finalText) == "" {
-		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(s.finalPrompt, s.toolNames, s.allowMetaAgentTools); repaired != "" {
-			finalText = repaired
-		} else if promoted := executableToolCallTextFromThinking(finalThinking, s.toolNames, s.toolSchemas, s.allowMetaAgentTools); promoted != "" {
-			finalText = promoted
-		}
-	}
 
 	if s.bufferToolContent {
 		s.processToolStreamEvents(flushToolSieveWithMeta(&s.sieve, s.toolNames, s.allowMetaAgentTools), false, true)
 	}
 
-	textParsed := toolcall.ParseStandaloneToolCallsDetailed(finalText, s.toolNames)
-	if normalizedToolCallsExceedInputBytes(textParsed.Calls, s.toolSchemas, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
+	evaluated := claudecodeharness.EvaluateFinalOutput(claudecodeharness.FinalEvaluationInput{
+		FinalPrompt:         s.finalPrompt,
+		Text:                finalText,
+		Thinking:            finalThinking,
+		ToolNames:           s.toolNames,
+		ToolSchemas:         s.toolSchemas,
+		AllowMetaAgentTools: s.allowMetaAgentTools,
+	})
+	finalText = evaluated.Text
+	if len(evaluated.DroppedTaskOutputIDs) > 0 {
+		s.failResponse("Upstream model requested TaskOutput for an unknown or inactive task_id.", upstreamInvalidToolCallCode)
+		return
+	}
+	if normalizedToolCallsExceedInputBytes(evaluated.Parsed.Calls, s.toolSchemas, s.allowMetaAgentTools, s.bufferedToolMaxBytes) {
 		_, message, code := toolCallTooLargeError()
 		s.failResponse(message, code)
 		return
 	}
-	if _, message, code, ok := invalidTaskOutputCallDetail(textParsed.Calls, s.finalPrompt); ok {
-		s.failResponse(message, code)
-		return
-	}
-	detected := toolcall.NormalizeCallsForSchemasWithMeta(textParsed.Calls, s.toolSchemas, s.allowMetaAgentTools)
-	s.logToolPolicyRejections(textParsed)
+	detected := evaluated.Calls
+	s.logToolPolicyRejections(evaluated.Parsed)
 
 	if len(detected) > 0 {
 		s.toolCallsEmitted = true
@@ -164,8 +166,8 @@ func (s *responsesStreamRuntime) finalize() {
 		return
 	}
 	if len(detected) == 0 && !s.toolCallsEmitted {
-		if _, message, code, ok := futureActionMissingToolCallDetail(finalText, s.finalPrompt, s.toolNames, s.toolSchemas, s.allowMetaAgentTools); ok {
-			s.failResponse(message, code)
+		if evaluated.MissingToolDecision.Blocked {
+			s.failResponse(evaluated.MissingToolDecision.Message, evaluated.MissingToolDecision.Code)
 			return
 		}
 		if strings.TrimSpace(s.visibleText.String()) == "" && strings.TrimSpace(finalText) != "" {
@@ -231,7 +233,7 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 		return streamengine.ParsedDecision{Stop: true}
 	}
 	if parsed.Stop {
-		if parsed.Finished && s.bufferToolContent && hasCallableTools(s.toolNames) && !s.toolCallsEmitted {
+		if parsed.Finished && s.bufferToolContent && claudecodeharness.HasCallableTools(s.toolNames) && !s.toolCallsEmitted {
 			return streamengine.ParsedDecision{}
 		}
 		return streamengine.ParsedDecision{Stop: true}

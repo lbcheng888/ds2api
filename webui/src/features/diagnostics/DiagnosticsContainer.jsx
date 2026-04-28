@@ -38,11 +38,19 @@ export default function DiagnosticsContainer({ authFetch, onMessage }) {
     const coolingAccounts = accountHealth.filter(item => item?.status === 'cooldown')
     const accountFailures = accountHealth.reduce((sum, item) => sum + Number(item?.failure_count || 0), 0)
     const runtimeProfile = data?.runtime_profile && typeof data.runtime_profile === 'object' ? data.runtime_profile : {}
+    const harnessMetrics = data?.harness_metrics && typeof data.harness_metrics === 'object' ? data.harness_metrics : {}
+    const failureSummary = data?.failure_summary && typeof data.failure_summary === 'object' ? data.failure_summary : {}
+    const latestFailure = failureSummary.latest && typeof failureSummary.latest === 'object' ? failureSummary.latest : null
+    const repairRows = Object.entries(harnessMetrics.repairs || {}).sort((a, b) => Number(b[1]) - Number(a[1]))
+    const streamRows = Object.entries(harnessMetrics.streams || {}).sort((a, b) => Number(b[1]) - Number(a[1]))
+    const failureRows = Object.entries(harnessMetrics.failures || {}).sort((a, b) => Number(b[1]) - Number(a[1]))
+    const categoryRows = Object.entries(failureSummary.by_category || {}).sort((a, b) => Number(b[1]) - Number(a[1]))
+    const errorRows = Object.entries(failureSummary.by_error_code || {}).sort((a, b) => Number(b[1]) - Number(a[1]))
 
     const cards = useMemo(() => [
         {
             label: t('diagnostics.failureSamples'),
-            value: failureSamples.length,
+            value: failureSummary.total ?? failureSamples.length,
             icon: AlertTriangle,
         },
         {
@@ -60,7 +68,7 @@ export default function DiagnosticsContainer({ authFetch, onMessage }) {
             value: data?.dev_capture_on ? t('diagnostics.enabled') : t('diagnostics.disabled'),
             icon: Activity,
         },
-    ], [captureChains.length, coolingAccounts.length, data?.capture_count, data?.dev_capture_on, failureSamples.length, t])
+    ], [captureChains.length, coolingAccounts.length, data?.capture_count, data?.dev_capture_on, failureSamples.length, failureSummary.total, t])
 
     const copyText = async (text) => {
         try {
@@ -126,6 +134,93 @@ export default function DiagnosticsContainer({ authFetch, onMessage }) {
                     <div>{t('diagnostics.metaAgents')}: {String(Boolean(runtimeProfile.allow_meta_agent_tools))}</div>
                     <div>{t('diagnostics.historySplit')}: {String(Boolean(runtimeProfile.history_split_enabled))}</div>
                     <div>{t('diagnostics.bufferLimit')}: {runtimeProfile.buffered_tool_content_max_bytes || '-'}</div>
+                </div>
+            </section>
+
+            <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                <div className="mb-3 flex items-center justify-between">
+                    <div>
+                        <h3 className="font-semibold">{t('diagnostics.harnessMetrics')}</h3>
+                        <p className="text-sm text-muted-foreground">{t('diagnostics.harnessMetricsDesc')}</p>
+                    </div>
+                    <Activity className="h-5 w-5 text-primary" />
+                </div>
+                <div className="grid gap-4 lg:grid-cols-3">
+                    {[
+                        [t('diagnostics.repairs'), repairRows],
+                        [t('diagnostics.streamRepairs'), streamRows],
+                        [t('diagnostics.failureDecisions'), failureRows],
+                    ].map(([label, rows]) => (
+                        <div key={label} className="rounded-lg border border-border bg-background p-3">
+                            <div className="mb-2 text-xs font-semibold text-muted-foreground">{label}</div>
+                            <div className="space-y-2 text-xs">
+                                {rows.length === 0 ? (
+                                    <div className="text-muted-foreground">-</div>
+                                ) : rows.map(([key, value]) => (
+                                    <div key={key} className="flex items-center justify-between gap-3">
+                                        <span className="break-all text-muted-foreground">{key}</span>
+                                        <span className="font-semibold text-foreground">{value}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </section>
+
+            <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                <div className="mb-3 flex items-center justify-between">
+                    <div>
+                        <h3 className="font-semibold">{t('diagnostics.failureSummary')}</h3>
+                        <p className="text-sm text-muted-foreground">{t('diagnostics.failureSummaryDesc')}</p>
+                    </div>
+                    <AlertTriangle className="h-5 w-5 text-amber-500" />
+                </div>
+                <div className="grid gap-4 lg:grid-cols-3">
+                    <div className="rounded-lg border border-border bg-background p-3">
+                        <div className="mb-2 text-xs font-semibold text-muted-foreground">{t('diagnostics.byCategory')}</div>
+                        <div className="space-y-2 text-xs">
+                            {categoryRows.length === 0 ? (
+                                <div className="text-muted-foreground">-</div>
+                            ) : categoryRows.map(([key, value]) => (
+                                <div key={key} className="flex items-center justify-between gap-3">
+                                    <span className="break-all text-muted-foreground">{key}</span>
+                                    <span className="font-semibold text-foreground">{value}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="rounded-lg border border-border bg-background p-3">
+                        <div className="mb-2 text-xs font-semibold text-muted-foreground">{t('diagnostics.byErrorCode')}</div>
+                        <div className="space-y-2 text-xs">
+                            {errorRows.length === 0 ? (
+                                <div className="text-muted-foreground">-</div>
+                            ) : errorRows.map(([key, value]) => (
+                                <div key={key} className="flex items-center justify-between gap-3">
+                                    <span className="break-all text-muted-foreground">{key}</span>
+                                    <span className="font-semibold text-foreground">{value}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="rounded-lg border border-border bg-background p-3">
+                        <div className="mb-2 text-xs font-semibold text-muted-foreground">{t('diagnostics.latestFailure')}</div>
+                        {latestFailure ? (
+                            <div className="space-y-2 text-xs text-muted-foreground">
+                                <div className="break-all font-mono text-foreground">{latestFailure.sample_id}</div>
+                                <div>{latestFailure.category || '-'} · {latestFailure.error_code || '-'}</div>
+                                <button
+                                    onClick={() => copyText(latestFailure.replay_command)}
+                                    className="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
+                                >
+                                    <Clipboard className="h-3.5 w-3.5" />
+                                    {t('diagnostics.copyReplay')}
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="text-xs text-muted-foreground">-</div>
+                        )}
+                    </div>
                 </div>
             </section>
 

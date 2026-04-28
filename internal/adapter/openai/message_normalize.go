@@ -63,7 +63,7 @@ func buildAssistantContentForPrompt(msg map[string]any) string {
 	}
 	toolHistory := prompt.FormatToolCallsForPrompt(msg["tool_calls"])
 	parts := make([]string, 0, 3)
-	if reasoning != "" {
+	if reasoning != "" && shouldReplayAssistantReasoning(msg, content) {
 		parts = append(parts, formatPromptLabeledBlock(assistantReasoningLabel, reasoning))
 	}
 	if content != "" {
@@ -79,6 +79,27 @@ func buildAssistantContentForPrompt(msg map[string]any) string {
 		return parts[0]
 	default:
 		return strings.Join(parts, "\n\n")
+	}
+}
+
+func shouldReplayAssistantReasoning(msg map[string]any, visibleContent string) bool {
+	if strings.TrimSpace(visibleContent) == "" {
+		return true
+	}
+	return assistantMessageHasToolCalls(msg)
+}
+
+func assistantMessageHasToolCalls(msg map[string]any) bool {
+	if msg == nil {
+		return false
+	}
+	switch calls := msg["tool_calls"].(type) {
+	case []any:
+		return len(calls) > 0
+	case []map[string]any:
+		return len(calls) > 0
+	default:
+		return false
 	}
 }
 

@@ -74,6 +74,7 @@ func filterToolCallsDetailed(parsed []ParsedToolCall, availableToolNames []strin
 		if tc.Input == nil {
 			tc.Input = map[string]any{}
 		}
+		tc.Input = normalizeToolInputStrings(tc.Input)
 		if rewritten, ok := rewriteUnavailableLocalReadFileCallForAvailable(tc, availableToolNames); ok {
 			tc = rewritten
 		}
@@ -95,7 +96,15 @@ func filterToolCallsDetailed(parsed []ParsedToolCall, availableToolNames []strin
 		if rewritten, ok := rewriteLocalResourceReadCallForAvailable(tc, availableToolNames); ok {
 			tc = rewritten
 		}
-		out = append(out, tc)
+		if isInvalidKnownClientToolCall(tc.Name, tc.Input) {
+			continue
+		}
+		for _, expanded := range expandKnownClientToolCalls(tc) {
+			if isInvalidKnownClientToolCall(expanded.Name, expanded.Input) {
+				continue
+			}
+			out = append(out, expanded)
+		}
 	}
 	return out, rejectedNames
 }
@@ -106,6 +115,9 @@ func resolveToolNameForAvailable(name string, availableToolNames []string) (stri
 		return "", false
 	}
 	if len(availableToolNames) == 0 {
+		return name, true
+	}
+	if hasAnyToolWildcard(availableToolNames) {
 		return name, true
 	}
 	for _, candidate := range availableToolNames {
@@ -123,6 +135,15 @@ func resolveToolNameForAvailable(name string, availableToolNames []string) (stri
 		}
 	}
 	return "", false
+}
+
+func hasAnyToolWildcard(availableToolNames []string) bool {
+	for _, candidate := range availableToolNames {
+		if strings.EqualFold(strings.TrimSpace(candidate), "__any_tool__") {
+			return true
+		}
+	}
+	return false
 }
 
 func inferToolNameFromKnownRequiredFields(input map[string]any, availableToolNames []string) (string, bool) {
@@ -173,6 +194,7 @@ func looksLikeToolCallSyntax(text string) bool {
 	lower := strings.ToLower(text)
 	return strings.Contains(lower, "<tool_calls") ||
 		strings.Contains(lower, "<tool_call") ||
+		strings.Contains(lower, "<toolcall") ||
 		strings.Contains(lower, "<tool ") ||
 		strings.Contains(lower, "<function_calls") ||
 		strings.Contains(lower, "<function_call") ||

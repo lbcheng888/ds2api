@@ -18,7 +18,7 @@ func TestHandleNonStreamRejectsFutureActionWithoutToolCall(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-future-no-tool", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, util.DefaultToolChoicePolicy(), false, nil)
+	h.handleNonStream(rec, resp, "cid-future-no-tool", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, util.DefaultToolChoicePolicy(), false, nil, nil)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected status 502, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -135,6 +135,38 @@ func TestFutureActionGateRejectsChineseNeedToPatchAfterContinue(t *testing.T) {
 	}
 }
 
+func TestFutureActionGateRejectsTeamAgentLaunchPromise(t *testing.T) {
+	prompt := "<｜User｜>请使用 Team Agents 一口气完成多实落地路线和终局愿景<｜Assistant｜>"
+	text := "先提交当前修复，然后启动 4 个并行代理。"
+	if _, _, code, ok := futureActionMissingToolCallDetail(text, prompt, []string{"Agent", "Bash", "Read"}, readToolTestSchemas, true); !ok || code != upstreamMissingToolCallCode {
+		t.Fatalf("expected missing-tool detection for agent launch promise, ok=%v code=%q", ok, code)
+	}
+}
+
+func TestFutureActionGateRejectsChineseMultipleSubagentLaunchPromise(t *testing.T) {
+	prompt := "<｜User｜>评估 cheng 语言目前实现了多少 docs/cheng-plan-full.md 并用于代理一口气实现<｜Assistant｜>"
+	text := "我将启动多个子代理并行评估当前实现状态，然后汇总结果。"
+	if _, _, code, ok := futureActionMissingToolCallDetail(text, prompt, []string{"Agent", "Read"}, readToolTestSchemas, true); !ok || code != upstreamMissingToolCallCode {
+		t.Fatalf("expected missing-tool detection for multiple subagent launch promise, ok=%v code=%q", ok, code)
+	}
+}
+
+func TestFutureActionGateRejectsCollapsedTeamAgentLaunchPromiseWithoutToolNames(t *testing.T) {
+	prompt := "<｜User｜>请使用 Team Agents 一口气完成多实落地路线和终局愿景<｜Assistant｜>"
+	text := "已提交后启动"
+	if _, _, code, ok := futureActionMissingToolCallDetail(text, prompt, nil, nil, true); !ok || code != upstreamMissingToolCallCode {
+		t.Fatalf("expected missing-tool detection for collapsed agent launch promise, ok=%v code=%q", ok, code)
+	}
+}
+
+func TestFutureActionGateRejectsCommitThenTeamAgentsPromise(t *testing.T) {
+	prompt := "<｜User｜>请使用 Team Agents 一口气完成多实落地路线和终局愿景<｜Assistant｜>"
+	text := "先提交，再启动 Team Agents。"
+	if _, _, code, ok := futureActionMissingToolCallDetail(text, prompt, nil, nil, true); !ok || code != upstreamMissingToolCallCode {
+		t.Fatalf("expected missing-tool detection for Team Agents launch promise, ok=%v code=%q", ok, code)
+	}
+}
+
 func TestFutureActionGateRejectsChineseVisibleFileWritePlan(t *testing.T) {
 	prompt := "<｜User｜>用中文回复<｜Assistant｜>"
 	text := `ELF RISC-V64 链接器已创建成功，Mach-O x86_64 链接器还不存在。现在创建它。
@@ -168,7 +200,7 @@ func TestHandleNonStreamRejectsMalformedToolCallBlock(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-invalid-tool", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, util.DefaultToolChoicePolicy(), false, nil)
+	h.handleNonStream(rec, resp, "cid-invalid-tool", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, util.DefaultToolChoicePolicy(), false, nil, nil)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected status 502, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -207,6 +239,35 @@ func TestChatStreamUsesLateTitleToolCallAfterFinished(t *testing.T) {
 	body := rec.Body.String()
 	if strings.Contains(body, upstreamMissingToolCallCode) {
 		t.Fatalf("late title tool call should prevent missing-tool error, body=%s", body)
+	}
+	if !strings.Contains(body, `"tool_calls"`) || !strings.Contains(body, `"Read"`) {
+		t.Fatalf("expected Read tool call from late title, body=%s", body)
+	}
+}
+
+func TestChatStreamUsesCompleteLateTitleToolCallBeforeTruncatedSibling(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		sseContentLine("I'll read the plan document and then launch parallel sub-agents."),
+		`data: {"p":"response/status","v":"FINISHED"}`,
+		`event: title`,
+		sseTitleLine(`<tool_calls>
+<tool_call name="Read">
+<parameter name="file_path" string="true">/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md</parameter>
+<parameter name="limit" number="200">200</parameter>
+</tool_call>
+<tool_call name`),
+		`event: close`,
+		`data: {"click_behavior":"none","auto_resume":false}`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h.handleStream(rec, req, resp, "cid-late-title-partial-sibling", "deepseek-chat", "prompt", false, false, []string{"Read"}, readToolTestSchemas, util.DefaultToolChoicePolicy(), false, false, nil)
+
+	body := rec.Body.String()
+	if strings.Contains(body, upstreamMissingToolCallCode) {
+		t.Fatalf("late complete tool call before truncated sibling should prevent missing-tool error, body=%s", body)
 	}
 	if !strings.Contains(body, `"tool_calls"`) || !strings.Contains(body, `"Read"`) {
 		t.Fatalf("expected Read tool call from late title, body=%s", body)

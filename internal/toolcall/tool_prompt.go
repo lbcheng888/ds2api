@@ -2,6 +2,35 @@ package toolcall
 
 import "strings"
 
+// BuildTeamAgentInstructions adds focused rules for Claude Code Team Agents.
+// It is separated from BuildToolCallInstructions so adapters can place the
+// short agent block near the concrete tool schemas while sharing one source.
+func BuildTeamAgentInstructions(toolNames []string) string {
+	hasAgent := false
+	hasTaskOutput := false
+	for _, name := range toolNames {
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "agent", "task":
+			hasAgent = true
+		case "taskoutput", "task_output":
+			hasTaskOutput = true
+		}
+	}
+	if !hasAgent && !hasTaskOutput {
+		return ""
+	}
+	taskOutputRule := `4) When the client shows running or completed task IDs, call TaskOutput only for those concrete task_id values. Never use tool_id or tool-use-id for TaskOutput, never invent task IDs, and never retry an ID after "No task found".`
+	if !hasTaskOutput {
+		taskOutputRule = `4) If no background-result collection tool is listed, do not invent one or fabricate task IDs; keep working with direct tools and summarize only visible completed results.`
+	}
+	return `TEAM AGENTS:
+1) If the user explicitly asks for Team Agents, multiple agents, parallel review, or subagents, launch Agent/task tool calls in this response; do not merely say agents will be launched.
+2) Each Agent/task call must have concrete description, prompt, and subagent_type fields. The prompt must name the exact file/path scope or the exact question it owns.
+3) Keep one lead in the main thread. Use at most 4 parallel Agent/task calls, avoid nested agents, and split write work into non-overlapping files.
+` + taskOutputRule + `
+5) If a background agent fails or stalls, report that concrete failure and finish the work with direct Read/Grep/Glob/Bash/Edit tools where possible.`
+}
+
 // BuildToolCallInstructions generates the unified tool-calling instruction block
 // used by all adapters (OpenAI, Claude, Gemini). It uses attention-optimized
 // structure: rules → negative examples → positive examples → anchor.
@@ -51,8 +80,9 @@ func BuildToolCallInstructions(toolNames []string) string {
 	ex2Params := exampleWriteOrExecParams(ex2)
 	ex3Params := exampleInteractiveParams(ex3)
 	ex4Params := exampleLongTextParams(ex2)
+	hasTaskOutput := hasPromptToolName(toolNames, "TaskOutput", "taskoutput", "task_output")
 
-	return `TOOL CALL FORMAT — FOLLOW EXACTLY:
+	instructions := `TOOL CALL FORMAT — FOLLOW EXACTLY:
 
 <tool_calls>
   <tool_call>
@@ -86,12 +116,14 @@ RULES:
 20) Do not use Write/write_to_file to rewrite an existing source file or a large file. For existing files, use Edit/MultiEdit/apply_diff-style tools with exact old_string replacements. Use Write only for new small files.
 21) If the user asks to optimize, improve, fix, continue, proceed, "请优化", "继续", "按建议推进", or "直接改", choose the highest-priority actionable change from prior findings and call the needed tools now.
 22) Do not use question/ask_followup_question to ask the user to pick among your own recommended directions after they asked to optimize or proceed. Use question only for a true blocker such as missing credentials, destructive approval, or mutually exclusive product requirements.
-23) If you receive <task-notification> or need to wait for background agents, call the available TaskOutput-style tool with concrete task_id values now. Do not answer only with reasoning or future-tense waiting text.
+23) If you receive <task-notification> or need to wait for background agents, call the available TaskOutput-style tool with concrete task_id values now. Do not use tool_id or tool-use-id as the TaskOutput task_id. Do not answer only with reasoning or future-tense waiting text.
 24) Do not use read_mcp_resource for file:// URLs, skill:// URIs, local disk paths, or skill files. Use Read/read/Grep/Glob/Bash/exec_command-style tools for local files. Only use read_mcp_resource for MCP resources from a real listed MCP server, and its resource parameter is uri, not url.
 25) Search budget: do not repeat semantically identical Search/Grep/Glob/Bash rg calls. Changing escaping, whitespace, grouping, or directory spelling does not make it a new search.
 26) Once Search/Grep/Bash rg returns a useful file path or file:line result, the next tool call must read a small bounded window around that location, edit that location, or run a targeted verification. Do not keep broadening the same regex.
 27) If two searches produce no new file path or file:line result, stop searching and proceed from the existing candidate files.
 28) Do not invent absolute repository paths. Use the current working directory, paths supplied by the user, or paths returned by tools. If a path contains a generated suffix such as repo-<hash> or project-<hash>, verify it exists with Bash before Read/Edit; otherwise use a cwd-relative path.
+29) Read/read file path parameters must be one concrete string path per tool call. Do not pass an array of files to one Read call; emit multiple Read calls instead.
+30) Bash/execute_command command must be a complete shell command. Never call Bash with only shell punctuation or quotes such as >, <, |, &, ;, ", ', or ` + "`" + `.
 
 PARAMETER SHAPES:
 - string => <name>value</name>
@@ -154,11 +186,33 @@ Example D — Tool with long script using CDATA (RELIABLE FOR CODE/SCRIPTS):
 </tool_calls>
 
 `
+	if !hasTaskOutput {
+		instructions = strings.Replace(instructions,
+			"14) A response whose only tool calls are task-tracking tools is invalid. If you need a plan, write it briefly in reasoning, then call real work tools such as Read, Grep, Glob, Bash, Edit, MultiEdit, Agent, or TaskOutput.",
+			"14) A response whose only tool calls are task-tracking tools is invalid. If you need a plan, write it briefly in reasoning, then call real work tools such as Read, Grep, Glob, Bash, Edit, MultiEdit, or Agent.",
+			1,
+		)
+		instructions = strings.Replace(instructions,
+			"23) If you receive <task-notification> or need to wait for background agents, call the available TaskOutput-style tool with concrete task_id values now. Do not use tool_id or tool-use-id as the TaskOutput task_id. Do not answer only with reasoning or future-tense waiting text.",
+			"23) If background agents exist but no background-result collection tool is listed, do not invent one; use available direct tools or provide visible status from completed results.",
+			1,
+		)
+	}
+	return instructions
 }
 
 func matchAny(name string, candidates ...string) bool {
 	for _, c := range candidates {
 		if name == c {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPromptToolName(toolNames []string, candidates ...string) bool {
+	for _, name := range toolNames {
+		if matchAny(strings.TrimSpace(name), candidates...) {
 			return true
 		}
 	}

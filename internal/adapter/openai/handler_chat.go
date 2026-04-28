@@ -11,6 +11,7 @@ import (
 	"ds2api/internal/auth"
 	"ds2api/internal/config"
 	openaifmt "ds2api/internal/format/openai"
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/protocol"
 	"ds2api/internal/sse"
 	"ds2api/internal/toolcall"
@@ -73,6 +74,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	setPromptCacheHeaders(w, stdReq.FinalPrompt)
 	historySession := startChatHistory(h.ChatHistory, r, a, stdReq)
 
 	var resp *http.Response
@@ -86,7 +88,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		sessionID = h.handleStreamWithRetry(w, r, a, resp, sessionID, stdReq, historySession)
 		return
 	}
-	h.handleNonStream(w, resp, sessionID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, historySession)
+	h.handleNonStream(w, resp, sessionID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, a, historySession)
 }
 
 func (h *Handler) autoDeleteRemoteSession(ctx context.Context, a *auth.RequestAuth, sessionID string) {
@@ -122,7 +124,7 @@ func (h *Handler) autoDeleteRemoteSession(ctx context.Context, a *auth.RequestAu
 	}
 }
 
-func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, historySession *chatHistorySession) {
+func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, completionID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, a *auth.RequestAuth, historySession *chatHistorySession) {
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(resp.Body)
@@ -134,6 +136,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 	}
 	result := sse.CollectStream(resp, thinkingEnabled, true)
 	if result.ErrorMessage != "" {
+		h.markManagedAccountFailure(a)
 		code := strings.TrimSpace(result.ErrorCode)
 		if code == "" {
 			code = "upstream_error"
@@ -151,17 +154,18 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 	if searchEnabled {
 		finalText = replaceCitationMarkersWithLinks(finalText, result.CitationLinks)
 	}
-	if repaired := synthesizeTaskOutputToolCallTextFromAgentWaiting(finalPrompt, finalText, toolNames, allowMetaAgentTools); repaired != "" {
-		finalText = repaired
-	}
-	if !result.ContentFilter && strings.TrimSpace(finalText) == "" {
-		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(finalPrompt, toolNames, allowMetaAgentTools); repaired != "" {
-			finalText = repaired
-		} else if promoted := executableToolCallTextFromThinking(finalThinking, toolNames, toolSchemas, allowMetaAgentTools); promoted != "" {
-			finalText = promoted
-		}
-	}
-	if shouldWriteUpstreamEmptyOutputError(finalText) {
+	evaluated := claudecodeharness.EvaluateFinalOutput(claudecodeharness.FinalEvaluationInput{
+		FinalPrompt:         finalPrompt,
+		Text:                finalText,
+		Thinking:            finalThinking,
+		ToolNames:           toolNames,
+		ToolSchemas:         toolSchemas,
+		AllowMetaAgentTools: allowMetaAgentTools,
+		ContentFilter:       result.ContentFilter,
+	})
+	finalText = evaluated.Text
+	if shouldWriteUpstreamEmptyOutputError(finalText) && len(evaluated.Calls) == 0 {
+		h.markManagedAccountFailure(a)
 		status, message, code := upstreamEmptyOutputDetail(result.ContentFilter, finalText, finalThinking)
 		if historySession != nil {
 			historySession.error(status, message, code, finalThinking, finalText)
@@ -169,15 +173,15 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, completionID)
 		return
 	}
-	if status, message, code, ok := futureActionMissingToolCallDetail(finalText, finalPrompt, toolNames, toolSchemas, allowMetaAgentTools); ok {
+	if evaluated.MissingToolDecision.Blocked {
+		h.markManagedAccountFailure(a)
 		if historySession != nil {
-			historySession.error(status, message, code, finalThinking, finalText)
+			historySession.error(http.StatusBadGateway, evaluated.MissingToolDecision.Message, evaluated.MissingToolDecision.Code, finalThinking, finalText)
 		}
-		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, completionID)
+		writeOpenAIErrorWithCodeAndFailureCapture(w, http.StatusBadGateway, evaluated.MissingToolDecision.Message, evaluated.MissingToolDecision.Code, completionID)
 		return
 	}
-	detectedToolCalls := toolcall.ParseStandaloneToolCallsDetailed(finalText, toolNames)
-	if normalizedToolCallsExceedInputBytes(detectedToolCalls.Calls, toolSchemas, allowMetaAgentTools, runtimeBufferedToolContentMaxBytes(h.Store)) {
+	if normalizedToolCallsExceedInputBytes(evaluated.Parsed.Calls, toolSchemas, allowMetaAgentTools, runtimeBufferedToolContentMaxBytes(h.Store)) {
 		status, message, code := toolCallTooLargeError()
 		if historySession != nil {
 			historySession.error(status, message, code, finalThinking, finalText)
@@ -185,22 +189,15 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, completionID)
 		return
 	}
-	if status, message, code, ok := invalidTaskOutputCallDetail(detectedToolCalls.Calls, finalPrompt); ok {
-		if historySession != nil {
-			historySession.error(status, message, code, finalThinking, finalText)
-		}
-		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, completionID)
-		return
-	}
-	normalizedToolCalls := toolcall.NormalizeCallsForSchemasWithMeta(detectedToolCalls.Calls, toolSchemas, allowMetaAgentTools)
-	if toolChoice.IsRequired() && len(normalizedToolCalls) == 0 {
+	if toolChoice.IsRequired() && len(evaluated.Calls) == 0 {
+		h.markManagedAccountFailure(a)
 		if historySession != nil {
 			historySession.error(http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation", finalThinking, finalText)
 		}
 		writeOpenAIErrorWithCodeAndFailureCapture(w, http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation", completionID)
 		return
 	}
-	respBody := openaifmt.BuildChatCompletion(completionID, model, finalPrompt, finalThinking, finalText, toolNames, toolSchemas, allowMetaAgentTools)
+	respBody := openaifmt.BuildChatCompletionFromToolCalls(completionID, model, finalPrompt, finalThinking, finalText, evaluated.Calls)
 	finishReason := "stop"
 	if choices, ok := respBody["choices"].([]map[string]any); ok && len(choices) > 0 {
 		if fr, _ := choices[0]["finish_reason"].(string); strings.TrimSpace(fr) != "" {
@@ -208,7 +205,8 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		}
 	}
 	if historySession != nil {
-		historySession.success(http.StatusOK, finalThinking, finalText, finishReason, openaifmt.BuildChatUsage(finalPrompt, finalThinking, finalText))
+		usage, _ := respBody["usage"].(map[string]any)
+		historySession.success(http.StatusOK, finalThinking, finalText, finishReason, usage)
 	}
 	writeJSON(w, http.StatusOK, respBody)
 }

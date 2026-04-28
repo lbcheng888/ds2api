@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"ds2api/internal/toolcall"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -9,10 +8,12 @@ import (
 
 	"github.com/google/uuid"
 
+	claudecodeharness "ds2api/internal/harness/claudecode"
+	"ds2api/internal/toolcall"
 	"ds2api/internal/util"
 )
 
-func injectToolPrompt(messages []map[string]any, tools []any, policy util.ToolChoicePolicy, allowMetaAgentTools bool) ([]map[string]any, []string) {
+func injectToolPrompt(messages []map[string]any, tools []any, policy util.ToolChoicePolicy, allowMetaAgentTools bool, allowTaskOutput bool) ([]map[string]any, []string) {
 	if policy.IsNone() {
 		return messages, nil
 	}
@@ -43,6 +44,9 @@ func injectToolPrompt(messages []map[string]any, tools []any, policy util.ToolCh
 		schema, _ := fn["parameters"].(map[string]any)
 		name = strings.TrimSpace(name)
 		if toolcall.IsTaskTrackingToolName(name) {
+			continue
+		}
+		if claudecodeharness.CanonicalTaskOutputToolName(name) == "taskoutput" && !allowTaskOutput {
 			continue
 		}
 		if !allowMetaAgentTools && toolcall.IsMetaAgentToolName(name) {
@@ -78,7 +82,7 @@ func injectToolPrompt(messages []map[string]any, tools []any, policy util.ToolCh
 	if len(toolSchemas) == 0 {
 		return messages, names
 	}
-	toolPrompt := "You have access to these tools:\n\n" + strings.Join(toolSchemas, "\n\n") + "\n\n" + buildToolCallInstructions(names)
+	toolPrompt := "You have access to these tools:\n\n" + strings.Join(toolSchemas, "\n\n") + "\n\n" + toolcall.BuildTeamAgentInstructions(names) + "\n" + buildToolCallInstructions(names)
 	if policy.Mode == util.ToolChoiceRequired {
 		toolPrompt += "\n7) For this response, you MUST call at least one tool from the allowed list."
 	}

@@ -16,6 +16,17 @@ func TestToOpenAIClaude(t *testing.T) {
 	}
 }
 
+func TestToOpenAIClaudePreservesTools(t *testing.T) {
+	raw := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Agent","description":"Launch subagent","input_schema":{"type":"object","properties":{"description":{"type":"string"},"prompt":{"type":"string"},"subagent_type":{"type":"string"}},"required":["description","prompt","subagent_type"]}},{"name":"TaskOutput","description":"Fetch task output","input_schema":{"type":"object","properties":{"task_id":{"type":"string"},"block":{"type":"boolean"},"timeout":{"type":"integer"}},"required":["task_id"]}}],"stream":true}`)
+	got := ToOpenAI(sdktranslator.FormatClaude, "claude-sonnet-4-5", raw, true)
+	s := string(got)
+	for _, want := range []string{`"tools"`, `"Agent"`, `"TaskOutput"`, `"description"`, `"prompt"`, `"subagent_type"`} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("expected translated Claude request to preserve %s, got: %s", want, s)
+		}
+	}
+}
+
 func TestFromOpenAINonStreamClaude(t *testing.T) {
 	original := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"stream":false}`)
 	translatedReq := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"stream":false}`)

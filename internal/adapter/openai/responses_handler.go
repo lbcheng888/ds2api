@@ -15,6 +15,7 @@ import (
 	"ds2api/internal/config"
 	"ds2api/internal/deepseek"
 	openaifmt "ds2api/internal/format/openai"
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/protocol"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
@@ -95,6 +96,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	setPromptCacheHeaders(w, stdReq.FinalPrompt)
 
 	sessionID, resp, stage, err := h.callCompletionWithFailover(r.Context(), a, stdReq)
 	if err != nil {
@@ -105,13 +107,13 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 
 	responseID := "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	if stdReq.Stream {
-		h.handleResponsesStream(w, r, resp, owner, sessionID, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
+		h.handleResponsesStream(w, r, resp, owner, sessionID, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, a, traceID)
 		return
 	}
-	h.handleResponsesNonStream(w, resp, owner, sessionID, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
+	h.handleResponsesNonStream(w, resp, owner, sessionID, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, a, traceID)
 }
 
-func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, sessionID, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
+func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, sessionID, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, a *auth.RequestAuth, traceID string) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -120,6 +122,7 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	}
 	result := sse.CollectStream(resp, thinkingEnabled, true)
 	if result.ErrorMessage != "" {
+		h.markManagedAccountFailure(a)
 		code := strings.TrimSpace(result.ErrorCode)
 		if code == "" {
 			code = "upstream_error"
@@ -133,49 +136,47 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	if searchEnabled {
 		sanitizedText = replaceCitationMarkersWithLinks(sanitizedText, result.CitationLinks)
 	}
-	if repaired := synthesizeTaskOutputToolCallTextFromAgentWaiting(finalPrompt, sanitizedText, toolNames, allowMetaAgentTools); repaired != "" {
-		sanitizedText = repaired
-	}
-	if !result.ContentFilter && strings.TrimSpace(sanitizedText) == "" {
-		if repaired := synthesizeTaskOutputToolCallTextFromTaskNotification(finalPrompt, toolNames, allowMetaAgentTools); repaired != "" {
-			sanitizedText = repaired
-		} else if promoted := executableToolCallTextFromThinking(sanitizedThinking, toolNames, toolSchemas, allowMetaAgentTools); promoted != "" {
-			sanitizedText = promoted
-		}
-	}
-	if shouldWriteUpstreamEmptyOutputError(sanitizedText) {
+	evaluated := claudecodeharness.EvaluateFinalOutput(claudecodeharness.FinalEvaluationInput{
+		FinalPrompt:         finalPrompt,
+		Text:                sanitizedText,
+		Thinking:            sanitizedThinking,
+		ToolNames:           toolNames,
+		ToolSchemas:         toolSchemas,
+		AllowMetaAgentTools: allowMetaAgentTools,
+		ContentFilter:       result.ContentFilter,
+	})
+	sanitizedText = evaluated.Text
+	if shouldWriteUpstreamEmptyOutputError(sanitizedText) && len(evaluated.Calls) == 0 {
+		h.markManagedAccountFailure(a)
 		status, message, code := upstreamEmptyOutputDetail(result.ContentFilter, sanitizedText, sanitizedThinking)
 		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, sessionID)
 		return
 	}
-	if status, message, code, ok := futureActionMissingToolCallDetail(sanitizedText, finalPrompt, toolNames, toolSchemas, allowMetaAgentTools); ok {
-		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, sessionID)
+	if evaluated.MissingToolDecision.Blocked {
+		h.markManagedAccountFailure(a)
+		writeOpenAIErrorWithCodeAndFailureCapture(w, http.StatusBadGateway, evaluated.MissingToolDecision.Message, evaluated.MissingToolDecision.Code, sessionID)
 		return
 	}
-	textParsed := toolcall.ParseStandaloneToolCallsDetailed(sanitizedText, toolNames)
-	if normalizedToolCallsExceedInputBytes(textParsed.Calls, toolSchemas, allowMetaAgentTools, runtimeBufferedToolContentMaxBytes(h.Store)) {
+	if normalizedToolCallsExceedInputBytes(evaluated.Parsed.Calls, toolSchemas, allowMetaAgentTools, runtimeBufferedToolContentMaxBytes(h.Store)) {
 		status, message, code := toolCallTooLargeError()
 		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, sessionID)
 		return
 	}
-	if status, message, code, ok := invalidTaskOutputCallDetail(textParsed.Calls, finalPrompt); ok {
-		writeOpenAIErrorWithCodeAndFailureCapture(w, status, message, code, sessionID)
-		return
-	}
-	logResponsesToolPolicyRejection(traceID, toolChoice, textParsed, "text")
+	logResponsesToolPolicyRejection(traceID, toolChoice, evaluated.Parsed, "text")
 
-	callCount := len(textParsed.Calls)
+	callCount := len(evaluated.Calls)
 	if toolChoice.IsRequired() && callCount == 0 {
+		h.markManagedAccountFailure(a)
 		writeOpenAIErrorWithCodeAndFailureCapture(w, http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation", sessionID)
 		return
 	}
 
-	responseObj := openaifmt.BuildResponseObjectWithMeta(responseID, model, finalPrompt, sanitizedThinking, sanitizedText, toolNames, allowMetaAgentTools)
+	responseObj := openaifmt.BuildResponseObjectFromToolCalls(responseID, model, finalPrompt, sanitizedThinking, sanitizedText, evaluated.Calls)
 	h.getResponseStore().put(owner, responseID, responseObj)
 	writeJSON(w, http.StatusOK, responseObj)
 }
 
-func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, resp *http.Response, owner, sessionID, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
+func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, resp *http.Response, owner, sessionID, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice util.ToolChoicePolicy, allowMetaAgentTools bool, a *auth.RequestAuth, traceID string) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -216,6 +217,9 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		toolChoice,
 		allowMetaAgentTools,
 		traceID,
+		func() {
+			h.markManagedAccountFailure(a)
+		},
 		func(obj map[string]any) {
 			h.getResponseStore().put(owner, responseID, obj)
 		},

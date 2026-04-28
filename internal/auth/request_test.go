@@ -181,6 +181,58 @@ func TestAccountHealthStatusTracksSuccesses(t *testing.T) {
 	}
 }
 
+func TestAccountHealthStatusIncludesAllConfiguredAccounts(t *testing.T) {
+	t.Setenv("DS2API_CONFIG_JSON", `{
+		"keys":["managed-key"],
+		"accounts":[
+			{"email":"acc1@test.com","password":"pwd","token":"t1"},
+			{"email":"acc2@test.com","password":"pwd","token":"t2"}
+		]
+	}`)
+	store := config.LoadStore()
+	pool := account.NewPool(store)
+	r := NewResolver(store, pool, func(_ context.Context, acc config.Account) (string, error) {
+		return "token-" + acc.Identifier(), nil
+	})
+
+	health := r.AccountHealthStatus()
+	if len(health) != 2 {
+		t.Fatalf("expected all configured accounts in health, got %#v", health)
+	}
+	for _, h := range health {
+		if h.Status != "healthy" || h.QualityScore != 0 {
+			t.Fatalf("unexpected fresh account health: %#v", h)
+		}
+	}
+}
+
+func TestDetermineManagedAccountPrefersHigherQualityAccount(t *testing.T) {
+	t.Setenv("DS2API_CONFIG_JSON", `{
+		"keys":["managed-key"],
+		"accounts":[
+			{"email":"acc1@test.com","password":"pwd","token":"t1"},
+			{"email":"acc2@test.com","password":"pwd","token":"t2"}
+		]
+	}`)
+	store := config.LoadStore()
+	pool := account.NewPool(store)
+	r := NewResolver(store, pool, func(_ context.Context, acc config.Account) (string, error) {
+		return "token-" + acc.Identifier(), nil
+	})
+	r.MarkAccountSuccess(&RequestAuth{UseConfigToken: true, AccountID: "acc2@test.com"})
+
+	req, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("x-api-key", "managed-key")
+	a, err := r.Determine(req)
+	if err != nil {
+		t.Fatalf("determine failed: %v", err)
+	}
+	defer r.Release(a)
+	if a.AccountID != "acc2@test.com" {
+		t.Fatalf("expected higher-quality acc2, got %q", a.AccountID)
+	}
+}
+
 func TestDetermineCallerWithManagedKeySkipsAccountAcquire(t *testing.T) {
 	r := newTestResolver(t)
 	req, _ := http.NewRequest(http.MethodGet, "/v1/responses/resp_1", nil)
@@ -507,6 +559,17 @@ func TestDetermineManagedAccountRetriesOtherAccountOnLoginFailure(t *testing.T) 
 	}
 	if !a.TriedAccounts["bad@example.com"] {
 		t.Fatalf("expected bad account to be tracked as tried")
+	}
+	health := resolver.AccountHealthStatus()
+	var bad AccountHealth
+	for _, h := range health {
+		if h.AccountID == "bad@example.com" {
+			bad = h
+			break
+		}
+	}
+	if bad.FailureCount != 1 || bad.LastFailureReason != "login" {
+		t.Fatalf("expected login failure to be tracked, got %#v", health)
 	}
 }
 

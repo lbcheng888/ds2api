@@ -17,10 +17,12 @@ type claudeStreamRuntime struct {
 	rc       *http.ResponseController
 	canFlush bool
 
-	model       string
-	toolNames   []string
-	toolSchemas toolcall.ParameterSchemas
-	messages    []any
+	model               string
+	finalPrompt         string
+	toolNames           []string
+	toolSchemas         toolcall.ParameterSchemas
+	allowMetaAgentTools bool
+	messages            []any
 
 	thinkingEnabled       bool
 	searchEnabled         bool
@@ -52,12 +54,15 @@ func newClaudeStreamRuntime(
 	stripReferenceMarkers bool,
 	toolNames []string,
 	toolSchemas toolcall.ParameterSchemas,
+	finalPrompt string,
+	allowMetaAgentTools bool,
 ) *claudeStreamRuntime {
 	return &claudeStreamRuntime{
 		w:                     w,
 		rc:                    rc,
 		canFlush:              canFlush,
 		model:                 model,
+		finalPrompt:           finalPrompt,
 		messages:              messages,
 		thinkingEnabled:       thinkingEnabled,
 		searchEnabled:         searchEnabled,
@@ -65,6 +70,7 @@ func newClaudeStreamRuntime(
 		stripReferenceMarkers: stripReferenceMarkers,
 		toolNames:             toolNames,
 		toolSchemas:           toolSchemas,
+		allowMetaAgentTools:   allowMetaAgentTools,
 		messageID:             fmt.Sprintf("msg_%d", time.Now().UnixNano()),
 		thinkingBlockIndex:    -1,
 		textBlockIndex:        -1,
@@ -106,6 +112,9 @@ func (s *claudeStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 				continue
 			}
 			s.thinking.WriteString(trimmed)
+			if s.bufferToolContent {
+				continue
+			}
 			s.closeTextBlock()
 			if !s.thinkingBlockOpen {
 				s.thinkingBlockIndex = s.nextBlockIndex

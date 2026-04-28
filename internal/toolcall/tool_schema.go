@@ -1,6 +1,7 @@
 package toolcall
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"reflect"
@@ -66,19 +67,55 @@ func NormalizeCallsForSchemasWithMeta(calls []ParsedToolCall, schemas ParameterS
 			input = map[string]any{}
 		}
 		input = normalizeToolInputStrings(input)
-		if schema, ok := schemas[name]; ok && len(schema) > 0 {
-			normalized, valid := normalizeObjectForSchema(input, schema)
-			if !valid {
+		input = normalizeKnownToolInputAliases(name, input)
+		for _, expanded := range expandKnownClientToolCalls(ParsedToolCall{Name: name, Input: input}) {
+			expandedInput := expanded.Input
+			if expandedInput == nil {
+				expandedInput = map[string]any{}
+			}
+			if schema, ok := schemas[name]; ok && len(schema) > 0 {
+				normalized, valid := normalizeObjectForSchema(expandedInput, schema)
+				if !valid {
+					continue
+				}
+				expandedInput = normalized
+			}
+			if !knownToolCallHasRequiredFields(name, expandedInput) {
 				continue
 			}
-			input = normalized
+			if isInvalidKnownClientToolCall(name, expandedInput) {
+				continue
+			}
+			out = append(out, ParsedToolCall{Name: name, Input: expandedInput})
 		}
-		if !knownToolCallHasRequiredFields(name, input) {
-			continue
-		}
-		out = append(out, ParsedToolCall{Name: name, Input: input})
 	}
 	return out
+}
+
+func normalizeKnownToolInputAliases(name string, input map[string]any) map[string]any {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "taskoutput":
+		return normalizeTaskOutputInputAliases(input)
+	default:
+		return input
+	}
+}
+
+func normalizeTaskOutputInputAliases(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return input
+	}
+	if value, ok := inputValueForKnownRequiredField(input, "taskid"); ok && !isEmptyKnownRequiredValue(value) {
+		return input
+	}
+	for _, alias := range []string{"tool_id", "toolId", "toolID"} {
+		if value, ok := input[alias]; ok && !isEmptyKnownRequiredValue(value) {
+			out := cloneSchemaMap(input)
+			out["task_id"] = value
+			return out
+		}
+	}
+	return input
 }
 
 func toolNamesFromSchemas(schemas ParameterSchemas) []string {
@@ -267,8 +304,14 @@ func normalizeObjectForSchema(input map[string]any, schema map[string]any) (map[
 		if !valid {
 			continue
 		}
+		if s, ok := normalized.(string); ok {
+			normalized = normalizeEmbeddedNamedParameterString(name, s)
+		}
 		if s, ok := normalized.(string); ok && isPathLikeSchemaProperty(name) {
 			normalized = normalizeToolPathString(s)
+		}
+		if s, ok := normalized.(string); ok && isSubagentTypeSchemaProperty(name) {
+			normalized = normalizeSubagentTypeString(s)
 		}
 		out[name] = normalized
 	}
@@ -374,6 +417,25 @@ func isPathLikeSchemaProperty(name string) bool {
 	}
 }
 
+func isSubagentTypeSchemaProperty(name string) bool {
+	switch canonicalSchemaPropertyName(name) {
+	case "subagenttype", "agenttype":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeSubagentTypeString(value string) string {
+	trimmed := strings.TrimSpace(value)
+	for _, prefix := range []string{"name=", "type=", "agent=", "subagent_type="} {
+		if strings.HasPrefix(strings.ToLower(trimmed), prefix) {
+			return strings.TrimSpace(trimmed[len(prefix):])
+		}
+	}
+	return value
+}
+
 func normalizeToolPathString(path string) string {
 	replacer := strings.NewReplacer(
 		"⁄", "/",
@@ -456,6 +518,8 @@ func normalizeValueForSchemaType(value any, schema map[string]any, typ string) (
 			return normalizeToolStringValue(v), true
 		case bool:
 			return strconv.FormatBool(v), true
+		case json.Number:
+			return v.String(), true
 		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 			return fmt.Sprint(v), true
 		default:
@@ -558,6 +622,15 @@ func normalizeInteger(value any) (any, bool) {
 			return nil, false
 		}
 		return int64(v), true
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return i, true
+		}
+		f, err := strconv.ParseFloat(v.String(), 64)
+		if err != nil || math.Trunc(f) != f {
+			return nil, false
+		}
+		return int64(f), true
 	case float32:
 		f := float64(v)
 		if math.Trunc(f) != f {
@@ -591,6 +664,12 @@ func normalizeNumber(value any) (any, bool) {
 	switch v := value.(type) {
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 		return v, true
+	case json.Number:
+		f, err := strconv.ParseFloat(v.String(), 64)
+		if err != nil {
+			return nil, false
+		}
+		return f, true
 	case string:
 		s := strings.TrimSpace(v)
 		if s == "" {
@@ -755,6 +834,50 @@ func normalizeToolStringValue(value string) string {
 		return body[:idx]
 	}
 	return strings.TrimSuffix(strings.TrimSpace(body), "]]")
+}
+
+func normalizeEmbeddedNamedParameterString(propertyName, value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "<") {
+		return value
+	}
+	for _, tag := range []string{"parameter", "argument", "param"} {
+		prefix := "<" + tag
+		if !strings.HasPrefix(strings.ToLower(trimmed), prefix) {
+			continue
+		}
+		close := strings.Index(trimmed, ">")
+		if close < 0 {
+			return value
+		}
+		attrs := trimmed[len(prefix):close]
+		attrName := markupAttrValue(attrs, "name")
+		if attrName == "" || canonicalSchemaPropertyName(attrName) != canonicalSchemaPropertyName(propertyName) {
+			return value
+		}
+		body := strings.TrimSpace(trimmed[close+1:])
+		if body == "" {
+			return ""
+		}
+		closeTag := "</" + tag + ">"
+		if idx := strings.LastIndex(strings.ToLower(body), closeTag); idx >= 0 {
+			body = strings.TrimSpace(body[:idx])
+		}
+		return htmlUnescapeSchemaString(body)
+	}
+	return value
+}
+
+func htmlUnescapeSchemaString(value string) string {
+	replacer := strings.NewReplacer(
+		"&lt;", "<",
+		"&gt;", ">",
+		"&amp;", "&",
+		"&quot;", `"`,
+		"&#39;", "'",
+		"&#x27;", "'",
+	)
+	return replacer.Replace(value)
 }
 
 func cloneSchemaMap(input map[string]any) map[string]any {

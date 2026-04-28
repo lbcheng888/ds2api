@@ -87,6 +87,36 @@ func TestProcessToolSieveHandlesLongXMLToolCall(t *testing.T) {
 	}
 }
 
+func TestProcessToolSieveInterceptsNestedFunctionBodyAgentCall(t *testing.T) {
+	var state toolStreamSieveState
+	chunks := []string{
+		"<tool_calls>\n <tool_calls>\n   <tool_call id=\"agent_linkerless\">",
+		`Agent({"description":"Linkerless + DOD + hotspots","subagent_type":"Explore","prompt":"Search concrete evidence."})`,
+		"</tool_call>\n </tool_calls>\n</tool_calls>",
+	}
+	var events []toolStreamEvent
+	for _, c := range chunks {
+		events = append(events, processToolSieveChunkWithMeta(&state, c, []string{"Agent"}, true)...)
+	}
+	events = append(events, flushToolSieveWithMeta(&state, []string{"Agent"}, true)...)
+
+	var textContent strings.Builder
+	var calls []toolcall.ParsedToolCall
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		calls = append(calls, evt.ToolCalls...)
+	}
+	if text := textContent.String(); strings.Contains(text, "Agent(") || strings.Contains(text, "<tool_call") {
+		t.Fatalf("nested function tool call leaked to text: %q", text)
+	}
+	if len(calls) != 1 || calls[0].Name != "Agent" {
+		t.Fatalf("expected one Agent call, got %#v", calls)
+	}
+	if calls[0].Input["prompt"] != "Search concrete evidence." {
+		t.Fatalf("expected prompt argument, got %#v", calls[0].Input)
+	}
+}
+
 func TestProcessToolSieveXMLWithLeadingText(t *testing.T) {
 	var state toolStreamSieveState
 	// Model outputs some prose then an XML tool call.
@@ -239,6 +269,36 @@ func TestProcessToolSieveInterceptsVisibleJSONToolObjectSequenceWithoutLeak(t *t
 	}
 	if fmt.Sprint(calls[0].Input["offset"]) != "345" || fmt.Sprint(calls[1].Input["offset"]) != "773" {
 		t.Fatalf("expected offsets to be preserved, got %#v", calls)
+	}
+}
+
+func TestProcessToolSieveInterceptsLooseVisibleJSONBashQuotes(t *testing.T) {
+	var state toolStreamSieveState
+	chunk := `Let me inspect files.
+{
+  "tool": "Bash",
+  "arguments": {
+    "command": "cd /Users/lbcheng/cheng-lang && git ls-files | head -80 && echo "---" && git ls-files | wc -l",
+    "description": "List tracked files and count"
+  }
+}`
+	events := processToolSieveChunk(&state, chunk, []string{"Bash"})
+	events = append(events, flushToolSieve(&state, []string{"Bash"})...)
+
+	var textContent strings.Builder
+	var calls []toolcall.ParsedToolCall
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		calls = append(calls, evt.ToolCalls...)
+	}
+	if strings.Contains(textContent.String(), `"tool"`) || strings.Contains(textContent.String(), "git ls-files") {
+		t.Fatalf("loose visible JSON Bash call leaked to text: %q", textContent.String())
+	}
+	if len(calls) != 1 || calls[0].Name != "Bash" {
+		t.Fatalf("expected one Bash call, got %#v", calls)
+	}
+	if !strings.Contains(fmt.Sprint(calls[0].Input["command"]), `echo "---"`) {
+		t.Fatalf("expected command quotes preserved, got %#v", calls[0])
 	}
 }
 
@@ -504,6 +564,43 @@ func TestProcessToolSieveBlocksMetaAgentToolCall(t *testing.T) {
 	}
 }
 
+func TestProcessToolSievePromotesOrphanAgentParameterGroups(t *testing.T) {
+	var state toolStreamSieveState
+	chunk := strings.Join([]string{
+		"先并行探查各维度。\n\n",
+		`<parameter name="description">Assess Linkerless + DOD implementation</parameter>`,
+		"\n",
+		`<parameter name="prompt">Search the codebase and report concrete paths.</parameter>`,
+		"\nExplore\n\n",
+		`<parameter name="description">Assess function-level parallelism</parameter>`,
+		"\n",
+		`<parameter name="prompt">Check worker scheduling.</parameter>`,
+		"\ncode-reviewer",
+	}, "")
+
+	events := processToolSieveChunkWithMeta(&state, chunk, []string{"Agent", "Read"}, true)
+	events = append(events, flushToolSieveWithMeta(&state, []string{"Agent", "Read"}, true)...)
+
+	var textContent strings.Builder
+	toolCalls := []toolcall.ParsedToolCall{}
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		toolCalls = append(toolCalls, evt.ToolCalls...)
+	}
+	if strings.Contains(textContent.String(), "<parameter") {
+		t.Fatalf("expected orphan parameter XML not to leak, got %q", textContent.String())
+	}
+	if len(toolCalls) != 2 {
+		t.Fatalf("expected two Agent tool calls, got %#v events=%#v", toolCalls, events)
+	}
+	if toolCalls[0].Name != "Agent" || toolCalls[0].Input["subagent_type"] != "Explore" {
+		t.Fatalf("unexpected first Agent call: %#v", toolCalls[0])
+	}
+	if toolCalls[1].Input["subagent_type"] != "code-reviewer" {
+		t.Fatalf("unexpected second Agent call: %#v", toolCalls[1])
+	}
+}
+
 func TestProcessToolSievePassesThroughFencedXMLToolCallExamples(t *testing.T) {
 	var state toolStreamSieveState
 	input := strings.Join([]string{
@@ -731,8 +828,8 @@ func TestProcessToolSieveTokenByTokenXMLNoLeak(t *testing.T) {
 	}
 }
 
-// Test that flushToolSieve on incomplete XML falls back to raw text.
-func TestFlushToolSieveIncompleteXMLFallsBackToText(t *testing.T) {
+// Test that flushToolSieve on incomplete XML fails the tool transaction.
+func TestFlushToolSieveIncompleteXMLReturnsProtocolError(t *testing.T) {
 	var state toolStreamSieveState
 	// XML block starts but stream ends before completion.
 	chunks := []string{
@@ -748,14 +845,21 @@ func TestFlushToolSieveIncompleteXMLFallsBackToText(t *testing.T) {
 	events = append(events, flushToolSieve(&state, []string{"read_file"})...)
 
 	var textContent string
+	var errorCode string
 	for _, evt := range events {
 		if evt.Content != "" {
 			textContent += evt.Content
 		}
+		if evt.ErrorCode != "" {
+			errorCode = evt.ErrorCode
+		}
 	}
 
-	if textContent != strings.Join(chunks, "") {
-		t.Fatalf("expected incomplete XML to fall back to raw text, got %q", textContent)
+	if textContent != "" {
+		t.Fatalf("incomplete XML leaked as text: %q", textContent)
+	}
+	if errorCode != "upstream_invalid_tool_call" {
+		t.Fatalf("expected invalid tool call error, got %q", errorCode)
 	}
 }
 

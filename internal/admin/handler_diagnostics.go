@@ -12,6 +12,7 @@ import (
 
 	"ds2api/internal/config"
 	"ds2api/internal/devcapture"
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/rawsample"
 )
 
@@ -43,19 +44,25 @@ func (h *Handler) getDevDiagnostics(w http.ResponseWriter, r *http.Request) {
 
 	root := config.RawStreamSampleRoot()
 	failureSamples, sampleErr := listFailureSamples(root, limit)
+	failureSummary, summaryErr := summarizeFailureSamples(root)
 	body := map[string]any{
 		"raw_sample_root":  root,
 		"queue_status":     queueStatus,
 		"failure_samples":  failureSamples,
+		"failure_summary":  failureSummary,
 		"capture_chains":   captures,
 		"capture_count":    len(captureChains),
 		"dev_capture_on":   devcapture.Global().Enabled(),
 		"runtime_profile":  h.runtimeDiagnosticsProfile(),
+		"harness_metrics":  claudecodeharness.SnapshotMetrics(),
 		"replay_help":      "Use ./tests/scripts/compare-raw-stream-sample.sh <sample-id> to replay one failure sample.",
 		"generated_at_utc": time.Now().UTC().Format(time.RFC3339),
 	}
 	if sampleErr != nil {
 		body["sample_error"] = sampleErr.Error()
+	}
+	if summaryErr != nil {
+		body["summary_error"] = summaryErr.Error()
 	}
 	writeJSON(w, http.StatusOK, body)
 }
@@ -93,6 +100,72 @@ func listFailureSamples(root string, limit int) ([]map[string]any, error) {
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		out = append(out, item.Payload)
+	}
+	return out, nil
+}
+
+func summarizeFailureSamples(root string) (map[string]any, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return map[string]any{
+			"total":         0,
+			"by_category":   map[string]int{},
+			"by_error_code": map[string]int{},
+		}, errors.New("raw sample root is empty")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]any{
+				"total":         0,
+				"by_category":   map[string]int{},
+				"by_error_code": map[string]int{},
+			}, nil
+		}
+		return nil, err
+	}
+
+	items := make([]failureSampleItem, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		item, ok := readFailureSample(root, entry.Name())
+		if ok {
+			items = append(items, item)
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].SortUnix > items[j].SortUnix
+	})
+
+	byCategory := map[string]int{}
+	byErrorCode := map[string]int{}
+	for _, item := range items {
+		category, _ := item.Payload["category"].(string)
+		if strings.TrimSpace(category) == "" {
+			category = "unknown"
+		}
+		byCategory[category]++
+		code, _ := item.Payload["error_code"].(string)
+		if strings.TrimSpace(code) == "" {
+			code = "unspecified"
+		}
+		byErrorCode[code]++
+	}
+	out := map[string]any{
+		"total":         len(items),
+		"by_category":   byCategory,
+		"by_error_code": byErrorCode,
+	}
+	if len(items) > 0 {
+		out["latest"] = map[string]any{
+			"sample_id":       items[0].Payload["sample_id"],
+			"category":        items[0].Payload["category"],
+			"error_code":      items[0].Payload["error_code"],
+			"captured_at_utc": items[0].Payload["captured_at_utc"],
+			"replay_command":  items[0].Payload["replay_command"],
+		}
 	}
 	return out, nil
 }

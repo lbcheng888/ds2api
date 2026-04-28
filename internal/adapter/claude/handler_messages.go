@@ -3,12 +3,14 @@ package claude
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 
 	"ds2api/internal/config"
+	"ds2api/internal/deepseek"
 	streamengine "ds2api/internal/stream"
 	"ds2api/internal/toolcall"
 	"ds2api/internal/translatorcliproxy"
@@ -47,12 +49,16 @@ func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store C
 
 	// Preserve claude_mapping (fast/slow/opus routing) while proxying via OpenAI.
 	translateModel := model
+	translateRaw := raw
 	if store != nil {
 		if norm, normErr := normalizeClaudeRequest(store, cloneMap(req)); normErr == nil && strings.TrimSpace(norm.Standard.ResolvedModel) != "" {
 			translateModel = strings.TrimSpace(norm.Standard.ResolvedModel)
+			if normalizedPayloadRaw, marshalErr := marshalClaudeProxyPayload(norm.NormalizedPayload, translateModel); marshalErr == nil {
+				translateRaw = normalizedPayloadRaw
+			}
 		}
 	}
-	translatedReq := translatorcliproxy.ToOpenAI(sdktranslator.FormatClaude, translateModel, raw, stream)
+	translatedReq := translatorcliproxy.ToOpenAI(sdktranslator.FormatClaude, translateModel, translateRaw, stream)
 
 	isVercelPrepare := strings.TrimSpace(r.URL.Query().Get("__stream_prepare")) == "1"
 	isVercelRelease := strings.TrimSpace(r.URL.Query().Get("__stream_release")) == "1"
@@ -87,7 +93,7 @@ func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store C
 		w.Header().Set("Cache-Control", "no-cache, no-transform")
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-Accel-Buffering", "no")
-		streamWriter := translatorcliproxy.NewOpenAIStreamTranslatorWriter(w, sdktranslator.FormatClaude, model, raw, translatedReq)
+		streamWriter := translatorcliproxy.NewOpenAIStreamTranslatorWriter(w, sdktranslator.FormatClaude, model, translateRaw, translatedReq)
 		h.OpenAI.ChatCompletions(streamWriter, proxyReq)
 		return true
 	}
@@ -117,11 +123,22 @@ func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store C
 		_, _ = w.Write(body)
 		return true
 	}
-	converted := translatorcliproxy.FromOpenAINonStream(sdktranslator.FormatClaude, model, raw, translatedReq, body)
+	converted := translatorcliproxy.FromOpenAINonStream(sdktranslator.FormatClaude, model, translateRaw, translatedReq, body)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(converted)
 	return true
+}
+
+func marshalClaudeProxyPayload(payload map[string]any, model string) ([]byte, error) {
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("empty normalized payload")
+	}
+	out := cloneMap(payload)
+	if strings.TrimSpace(model) != "" {
+		out["model"] = strings.TrimSpace(model)
+	}
+	return json.Marshal(out)
 }
 
 func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Request, resp *http.Response, model string, messages []any, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemasOpt ...toolcall.ParameterSchemas) {
@@ -135,6 +152,8 @@ func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Requ
 	if len(toolSchemasOpt) > 0 {
 		toolSchemas = toolSchemasOpt[0]
 	}
+	allowMetaAgentTools := h.Store != nil && h.Store.CompatAllowMetaAgentTools()
+	finalPrompt := deepseek.MessagesPrepareWithThinking(toMessageMaps(messages), thinkingEnabled)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
@@ -157,6 +176,8 @@ func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Requ
 		h.compatStripReferenceMarkers(),
 		toolNames,
 		toolSchemas,
+		finalPrompt,
+		allowMetaAgentTools,
 	)
 	streamRuntime.sendMessageStart()
 

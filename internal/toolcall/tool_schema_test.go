@@ -109,6 +109,39 @@ func TestNormalizeCallsForSchemasKeepsKnownRequiredFieldsWithoutSchema(t *testin
 	}
 }
 
+func TestNormalizeCallsForSchemasMapsTaskOutputToolIDAlias(t *testing.T) {
+	schemas := ParameterSchemas{
+		"TaskOutput": {
+			"type": "object",
+			"properties": map[string]any{
+				"task_id": map[string]any{"type": "string"},
+				"block":   map[string]any{"type": "boolean"},
+				"timeout": map[string]any{"type": "integer"},
+			},
+			"required": []any{"task_id"},
+		},
+	}
+	calls := []ParsedToolCall{{
+		Name: "TaskOutput",
+		Input: map[string]any{
+			"tool_id": "task_123",
+			"block":   "true",
+			"timeout": "30000",
+		},
+	}}
+
+	got := NormalizeCallsForSchemasWithMeta(calls, schemas, true)
+	if len(got) != 1 {
+		t.Fatalf("expected normalized TaskOutput call, got %#v", got)
+	}
+	if got[0].Input["task_id"] != "task_123" {
+		t.Fatalf("expected tool_id alias mapped to task_id, got %#v", got[0].Input)
+	}
+	if got[0].Input["block"] != true || got[0].Input["timeout"] != int64(30000) {
+		t.Fatalf("expected scalar coercion after alias mapping, got %#v", got[0].Input)
+	}
+}
+
 func TestNormalizeCallsForSchemasLimitsBackgroundAgentConcurrency(t *testing.T) {
 	calls := make([]ParsedToolCall, 0, 6)
 	for i := 0; i < 6; i++ {
@@ -138,6 +171,41 @@ func TestNormalizeCallsForSchemasLimitsBackgroundAgentConcurrency(t *testing.T) 
 	}
 	if taskOutputCount != 1 {
 		t.Fatalf("expected TaskOutput not to be counted as background Agent, got %#v", got)
+	}
+}
+
+func TestNormalizeCallsForSchemasStripsSubagentTypeNamePrefix(t *testing.T) {
+	schemas := ParameterSchemas{
+		"Agent": {
+			"type": "object",
+			"properties": map[string]any{
+				"description":       map[string]any{"type": "string"},
+				"prompt":            map[string]any{"type": "string"},
+				"subagent_type":     map[string]any{"type": "string"},
+				"run_in_background": map[string]any{"type": "boolean"},
+			},
+			"required": []any{"description", "prompt", "subagent_type"},
+		},
+	}
+	calls := []ParsedToolCall{{
+		Name: "Agent",
+		Input: map[string]any{
+			"description":       "Agent team: evaluate plan coverage",
+			"prompt":            "Review plan coverage.",
+			"subagent_type":     "name=general-purpose",
+			"run_in_background": "true",
+		},
+	}}
+
+	got := NormalizeCallsForSchemasWithMeta(calls, schemas, true)
+	if len(got) != 1 {
+		t.Fatalf("expected normalized Agent call, got %#v", got)
+	}
+	if got[0].Input["subagent_type"] != "general-purpose" {
+		t.Fatalf("expected subagent_type prefix stripped, got %#v", got[0].Input)
+	}
+	if got[0].Input["run_in_background"] != true {
+		t.Fatalf("expected boolean coercion, got %#v", got[0].Input)
 	}
 }
 
@@ -328,6 +396,87 @@ func TestNormalizeCallsForSchemasStripsCDATAWrappersWithoutSchema(t *testing.T) 
 	}
 	if got[0].Input["command"] != `grep -rn "uir_vec_cost" /tmp | head -20` {
 		t.Fatalf("expected CDATA wrapper stripped without schema, got %#v", got[0].Input)
+	}
+}
+
+func TestNormalizeCallsForSchemasSplitsReadFilesArray(t *testing.T) {
+	schemas := ParameterSchemas{
+		"Read": {
+			"type": "object",
+			"properties": map[string]any{
+				"file_path": map[string]any{"type": "string"},
+				"offset":    map[string]any{"type": "integer"},
+				"limit":     map[string]any{"type": "integer"},
+			},
+			"required": []any{"file_path"},
+		},
+	}
+	calls := []ParsedToolCall{{
+		Name: "Read",
+		Input: map[string]any{
+			"files": []any{
+				map[string]any{"path": "/tmp/a.cheng", "offset": "10"},
+				map[string]any{"file_path": "/tmp/b.cheng", "offset": "20"},
+			},
+			"limit": "200",
+		},
+	}}
+	got := NormalizeCallsForSchemas(calls, schemas)
+	if len(got) != 2 {
+		t.Fatalf("expected files array to split into 2 Read calls, got %#v", got)
+	}
+	if got[0].Input["file_path"] != "/tmp/a.cheng" || got[1].Input["file_path"] != "/tmp/b.cheng" {
+		t.Fatalf("expected scalar file_path values, got %#v", got)
+	}
+	if got[0].Input["offset"] != int64(10) || got[1].Input["offset"] != int64(20) {
+		t.Fatalf("expected per-file offsets to normalize, got %#v", got)
+	}
+	if got[0].Input["limit"] != int64(200) || got[1].Input["limit"] != int64(200) {
+		t.Fatalf("expected shared limit to normalize, got %#v", got)
+	}
+}
+
+func TestNormalizeCallsForSchemasDropsDegenerateBashCommand(t *testing.T) {
+	schemas := ParameterSchemas{
+		"Bash": {
+			"type": "object",
+			"properties": map[string]any{
+				"command":     map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string"},
+			},
+			"required": []any{"command"},
+		},
+	}
+	calls := []ParsedToolCall{{Name: "Bash", Input: map[string]any{"command": `"`}}}
+	if got := NormalizeCallsForSchemas(calls, schemas); len(got) != 0 {
+		t.Fatalf("expected degenerate Bash command to be dropped, got %#v", got)
+	}
+}
+
+func TestNormalizeCallsForSchemasStripsEmbeddedNamedParameterWrapper(t *testing.T) {
+	schemas := ParameterSchemas{
+		"Glob": {
+			"type": "object",
+			"properties": map[string]any{
+				"path":    map[string]any{"type": "string"},
+				"pattern": map[string]any{"type": "string"},
+			},
+			"required": []any{"pattern"},
+		},
+	}
+	calls := []ParsedToolCall{{
+		Name: "Glob",
+		Input: map[string]any{
+			"path":    "/Users/lbcheng/cheng-lang",
+			"pattern": `<![CDATA[<parameter name="pattern">src/core/ir/function_task.cheng]]>`,
+		},
+	}}
+	got := NormalizeCallsForSchemas(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected normalized Glob call, got %#v", got)
+	}
+	if got[0].Input["pattern"] != "src/core/ir/function_task.cheng" {
+		t.Fatalf("expected embedded parameter wrapper stripped, got %#v", got[0].Input)
 	}
 }
 

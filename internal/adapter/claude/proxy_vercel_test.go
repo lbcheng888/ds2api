@@ -92,6 +92,40 @@ func TestClaudeProxyViaOpenAIPreservesClaudeMapping(t *testing.T) {
 	}
 }
 
+func TestClaudeProxyInjectsToolPromptBeforeTranslation(t *testing.T) {
+	openAI := &openAIProxyCaptureStub{}
+	h := &Handler{
+		Store:  claudeProxyStoreStub{mapping: map[string]string{"slow": "deepseek-reasoner"}},
+		OpenAI: openAI,
+	}
+	body := `{
+  "model": "claude-3-opus",
+  "messages": [{"role":"user","content":"read the file"}],
+  "tools": [{
+    "name": "Read",
+    "description": "Read a file",
+    "input_schema": {
+      "type": "object",
+      "properties": {"file_path": {"type": "string"}},
+      "required": ["file_path"]
+    }
+  }],
+  "stream": false
+}`
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.Messages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	translated, _ := json.Marshal(openAI.seenReq)
+	if !strings.Contains(string(translated), "TOOL CALL FORMAT") || !strings.Contains(string(translated), "Never emit JSON") {
+		t.Fatalf("expected translated request to include Claude tool prompt, got %s", translated)
+	}
+}
+
 func TestClaudeProxyTranslatesInlineImageToOpenAIDataURL(t *testing.T) {
 	openAI := &openAIProxyCaptureStub{}
 	h := &Handler{OpenAI: openAI}

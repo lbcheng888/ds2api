@@ -1,10 +1,11 @@
 package claude
 
 import (
-	"ds2api/internal/toolcall"
 	"fmt"
 	"time"
 
+	claudecodeharness "ds2api/internal/harness/claudecode"
+	"ds2api/internal/toolcall"
 	"ds2api/internal/util"
 )
 
@@ -13,6 +14,7 @@ func BuildMessageResponse(messageID, model string, normalizedMessages []any, fin
 	if len(detected) == 0 && finalText == "" && finalThinking != "" {
 		detected = toolcall.ParseToolCalls(finalThinking, toolNames)
 	}
+	detected = claudecodeharness.FilterInvalidTaskOutputCalls(detected, fmt.Sprintf("%v", normalizedMessages))
 	content := make([]map[string]any, 0, 4)
 	if finalThinking != "" {
 		content = append(content, map[string]any{"type": "thinking", "thinking": finalThinking})

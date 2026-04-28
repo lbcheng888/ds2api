@@ -1,11 +1,11 @@
 package claude
 
 import (
-	"ds2api/internal/toolcall"
 	"encoding/json"
 	"fmt"
 	"time"
 
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	streamengine "ds2api/internal/stream"
 	"ds2api/internal/util"
 )
@@ -45,15 +45,26 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 
 	finalThinking := s.thinking.String()
 	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
+	visibleText := finalText
 
 	if s.bufferToolContent {
-		detected := toolcall.ParseStandaloneToolCalls(finalText, s.toolNames)
-		if len(detected) == 0 && finalText == "" && finalThinking != "" {
-			detected = toolcall.ParseStandaloneToolCalls(finalThinking, s.toolNames)
+		evaluated := claudecodeharness.EvaluateFinalOutput(claudecodeharness.FinalEvaluationInput{
+			FinalPrompt:         s.finalPrompt,
+			Text:                finalText,
+			Thinking:            finalThinking,
+			ToolNames:           s.toolNames,
+			ToolSchemas:         s.toolSchemas,
+			AllowMetaAgentTools: s.allowMetaAgentTools,
+		})
+		visibleText = evaluated.Text
+		if len(evaluated.DroppedTaskOutputIDs) > 0 {
+			s.sendError("Upstream model requested TaskOutput for an unknown or inactive task_id.")
+			return
 		}
-		detected = toolcall.NormalizeCallsForSchemasWithMeta(detected, s.toolSchemas, true)
+		detected := evaluated.Calls
 		if len(detected) > 0 {
 			stopReason = "tool_use"
+			s.emitBufferedText(visibleText)
 			for i, tc := range detected {
 				idx := s.nextBlockIndex + i
 				s.send("content_block_start", map[string]any{
@@ -83,33 +94,12 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 				})
 			}
 			s.nextBlockIndex += len(detected)
-		} else if finalText != "" {
-			idx := s.nextBlockIndex
-			s.nextBlockIndex++
-			s.send("content_block_start", map[string]any{
-				"type":  "content_block_start",
-				"index": idx,
-				"content_block": map[string]any{
-					"type": "text",
-					"text": "",
-				},
-			})
-			s.send("content_block_delta", map[string]any{
-				"type":  "content_block_delta",
-				"index": idx,
-				"delta": map[string]any{
-					"type": "text_delta",
-					"text": finalText,
-				},
-			})
-			s.send("content_block_stop", map[string]any{
-				"type":  "content_block_stop",
-				"index": idx,
-			})
+		} else if visibleText != "" {
+			s.emitBufferedText(visibleText)
 		}
 	}
 
-	outputTokens := util.EstimateTokens(finalThinking) + util.EstimateTokens(finalText)
+	outputTokens := util.EstimateTokens(finalThinking) + util.EstimateTokens(visibleText)
 	s.send("message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
@@ -121,6 +111,34 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 		},
 	})
 	s.send("message_stop", map[string]any{"type": "message_stop"})
+}
+
+func (s *claudeStreamRuntime) emitBufferedText(text string) {
+	if text == "" {
+		return
+	}
+	idx := s.nextBlockIndex
+	s.nextBlockIndex++
+	s.send("content_block_start", map[string]any{
+		"type":  "content_block_start",
+		"index": idx,
+		"content_block": map[string]any{
+			"type": "text",
+			"text": "",
+		},
+	})
+	s.send("content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": idx,
+		"delta": map[string]any{
+			"type": "text_delta",
+			"text": text,
+		},
+	})
+	s.send("content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": idx,
+	})
 }
 
 func (s *claudeStreamRuntime) onFinalize(reason streamengine.StopReason, scannerErr error) {

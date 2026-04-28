@@ -8,9 +8,9 @@ import (
 	"strings"
 )
 
-var xmlToolCallPattern = regexp.MustCompile(`(?is)<tool_call>\s*(.*?)\s*</tool_call>`)
-var xmlToolCallOpenPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?tool_call\b[^>]*>`)
-var xmlToolCallClosePattern = regexp.MustCompile(`(?is)</(?:[a-z0-9_:-]+:)?tool_call>`)
+var xmlToolCallPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?(?:tool_call|toolcall)\b[^>]*>\s*(.*?)\s*</(?:[a-z0-9_:-]+:)?(?:tool_call|toolcall)>`)
+var xmlToolCallOpenPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?(?:tool_call|toolcall)\b[^>]*>`)
+var xmlToolCallClosePattern = regexp.MustCompile(`(?is)</(?:[a-z0-9_:-]+:)?(?:tool_call|toolcall)>`)
 var xmlToolCallsClosePattern = regexp.MustCompile(`(?is)</(?:[a-z0-9_:-]+:)?tool_calls>`)
 var missingToolCallOpenAnglePattern = regexp.MustCompile(`(?is)(^|[^</])\b(tool_calls|tool_call)\s*>`)
 var looseDirectXMLToolElementOpenPattern = regexp.MustCompile(`(?is)^<([a-z0-9_:-]+)\b[^>]*>`)
@@ -75,7 +75,119 @@ func parseXMLToolCalls(text string) []ParsedToolCall {
 	if call, ok := parseToolUseToolNameBodyStyle(text); ok {
 		return []ParsedToolCall{call}
 	}
+	if calls := parseOrphanAgentParameterCalls(text); len(calls) > 0 {
+		return calls
+	}
 	return nil
+}
+
+type markupParameterSegment struct {
+	Key   string
+	Value any
+	Start int
+	End   int
+}
+
+func parseOrphanAgentParameterCalls(text string) []ParsedToolCall {
+	segments := markupParameterSegments(text)
+	if len(segments) < 2 {
+		return nil
+	}
+	out := []ParsedToolCall{}
+	for i := 0; i+1 < len(segments); i++ {
+		if !strings.EqualFold(segments[i].Key, "description") || !strings.EqualFold(segments[i+1].Key, "prompt") {
+			continue
+		}
+		description := strings.TrimSpace(asString(segments[i].Value))
+		prompt := strings.TrimSpace(asString(segments[i+1].Value))
+		if description == "" || prompt == "" {
+			continue
+		}
+		input := map[string]any{
+			"description": description,
+			"prompt":      prompt,
+		}
+		consumed := i + 2
+		if consumed < len(segments) && strings.EqualFold(segments[consumed].Key, "subagent_type") {
+			if subagentType := strings.TrimSpace(asString(segments[consumed].Value)); subagentType != "" {
+				input["subagent_type"] = subagentType
+			}
+			consumed++
+		} else if subagentType := orphanAgentPlainSubagentType(text, segments[i+1].End, nextMarkupParameterStart(segments, consumed)); subagentType != "" {
+			input["subagent_type"] = subagentType
+		}
+		out = append(out, ParsedToolCall{Name: "Agent", Input: input})
+		i = consumed - 1
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func markupParameterSegments(text string) []markupParameterSegment {
+	matches := namedParameterPattern.FindAllStringSubmatchIndex(text, -1)
+	out := make([]markupParameterSegment, 0, len(matches))
+	for _, m := range matches {
+		if len(m) < 6 {
+			continue
+		}
+		attrs := text[m[2]:m[3]]
+		key := markupAttrValue(attrs, "name")
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		value := parseMarkupValue(text[m[4]:m[5]])
+		if value == nil {
+			continue
+		}
+		out = append(out, markupParameterSegment{
+			Key:   strings.TrimSpace(key),
+			Value: value,
+			Start: m[0],
+			End:   m[1],
+		})
+	}
+	return out
+}
+
+func nextMarkupParameterStart(segments []markupParameterSegment, idx int) int {
+	if idx >= 0 && idx < len(segments) {
+		return segments[idx].Start
+	}
+	return -1
+}
+
+func orphanAgentPlainSubagentType(text string, start, end int) string {
+	if start < 0 || start > len(text) {
+		return ""
+	}
+	if end < 0 || end > len(text) {
+		end = len(text)
+	}
+	if end < start {
+		return ""
+	}
+	gap := strings.TrimSpace(html.UnescapeString(text[start:end]))
+	if gap == "" || strings.Contains(gap, "<") || len([]rune(gap)) > 120 {
+		return ""
+	}
+	for _, line := range strings.Split(gap, "\n") {
+		candidate := strings.TrimSpace(line)
+		if isKnownSubagentTypeName(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func isKnownSubagentTypeName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "explore", "code-reviewer", "design", "general-purpose", "task-executor", "cheng-language", "debugger", "plan", "claude-code-guide", "statusline-setup", "steering-architect":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseDirectToolElementCalls(text string) []ParsedToolCall {
@@ -129,26 +241,24 @@ func repairMissingToolCallClose(text string) string {
 
 func parseSingleXMLToolCall(block string) (ParsedToolCall, bool) {
 	inner := strings.TrimSpace(block)
-	inner = strings.TrimPrefix(inner, "<tool_call>")
-	inner = strings.TrimSuffix(inner, "</tool_call>")
+	if m := xmlToolCallPattern.FindStringSubmatch(inner); len(m) >= 2 {
+		inner = strings.TrimSpace(m[1])
+	} else {
+		inner = strings.TrimPrefix(inner, "<tool_call>")
+		inner = strings.TrimSuffix(inner, "</tool_call>")
+	}
 	inner = strings.TrimSpace(inner)
 	if strings.HasPrefix(inner, "{") {
 		var payload map[string]any
 		if err := json.Unmarshal([]byte(inner), &payload); err == nil {
-			name := strings.TrimSpace(asString(payload["tool"]))
-			if name == "" {
-				name = strings.TrimSpace(asString(payload["tool_name"]))
-			}
-			if name != "" {
-				input := map[string]any{}
-				if params, ok := payload["params"].(map[string]any); ok {
-					input = params
-				} else if params, ok := payload["parameters"].(map[string]any); ok {
-					input = params
-				}
+			name, input := parseJSONToolCallPayload(payload)
+			if name != "" || len(input) > 0 {
 				return ParsedToolCall{Name: name, Input: input}, true
 			}
 		}
+	}
+	if call, ok := parseFunctionStyleToolCallBody(inner); ok {
+		return call, true
 	}
 
 	if call, ok := parseDirectXMLToolElement(inner); ok {
@@ -171,8 +281,14 @@ func parseSingleXMLToolCall(block string) (ParsedToolCall, bool) {
 		case xml.StartElement:
 			tag := strings.ToLower(t.Name.Local)
 			switch tag {
-			case "tool_call", "tool_calls":
+			case "tool_calls":
 				continue
+			case "tool_call":
+				for _, attr := range t.Attr {
+					if strings.EqualFold(strings.TrimSpace(attr.Name.Local), "name") && strings.TrimSpace(name) == "" {
+						name = strings.TrimSpace(attr.Value)
+					}
+				}
 			case "tool":
 				inTool = true
 				for _, attr := range t.Attr {
@@ -246,16 +362,100 @@ func parseSingleXMLToolCall(block string) (ParsedToolCall, bool) {
 	return ParsedToolCall{Name: strings.TrimSpace(html.UnescapeString(name)), Input: params}, true
 }
 
+func parseJSONToolCallPayload(payload map[string]any) (string, map[string]any) {
+	name := strings.TrimSpace(asString(payload["tool"]))
+	if name == "" {
+		name = strings.TrimSpace(asString(payload["name"]))
+	}
+	if name == "" {
+		name = strings.TrimSpace(asString(payload["tool_name"]))
+	}
+	if fn, ok := payload["function"].(map[string]any); ok {
+		if name == "" {
+			name = strings.TrimSpace(asString(fn["name"]))
+		}
+		if input := firstJSONToolCallInput(fn); len(input) > 0 {
+			return name, input
+		}
+	}
+	if input := firstJSONToolCallInput(payload); len(input) > 0 {
+		return name, input
+	}
+	input := map[string]any{}
+	for key, value := range payload {
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "tool", "name", "tool_name", "function":
+			continue
+		default:
+			input[key] = value
+		}
+	}
+	return name, input
+}
+
+func parseFunctionStyleToolCallBody(inner string) (ParsedToolCall, bool) {
+	trimmed := strings.TrimSpace(inner)
+	if trimmed == "" || !strings.HasSuffix(trimmed, ")") {
+		return ParsedToolCall{}, false
+	}
+	open := strings.Index(trimmed, "(")
+	if open <= 0 {
+		return ParsedToolCall{}, false
+	}
+	name := strings.TrimSpace(trimmed[:open])
+	if !isFunctionStyleToolName(name) {
+		return ParsedToolCall{}, false
+	}
+	raw := strings.TrimSpace(trimmed[open+1 : len(trimmed)-1])
+	if !strings.HasPrefix(raw, "{") {
+		return ParsedToolCall{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return ParsedToolCall{}, false
+	}
+	return ParsedToolCall{Name: name, Input: parseToolCallInput(payload)}, true
+}
+
+func isFunctionStyleToolName(name string) bool {
+	for i, r := range name {
+		isAlpha := r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z'
+		isDigit := r >= '0' && r <= '9'
+		if i == 0 {
+			if isAlpha || r == '_' {
+				continue
+			}
+			return false
+		}
+		if isAlpha || isDigit || r == '_' || r == '.' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return name != ""
+}
+
+func firstJSONToolCallInput(obj map[string]any) map[string]any {
+	for _, key := range []string{"arguments", "input", "params", "parameters"} {
+		if value, ok := obj[key]; ok {
+			return parseToolCallInput(value)
+		}
+	}
+	return nil
+}
+
 func RepairMalformedToolCallXML(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return text
 	}
 	lower := strings.ToLower(text)
-	if !strings.Contains(lower, "tool_call") {
+	if !strings.Contains(lower, "tool_call") && !strings.Contains(lower, "toolcall") {
 		return text
 	}
 	if !strings.Contains(lower, "<tool_call") &&
+		!strings.Contains(lower, "<toolcall") &&
 		!strings.Contains(lower, "</tool_call") &&
+		!strings.Contains(lower, "</toolcall") &&
 		!strings.Contains(lower, "<tool ") &&
 		!strings.Contains(lower, "<invoke") &&
 		!strings.Contains(lower, "<function_call") {
@@ -467,7 +667,7 @@ func parseDirectXMLToolElement(inner string) (ParsedToolCall, bool) {
 
 func isXMLToolMetadataTag(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "tool_call", "tool_calls", "tool_use", "function_call", "function_calls", "tool_name", "function_name", "tool_call_name", "name", "parameters", "parameter", "input", "arguments", "argument", "args", "params":
+	case "tool_call", "tool_calls", "tool_use", "function_call", "function_calls", "tool_name", "function_name", "tool_call_name", "name", "parameters", "parameter", "param", "input", "arguments", "argument", "args", "params":
 		return true
 	default:
 		return false

@@ -39,11 +39,13 @@ type LoginFunc func(ctx context.Context, acc config.Account) (string, error)
 type AccountHealth struct {
 	AccountID                string `json:"account_id"`
 	Status                   string `json:"status"`
+	QualityScore             int64  `json:"quality_score"`
 	CooldownUntilUnix        int64  `json:"cooldown_until_unix,omitempty"`
 	CooldownRemainingSeconds int    `json:"cooldown_remaining_seconds,omitempty"`
 	SuccessCount             int64  `json:"success_count,omitempty"`
 	FailureCount             int64  `json:"failure_count,omitempty"`
 	ConsecutiveFailures      int64  `json:"consecutive_failures,omitempty"`
+	LastFailureReason        string `json:"last_failure_reason,omitempty"`
 	LastSuccessUnix          int64  `json:"last_success_unix,omitempty"`
 	LastFailureUnix          int64  `json:"last_failure_unix,omitempty"`
 }
@@ -54,6 +56,13 @@ type accountHealthStats struct {
 	consecutiveFailures int64
 	lastSuccess         time.Time
 	lastFailure         time.Time
+	lastFailureReason   string
+}
+
+type rankedAccount struct {
+	id    string
+	index int
+	score int64
 }
 
 type Resolver struct {
@@ -113,7 +122,7 @@ func (r *Resolver) acquireManagedRequestAuth(ctx context.Context, callerID, targ
 			}
 			return nil, ErrNoAccount
 		}
-		acc, ok := r.Pool.AcquireWait(ctx, target, tried)
+		acc, ok := r.Pool.AcquireWaitPreferred(ctx, target, tried, r.preferredAccountOrder())
 		if !ok {
 			if lastEnsureErr != nil {
 				return nil, lastEnsureErr
@@ -133,6 +142,7 @@ func (r *Resolver) acquireManagedRequestAuth(ctx context.Context, callerID, targ
 		if err := r.ensureManagedToken(ctx, a); err != nil {
 			lastEnsureErr = err
 			tried[a.AccountID] = true
+			r.markAccountFailure(a, "login")
 			r.Pool.Release(a.AccountID)
 			if target != "" {
 				return nil, err
@@ -220,7 +230,7 @@ func (r *Resolver) SwitchAccount(ctx context.Context, a *RequestAuth) bool {
 	}
 	for {
 		r.applyAccountCooldowns(a.TriedAccounts)
-		acc, ok := r.Pool.Acquire("", a.TriedAccounts)
+		acc, ok := r.Pool.AcquirePreferred("", a.TriedAccounts, r.preferredAccountOrder())
 		if !ok {
 			return false
 		}
@@ -228,6 +238,7 @@ func (r *Resolver) SwitchAccount(ctx context.Context, a *RequestAuth) bool {
 		a.AccountID = acc.Identifier()
 		if err := r.ensureManagedToken(ctx, a); err != nil {
 			a.TriedAccounts[a.AccountID] = true
+			r.markAccountFailure(a, "login")
 			r.Pool.Release(a.AccountID)
 			continue
 		}
@@ -243,6 +254,10 @@ func (r *Resolver) Release(a *RequestAuth) {
 }
 
 func (r *Resolver) MarkAccountFailure(a *RequestAuth) {
+	r.markAccountFailure(a, "request")
+}
+
+func (r *Resolver) markAccountFailure(a *RequestAuth, reason string) {
 	if r == nil || a == nil || !a.UseConfigToken {
 		return
 	}
@@ -270,6 +285,7 @@ func (r *Resolver) MarkAccountFailure(a *RequestAuth) {
 	stats.failureCount++
 	stats.consecutiveFailures++
 	stats.lastFailure = now
+	stats.lastFailureReason = strings.TrimSpace(reason)
 	r.accountStats[accountID] = stats
 	r.mu.Unlock()
 	if cooldown > 0 {
@@ -293,6 +309,7 @@ func (r *Resolver) MarkAccountSuccess(a *RequestAuth) {
 	stats := r.accountStats[accountID]
 	stats.successCount++
 	stats.consecutiveFailures = 0
+	stats.lastFailureReason = ""
 	stats.lastSuccess = time.Now()
 	r.accountStats[accountID] = stats
 	r.mu.Unlock()
@@ -304,9 +321,20 @@ func (r *Resolver) AccountHealthStatus() []AccountHealth {
 	}
 	now := time.Now()
 	out := []AccountHealth{}
+	configuredAccountIDs := []string{}
+	if r.Store != nil {
+		for _, acc := range r.Store.Accounts() {
+			if id := strings.TrimSpace(acc.Identifier()); id != "" {
+				configuredAccountIDs = append(configuredAccountIDs, id)
+			}
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	accountIDs := map[string]struct{}{}
+	for _, id := range configuredAccountIDs {
+		accountIDs[id] = struct{}{}
+	}
 	for accountID := range r.accountStats {
 		accountIDs[accountID] = struct{}{}
 	}
@@ -320,9 +348,11 @@ func (r *Resolver) AccountHealthStatus() []AccountHealth {
 		health := AccountHealth{
 			AccountID:           accountID,
 			Status:              status,
+			QualityScore:        accountQualityScore(stats),
 			SuccessCount:        stats.successCount,
 			FailureCount:        stats.failureCount,
 			ConsecutiveFailures: stats.consecutiveFailures,
+			LastFailureReason:   stats.lastFailureReason,
 			LastSuccessUnix:     unixIfSet(stats.lastSuccess),
 			LastFailureUnix:     unixIfSet(stats.lastFailure),
 		}
@@ -344,6 +374,61 @@ func (r *Resolver) AccountHealthStatus() []AccountHealth {
 		return out[i].AccountID < out[j].AccountID
 	})
 	return out
+}
+
+func (r *Resolver) preferredAccountOrder() []string {
+	if r == nil || r.Store == nil {
+		return nil
+	}
+	accounts := r.Store.Accounts()
+	if len(accounts) == 0 {
+		return nil
+	}
+	ranked := make([]rankedAccount, 0, len(accounts))
+	r.mu.Lock()
+	for i, acc := range accounts {
+		id := strings.TrimSpace(acc.Identifier())
+		if id == "" {
+			continue
+		}
+		ranked = append(ranked, rankedAccount{
+			id:    id,
+			index: i,
+			score: accountQualityScore(r.accountStats[id]),
+		})
+	}
+	r.mu.Unlock()
+	if len(ranked) == 0 || allAccountScoresEqual(ranked) {
+		return nil
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score == ranked[j].score {
+			return ranked[i].index < ranked[j].index
+		}
+		return ranked[i].score > ranked[j].score
+	})
+	out := make([]string, 0, len(ranked))
+	for _, item := range ranked {
+		out = append(out, item.id)
+	}
+	return out
+}
+
+func allAccountScoresEqual(accounts []rankedAccount) bool {
+	if len(accounts) < 2 {
+		return true
+	}
+	first := accounts[0].score
+	for _, item := range accounts[1:] {
+		if item.score != first {
+			return false
+		}
+	}
+	return true
+}
+
+func accountQualityScore(stats accountHealthStats) int64 {
+	return stats.successCount*4 - stats.failureCount*3 - stats.consecutiveFailures*10
 }
 
 func unixIfSet(t time.Time) int64 {

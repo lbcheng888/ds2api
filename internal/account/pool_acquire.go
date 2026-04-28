@@ -12,7 +12,17 @@ func (p *Pool) Acquire(target string, exclude map[string]bool) (config.Account, 
 	return p.acquireLocked(target, normalizeExclude(exclude))
 }
 
+func (p *Pool) AcquirePreferred(target string, exclude map[string]bool, preferred []string) (config.Account, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.acquireLockedPreferred(target, normalizeExclude(exclude), preferred)
+}
+
 func (p *Pool) AcquireWait(ctx context.Context, target string, exclude map[string]bool) (config.Account, bool) {
+	return p.AcquireWaitPreferred(ctx, target, exclude, nil)
+}
+
+func (p *Pool) AcquireWaitPreferred(ctx context.Context, target string, exclude map[string]bool, preferred []string) (config.Account, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -23,7 +33,7 @@ func (p *Pool) AcquireWait(ctx context.Context, target string, exclude map[strin
 		}
 
 		p.mu.Lock()
-		if acc, ok := p.acquireLocked(target, exclude); ok {
+		if acc, ok := p.acquireLockedPreferred(target, exclude, preferred); ok {
 			p.mu.Unlock()
 			return acc, true
 		}
@@ -47,6 +57,10 @@ func (p *Pool) AcquireWait(ctx context.Context, target string, exclude map[strin
 }
 
 func (p *Pool) acquireLocked(target string, exclude map[string]bool) (config.Account, bool) {
+	return p.acquireLockedPreferred(target, exclude, nil)
+}
+
+func (p *Pool) acquireLockedPreferred(target string, exclude map[string]bool, preferred []string) (config.Account, bool) {
 	if target != "" {
 		if exclude[target] || !p.canAcquireIDLocked(target) {
 			return config.Account{}, false
@@ -60,6 +74,18 @@ func (p *Pool) acquireLocked(target string, exclude map[string]bool) (config.Acc
 		return acc, true
 	}
 
+	for _, id := range normalizePreferred(preferred) {
+		if exclude[id] || !p.canAcquireIDLocked(id) {
+			continue
+		}
+		acc, ok := p.store.FindAccount(id)
+		if !ok {
+			continue
+		}
+		p.inUse[id]++
+		p.bumpQueue(id)
+		return acc, true
+	}
 	return p.tryAcquire(exclude)
 }
 
@@ -96,4 +122,23 @@ func normalizeExclude(exclude map[string]bool) map[string]bool {
 		return map[string]bool{}
 	}
 	return exclude
+}
+
+func normalizePreferred(preferred []string) []string {
+	if len(preferred) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(preferred))
+	seen := map[string]struct{}{}
+	for _, id := range preferred {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
