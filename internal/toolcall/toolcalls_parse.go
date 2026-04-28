@@ -21,7 +21,7 @@ func ParseToolCalls(text string, availableToolNames []string) []ParsedToolCall {
 }
 
 func ParseToolCallsDetailed(text string, availableToolNames []string) ToolCallParseResult {
-	return parseToolCallsDetailedXMLOnly(text, availableToolNames)
+	return parseToolCallsDetailedXMLOnly(text)
 }
 
 func ParseStandaloneToolCalls(text string, availableToolNames []string) []ParsedToolCall {
@@ -29,195 +29,82 @@ func ParseStandaloneToolCalls(text string, availableToolNames []string) []Parsed
 }
 
 func ParseStandaloneToolCallsDetailed(text string, availableToolNames []string) ToolCallParseResult {
-	return parseToolCallsDetailedXMLOnly(text, availableToolNames)
+	return parseToolCallsDetailedXMLOnly(text)
 }
 
-func parseToolCallsDetailedXMLOnly(text string, availableToolNames []string) ToolCallParseResult {
+func ParseAssistantToolCallsDetailed(text, thinking string, availableToolNames []string) ToolCallParseResult {
+	textParsed := ParseStandaloneToolCallsDetailed(text, availableToolNames)
+	if len(textParsed.Calls) > 0 {
+		return textParsed
+	}
+	if strings.TrimSpace(text) != "" {
+		return textParsed
+	}
+	thinkingParsed := ParseStandaloneToolCallsDetailed(thinking, availableToolNames)
+	if len(thinkingParsed.Calls) > 0 {
+		return thinkingParsed
+	}
+	return textParsed
+}
+
+func parseToolCallsDetailedXMLOnly(text string) ToolCallParseResult {
 	result := ToolCallParseResult{}
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return result
 	}
-	trimmed = RepairMalformedToolCallXML(trimmed)
-	result.SawToolCallSyntax = LooksLikeToolCallSyntax(trimmed)
+	result.SawToolCallSyntax = looksLikeToolCallSyntax(trimmed)
 	trimmed = stripFencedCodeBlocks(trimmed)
 	trimmed = strings.TrimSpace(trimmed)
 	if trimmed == "" {
 		return result
 	}
 	trimmed = RepairMalformedToolCallXML(trimmed)
-	trimmed = repairMissingToolCallClose(trimmed)
 
-	parsed := parseXMLToolCalls(trimmed)
-	if len(parsed) == 0 {
-		parsed = parseMarkupToolCalls(trimmed)
+	normalized, ok := normalizeDSMLToolCallMarkup(trimmed)
+	if !ok {
+		return result
 	}
-	if len(parsed) == 0 {
-		parsed = parseVisibleJSONToolCalls(trimmed)
+	parsed := parseXMLToolCalls(normalized)
+	if len(parsed) == 0 && strings.Contains(strings.ToLower(normalized), "<![cdata[") {
+		recovered := SanitizeLooseCDATA(normalized)
+		if recovered != normalized {
+			parsed = parseXMLToolCalls(recovered)
+		}
 	}
 	if len(parsed) == 0 {
 		return result
 	}
 
 	result.SawToolCallSyntax = true
-	calls, rejectedNames := filterToolCallsDetailed(parsed, availableToolNames)
+	calls, rejectedNames := filterToolCallsDetailed(parsed)
 	result.Calls = calls
 	result.RejectedToolNames = rejectedNames
 	result.RejectedByPolicy = len(rejectedNames) > 0 && len(calls) == 0
 	return result
 }
 
-func filterToolCallsDetailed(parsed []ParsedToolCall, availableToolNames []string) ([]ParsedToolCall, []string) {
+func filterToolCallsDetailed(parsed []ParsedToolCall) ([]ParsedToolCall, []string) {
 	out := make([]ParsedToolCall, 0, len(parsed))
-	rejectedNames := make([]string, 0)
 	for _, tc := range parsed {
+		if tc.Name == "" {
+			continue
+		}
 		if tc.Input == nil {
 			tc.Input = map[string]any{}
 		}
-		tc.Input = normalizeToolInputStrings(tc.Input)
-		if rewritten, ok := rewriteUnavailableLocalReadFileCallForAvailable(tc, availableToolNames); ok {
-			tc = rewritten
-		}
-		if rewritten, ok := rewriteLocalResourceReadCallForAvailable(tc, availableToolNames); ok {
-			tc = rewritten
-		}
-		if strings.TrimSpace(tc.Name) == "" {
-			name, ok := inferToolNameFromKnownRequiredFields(tc.Input, availableToolNames)
-			if !ok {
-				continue
-			}
-			tc.Name = name
-		} else if name, ok := resolveToolNameForAvailable(tc.Name, availableToolNames); ok {
-			tc.Name = name
-		} else {
-			rejectedNames = append(rejectedNames, strings.TrimSpace(tc.Name))
-			continue
-		}
-		if rewritten, ok := rewriteLocalResourceReadCallForAvailable(tc, availableToolNames); ok {
-			tc = rewritten
-		}
-		if isInvalidKnownClientToolCall(tc.Name, tc.Input) {
-			continue
-		}
-		for _, expanded := range expandKnownClientToolCalls(tc) {
-			if isInvalidKnownClientToolCall(expanded.Name, expanded.Input) {
-				continue
-			}
-			out = append(out, expanded)
-		}
+		out = append(out, tc)
 	}
-	return out, rejectedNames
-}
-
-func resolveToolNameForAvailable(name string, availableToolNames []string) (string, bool) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", false
-	}
-	if len(availableToolNames) == 0 {
-		return name, true
-	}
-	if hasAnyToolWildcard(availableToolNames) {
-		return name, true
-	}
-	for _, candidate := range availableToolNames {
-		candidate = strings.TrimSpace(candidate)
-		if strings.EqualFold(candidate, name) {
-			return name, true
-		}
-	}
-	for _, alias := range knownToolNameAliases(strings.ToLower(name)) {
-		for _, candidate := range availableToolNames {
-			candidate = strings.TrimSpace(candidate)
-			if strings.EqualFold(candidate, alias) {
-				return candidate, true
-			}
-		}
-	}
-	return "", false
-}
-
-func hasAnyToolWildcard(availableToolNames []string) bool {
-	for _, candidate := range availableToolNames {
-		if strings.EqualFold(strings.TrimSpace(candidate), "__any_tool__") {
-			return true
-		}
-	}
-	return false
-}
-
-func inferToolNameFromKnownRequiredFields(input map[string]any, availableToolNames []string) (string, bool) {
-	if len(input) == 0 || len(availableToolNames) == 0 {
-		return "", false
-	}
-	bestName := ""
-	bestScore := 0
-	tied := false
-	for _, name := range availableToolNames {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		required := knownRequiredToolFields(name)
-		if len(required) == 0 {
-			continue
-		}
-		ok := true
-		for _, field := range required {
-			value, hasValue := inputValueForKnownRequiredField(input, field)
-			if !hasValue || isEmptyKnownRequiredValue(value) {
-				ok = false
-				break
-			}
-		}
-		if !ok {
-			continue
-		}
-		score := len(required)
-		if score > bestScore {
-			bestName = name
-			bestScore = score
-			tied = false
-			continue
-		}
-		if score == bestScore {
-			tied = true
-		}
-	}
-	if bestName == "" || tied {
-		return "", false
-	}
-	return bestName, true
+	return out, nil
 }
 
 func looksLikeToolCallSyntax(text string) bool {
-	lower := strings.ToLower(text)
-	return strings.Contains(lower, "<tool_calls") ||
-		strings.Contains(lower, "<tool_call") ||
-		strings.Contains(lower, "<toolcall") ||
-		strings.Contains(lower, "<tool ") ||
-		strings.Contains(lower, "<function_calls") ||
-		strings.Contains(lower, "<function_call") ||
-		strings.Contains(lower, "<invoke") ||
-		strings.Contains(lower, "<tool_use") ||
-		strings.Contains(lower, "<attempt_completion") ||
-		strings.Contains(lower, "<ask_followup_question") ||
-		strings.Contains(lower, "<new_task") ||
-		strings.Contains(lower, "<result") ||
-		looksLikeVisibleJSONToolCallSyntax(text)
+	hasDSML, hasCanonical := ContainsToolCallWrapperSyntaxOutsideIgnored(stripFencedCodeBlocks(text))
+	return hasDSML || hasCanonical
 }
 
 func LooksLikeToolCallSyntax(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return false
-	}
-	trimmed = stripFencedCodeBlocks(trimmed)
-	trimmed = strings.TrimSpace(trimmed)
-	if trimmed == "" {
-		return false
-	}
-	return looksLikeToolCallSyntax(trimmed)
+	return looksLikeToolCallSyntax(text)
 }
 
 func stripFencedCodeBlocks(text string) string {
@@ -230,12 +117,22 @@ func stripFencedCodeBlocks(text string) string {
 	lines := strings.SplitAfter(text, "\n")
 	inFence := false
 	fenceMarker := ""
+	inCDATA := false
+	// Track builder length when a fence opens so we can preserve content
+	// collected before the unclosed fence.
+	beforeFenceLen := 0
 	for _, line := range lines {
+		if inCDATA || cdataStartsBeforeFence(line) {
+			b.WriteString(line)
+			inCDATA = updateCDATAState(inCDATA, line)
+			continue
+		}
 		trimmed := strings.TrimLeft(line, " \t")
 		if !inFence {
 			if marker, ok := parseFenceOpen(trimmed); ok {
 				inFence = true
 				fenceMarker = marker
+				beforeFenceLen = b.Len()
 				continue
 			}
 			b.WriteString(line)
@@ -249,9 +146,63 @@ func stripFencedCodeBlocks(text string) string {
 	}
 
 	if inFence {
+		// Unclosed fence: preserve content that was collected before the
+		// fence started rather than dropping everything.
+		result := b.String()
+		if beforeFenceLen > 0 && beforeFenceLen <= len(result) {
+			return result[:beforeFenceLen]
+		}
 		return ""
 	}
 	return b.String()
+}
+
+func cdataStartsBeforeFence(line string) bool {
+	cdataIdx := strings.Index(strings.ToLower(line), "<![cdata[")
+	if cdataIdx < 0 {
+		return false
+	}
+	fenceIdx := firstFenceMarkerIndex(line)
+	return fenceIdx < 0 || cdataIdx < fenceIdx
+}
+
+func firstFenceMarkerIndex(line string) int {
+	idxBacktick := strings.Index(line, "```")
+	idxTilde := strings.Index(line, "~~~")
+	switch {
+	case idxBacktick < 0:
+		return idxTilde
+	case idxTilde < 0:
+		return idxBacktick
+	case idxBacktick < idxTilde:
+		return idxBacktick
+	default:
+		return idxTilde
+	}
+}
+
+func updateCDATAState(inCDATA bool, line string) bool {
+	lower := strings.ToLower(line)
+	pos := 0
+	state := inCDATA
+	for pos < len(lower) {
+		if state {
+			end := strings.Index(lower[pos:], "]]>")
+			if end < 0 {
+				return true
+			}
+			pos += end + len("]]>")
+			state = false
+			continue
+		}
+		start := strings.Index(lower[pos:], "<![cdata[")
+		if start < 0 {
+			return false
+		}
+		pos += start + len("<![cdata[")
+		state = true
+	}
+	return state
 }
 
 func parseFenceOpen(line string) (string, bool) {

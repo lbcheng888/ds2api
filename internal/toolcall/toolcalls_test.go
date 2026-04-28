@@ -1,7 +1,6 @@
 package toolcall
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -17,8 +16,8 @@ func TestFormatOpenAIToolCalls(t *testing.T) {
 	}
 }
 
-func TestParseToolCallsSupportsClaudeXMLToolCall(t *testing.T) {
-	text := `<tool_call><tool_name>Bash</tool_name><parameters><command>pwd</command><description>show cwd</description></parameters></tool_call>`
+func TestParseToolCallsSupportsToolCallsWrapper(t *testing.T) {
+	text := `<tool_calls><invoke name="Bash"><parameter name="command">pwd</parameter><parameter name="description">show cwd</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"bash"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -31,750 +30,73 @@ func TestParseToolCallsSupportsClaudeXMLToolCall(t *testing.T) {
 	}
 }
 
-func TestParseToolCallsSupportsChildParametersWithMismatchedCloseTag(t *testing.T) {
-	text := `<tool_calls>
-  <tool_call>
-    <tool_name>Grep</tool_name>
-    <parameters>
-      <output_mode><![CDATA[content]]></output_mode>
-      <path><![CDATA[/Users/lbcheng/cheng-lang/src/core/backend]]></pattern>
-      <parameter>MachOTextObjectWrite|ElfTextObjectWrite</parameter>
-    </parameters>
-  </tool_call>
-</tool_calls>`
-	calls := ParseToolCalls(text, []string{"Grep"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "Grep" {
-		t.Fatalf("expected Grep, got %#v", calls[0])
-	}
-	if calls[0].Input["path"] != "/Users/lbcheng/cheng-lang/src/core/backend" {
-		t.Fatalf("expected path from loose close tag, got %#v", calls[0].Input)
-	}
-	if calls[0].Input["parameter"] != "MachOTextObjectWrite|ElfTextObjectWrite" {
-		t.Fatalf("expected nameless parameter to survive for schema repair, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsCanonicalParameterNameAttributes(t *testing.T) {
-	text := `<tool_calls><tool_call><tool_name>task</tool_name><parameters><parameter name="description">list files</parameter><parameter name="prompt">run ls</parameter><parameter name="subagent_type">general</parameter></parameters></tool_call></tool_calls>`
-	calls := ParseToolCalls(text, []string{"task"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Input["description"] != "list files" {
-		t.Fatalf("expected description argument, got %#v", calls[0].Input)
-	}
-	if calls[0].Input["prompt"] != "run ls" {
-		t.Fatalf("expected prompt argument, got %#v", calls[0].Input)
-	}
-	if calls[0].Input["subagent_type"] != "general" {
-		t.Fatalf("expected subagent_type argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsRepairsTruncatedTitleToolCall(t *testing.T) {
-	text := "tool_calls\n<tool_call>\n<tool_name>Read</tool_name>\n<parameter name=\"file_path\" type=\"string\">/tmp/a.txt</parameter>\n<parameter name=\"limit\" type=\"number\">150</parameter>\n"
-	calls := ParseToolCalls(text, []string{"Read"})
-	if len(calls) != 1 {
-		t.Fatalf("expected one repaired title tool call, got %#v", calls)
-	}
-	if calls[0].Name != "Read" {
-		t.Fatalf("unexpected tool name: %#v", calls[0])
-	}
-	if calls[0].Input["file_path"] != "/tmp/a.txt" {
-		t.Fatalf("unexpected input: %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsToolCallNameTagWithNamedParameters(t *testing.T) {
-	text := `<tool_calls>
-<tool_call>
-<tool_call_name>read</tool_call_name>
-<parameter name="filePath" type="string">/Users/lbcheng/cheng-lang/findings.md</parameter>
-</tool_call>
-<tool_call>
-<tool_call_name>read</tool_call_name>
-<parameter name="filePath" type="string">/Users/lbcheng/cheng-lang/progress.md</parameter>
-</tool_call>
-</tool_calls>`
-	calls := ParseToolCalls(text, []string{"read"})
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 calls, got %#v", calls)
-	}
-	if calls[0].Name != "read" || calls[0].Input["filePath"] != "/Users/lbcheng/cheng-lang/findings.md" {
-		t.Fatalf("expected first read filePath argument, got %#v", calls[0])
-	}
-	if calls[1].Name != "read" || calls[1].Input["filePath"] != "/Users/lbcheng/cheng-lang/progress.md" {
-		t.Fatalf("expected second read filePath argument, got %#v", calls[1])
-	}
-}
-
-func TestParseToolCallsInfersReadFromNamelessFilePathParameter(t *testing.T) {
-	text := `<tool_calls>
-<tool_call>
-<parameter name="file_path">/Users/lbcheng/cheng-lang/src/core/lang/parser.cheng</parameter>
-</tool_call>
-</tool_calls>`
-	calls := ParseToolCalls(text, []string{"Read", "Bash", "Edit"})
-	if len(calls) != 1 {
-		t.Fatalf("expected one inferred Read call, got %#v", calls)
-	}
-	if calls[0].Name != "Read" {
-		t.Fatalf("expected inferred Read tool, got %#v", calls[0])
-	}
-	if calls[0].Input["file_path"] != "/Users/lbcheng/cheng-lang/src/core/lang/parser.cheng" {
-		t.Fatalf("expected file_path argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsInfersBashFromNamelessCommandParameter(t *testing.T) {
-	text := `<tool_calls>
-<tool_call>
-<parameter name="command" description="List files">ls -la /Users/lbcheng/cheng-lang</parameter>
-</tool_call>
-</tool_calls>`
-	calls := ParseToolCalls(text, []string{"Read", "Bash"})
-	if len(calls) != 1 {
-		t.Fatalf("expected one inferred Bash call, got %#v", calls)
-	}
-	if calls[0].Name != "Bash" {
-		t.Fatalf("expected inferred Bash tool, got %#v", calls[0])
-	}
-	if calls[0].Input["command"] != "ls -la /Users/lbcheng/cheng-lang" {
-		t.Fatalf("expected command argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsDoesNotInferAmbiguousNamelessParameters(t *testing.T) {
-	text := `<tool_calls><tool_call><parameter name="description">Review code</parameter></tool_call></tool_calls>`
-	calls := ParseToolCalls(text, []string{"Agent", "TaskCreate"})
-	if len(calls) != 0 {
-		t.Fatalf("expected ambiguous nameless call to be ignored, got %#v", calls)
-	}
-}
-
-func TestParseToolCallsSupportsSiblingParametersOutsideParametersTag(t *testing.T) {
-	text := `<tool_calls>
-<tool_call>
-<tool_name>read</tool_name>
-<parameters>
-<filePath>/Users/lbcheng/cheng-lang/src/core/tooling/gate_main.cheng</filePath>
-</parameters>
-<limit>100</limit>
-</tool_call>
-</tool_calls>`
-	calls := ParseToolCalls(text, []string{"read"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Input["filePath"] != "/Users/lbcheng/cheng-lang/src/core/tooling/gate_main.cheng" {
-		t.Fatalf("expected filePath argument, got %#v", calls[0].Input)
-	}
-	if calls[0].Input["limit"] != float64(100) {
-		t.Fatalf("expected sibling limit argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsMalformedToolNameEqualsTag(t *testing.T) {
-	text := `<tool_calls>
-<tool_call>
-<tool_name="read</tool_name>
-<parameters>
-<filePath>/Users/lbcheng/cheng-lang/src/core/backend/line_map.cheng</filePath>
-<limit>50</limit>
-</parameters>
-</tool_call>
-</tool_calls>`
-	calls := ParseToolCalls(text, []string{"read"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "read" {
-		t.Fatalf("expected read tool name, got %#v", calls[0])
-	}
-	if calls[0].Input["filePath"] != "/Users/lbcheng/cheng-lang/src/core/backend/line_map.cheng" {
-		t.Fatalf("expected filePath argument, got %#v", calls[0].Input)
-	}
-	if calls[0].Input["limit"] != "50" {
-		t.Fatalf("expected limit argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsToolCallNameAttributeWithNamedParameters(t *testing.T) {
-	text := `<tool_calls>
-<tool_call name="read">
-<parameter name="filePath" string="true">/Users/lbcheng/cheng-lang</parameter>
-</tool_call>
-<tool_call name="glob">
-<parameter name="pattern" string="true">**/*.c</parameter>
-<parameter name="path" string="true">/Users/lbcheng/cheng-lang</parameter>
-</tool_call>
-</tool_calls>`
-	calls := ParseToolCalls(text, []string{"read", "glob"})
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 calls, got %#v", calls)
-	}
-	if calls[0].Name != "read" || calls[0].Input["filePath"] != "/Users/lbcheng/cheng-lang" {
-		t.Fatalf("expected read filePath argument, got %#v", calls[0])
-	}
-	if calls[1].Name != "glob" || calls[1].Input["pattern"] != "**/*.c" || calls[1].Input["path"] != "/Users/lbcheng/cheng-lang" {
-		t.Fatalf("expected glob pattern/path arguments, got %#v", calls[1])
-	}
-}
-
-func TestParseToolCallsKeepsCompleteToolCallBeforeTruncatedSibling(t *testing.T) {
-	text := `<tool_calls>
-<tool_call name="Read">
-<parameter name="file_path" string="true">/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md</parameter>
-<parameter name="limit" number="200">200</parameter>
-</tool_call>
-<tool_call name`
-	calls := ParseToolCalls(text, []string{"Read"})
-	if len(calls) != 1 {
-		t.Fatalf("expected one complete Read call before truncated sibling, got %#v", calls)
-	}
-	if calls[0].Name != "Read" {
-		t.Fatalf("expected Read, got %#v", calls[0])
-	}
-	if calls[0].Input["file_path"] != "/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md" {
-		t.Fatalf("unexpected input: %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsParsesNamedToolCallWithParamAliasAfterVisibleText(t *testing.T) {
-	text := `Design agent 完成但缺少上下文。
-
-<tool_calls>
-<tool_call name="Read">
-<param name="file_path">/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md</param>
-<param name="limit">200</param>
-</tool_call>
-</tool_calls>`
-	calls := ParseToolCalls(text, []string{"Read"})
-	if len(calls) != 1 {
-		t.Fatalf("expected one Read call, got %#v", calls)
-	}
-	if calls[0].Name != "Read" || calls[0].Input["file_path"] != "/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md" {
-		t.Fatalf("unexpected call %#v", calls[0])
-	}
-}
-
-func TestParseToolCallsInfersAgentFromOrphanParameterGroups(t *testing.T) {
-	text := `<parameter name="description">
-Assess Linkerless + DOD implementation
-</parameter>
-<parameter name="prompt">
-Search the cheng-lang codebase and report concrete file paths.
-</parameter>
-Explore
-
-<parameter name="description">
-Assess function-level parallelism
-</parameter>
-<parameter name="prompt">
-Check serial_task_plan and worker scheduling.
-</parameter>
-code-reviewer`
-	calls := ParseToolCalls(text, []string{"Agent"})
-	if len(calls) != 2 {
-		t.Fatalf("expected two Agent calls, got %#v", calls)
-	}
-	if calls[0].Name != "Agent" || calls[0].Input["description"] != "Assess Linkerless + DOD implementation" {
-		t.Fatalf("unexpected first call: %#v", calls[0])
-	}
-	if calls[0].Input["subagent_type"] != "Explore" {
-		t.Fatalf("expected plain subagent type to be captured, got %#v", calls[0].Input)
-	}
-	if calls[1].Input["subagent_type"] != "code-reviewer" {
-		t.Fatalf("expected second plain subagent type, got %#v", calls[1].Input)
-	}
-}
-
-func TestParseToolCallsSupportsDirectToolElementBody(t *testing.T) {
-	text := `<tool_calls><tool_call><bash><command>find /Users/lbcheng/cheng-lang -type f | head -100</command><description>List all files</description></bash></tool_call></tool_calls>`
-	calls := ParseToolCalls(text, []string{"bash"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "bash" {
-		t.Fatalf("expected bash tool, got %#v", calls[0])
-	}
-	if calls[0].Input["command"] != "find /Users/lbcheng/cheng-lang -type f | head -100" {
-		t.Fatalf("expected command argument, got %#v", calls[0].Input)
-	}
-	if calls[0].Input["description"] != "List all files" {
-		t.Fatalf("expected description argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsRepairsMissingToolCallCloseBeforeWrapperClose(t *testing.T) {
-	text := `<tool_calls>
-<tool_call>
-<tool_name>bash</tool_name>
-<parameters><command>pwd</command><description>Show current directory</description></parameters>
-</tool_calls></tool_calls>`
-	calls := ParseToolCalls(text, []string{"bash"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "bash" {
-		t.Fatalf("expected bash tool, got %#v", calls[0])
-	}
-	if calls[0].Input["command"] != "pwd" || calls[0].Input["description"] != "Show current directory" {
-		t.Fatalf("expected repaired bash arguments, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsLooseParameterClosingTag(t *testing.T) {
-	text := `<tool_calls>
-  <tool_call>
-    <tool_name>Bash</tool_name>
-    <parameters><description>Show diff</description><command><![CDATA[cd /Users/lbcheng/cheng-lang && git diff --stat HEAD]]></parameter></description>
-  </tool_call>
-</tool_calls>`
+func TestParseToolCallsSupportsDSMLShell(t *testing.T) {
+	text := `<|DSML|tool_calls><|DSML|invoke name="Bash"><|DSML|parameter name="command"><![CDATA[pwd]]></|DSML|parameter></|DSML|invoke></|DSML|tool_calls>`
 	calls := ParseToolCalls(text, []string{"Bash"})
 	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
+		t.Fatalf("expected 1 DSML call, got %#v", calls)
 	}
-	if calls[0].Name != "Bash" {
-		t.Fatalf("expected Bash tool, got %#v", calls[0])
-	}
-	if calls[0].Input["description"] != "Show diff" {
-		t.Fatalf("expected description argument, got %#v", calls[0].Input)
-	}
-	if calls[0].Input["command"] != "cd /Users/lbcheng/cheng-lang && git diff --stat HEAD" {
-		t.Fatalf("expected command argument, got %#v", calls[0].Input)
+	if calls[0].Name != "Bash" || calls[0].Input["command"] != "pwd" {
+		t.Fatalf("unexpected DSML parse result: %#v", calls[0])
 	}
 }
 
-func TestParseToolCallsRepairsMissingWrapperAngleAndLooseDirectToolElements(t *testing.T) {
-	text := `Let me inspect first.tool_calls>
-  <tool_call>
-    <read_mcp_resource>
-      <parameters><server>cheng</server><uri>skill://cheng语言/SKILL.md</uri></parameters>
-    </tool_call>
-  <tool_call>
-    <exec_command>
-      <parameters><cmd>find /Users/lbcheng/cheng-lang -type f | head -80</parameters><justification>Get overview</justification></parameters>
-    </tool_call>
-  <tool_call>
-    <exec_command>
-      <parameters><cmd>ls -la /Users/lbcheng/cheng-lang/</parameters><justification>List root</justification></parameters>
-    </tool_call>
-</tool_calls>`
-
-	calls := ParseToolCalls(text, []string{"read_mcp_resource", "exec_command"})
-	if len(calls) != 3 {
-		t.Fatalf("expected 3 calls, got %#v", calls)
-	}
-	if calls[0].Name != "exec_command" {
-		t.Fatalf("expected local skill resource read to be rewritten to exec_command, got %#v", calls[0])
-	}
-	cmd, _ := calls[0].Input["cmd"].(string)
-	if !strings.Contains(cmd, `sed -n '1,200p'`) || !strings.Contains(cmd, `/Users/lbcheng/.codex/skills/cheng语言/SKILL.md`) {
-		t.Fatalf("expected bounded local skill read command, got %#v", calls[0])
-	}
-	if calls[1].Name != "exec_command" || calls[1].Input["cmd"] != "find /Users/lbcheng/cheng-lang -type f | head -80" {
-		t.Fatalf("expected first exec_command args, got %#v", calls[1])
-	}
-	if calls[2].Name != "exec_command" || calls[2].Input["cmd"] != "ls -la /Users/lbcheng/cheng-lang/" {
-		t.Fatalf("expected second exec_command args, got %#v", calls[2])
-	}
-}
-
-func TestParseToolCallsRewritesLocalFileResourceReadToReadTool(t *testing.T) {
-	text := `<tool_calls>
-  <tool_call>
-    <tool_name>read_mcp_resource</tool_name>
-    <parameters>
-      <server>codex-dev</server>
-      <url>file:///Users/lbcheng/.codex/skills/cheng%E8%AF%AD%E8%A8%80/SKILL.md</url>
-      <limit>120</limit>
-    </parameters>
-  </tool_call>
-</tool_calls>`
-
-	calls := ParseToolCalls(text, []string{"read_mcp_resource", "Read", "exec_command"})
+func TestParseToolCallsSupportsDSMLShellWithCanonicalExampleInCDATA(t *testing.T) {
+	content := `<tool_calls><invoke name="demo"><parameter name="value">x</parameter></invoke></tool_calls>`
+	text := `<|DSML|tool_calls><|DSML|invoke name="Write"><|DSML|parameter name="file_path">notes.md</|DSML|parameter><|DSML|parameter name="content"><![CDATA[` + content + `]]></|DSML|parameter></|DSML|invoke></|DSML|tool_calls>`
+	calls := ParseToolCalls(text, []string{"Write"})
 	if len(calls) != 1 {
-		t.Fatalf("expected 1 rewritten call, got %#v", calls)
+		t.Fatalf("expected 1 DSML call with XML-looking CDATA, got %#v", calls)
 	}
-	if calls[0].Name != "Read" {
-		t.Fatalf("expected local Read call, got %#v", calls[0])
-	}
-	if calls[0].Input["file_path"] != "/Users/lbcheng/.codex/skills/cheng语言/SKILL.md" {
-		t.Fatalf("expected decoded local file path, got %#v", calls[0].Input)
-	}
-	if calls[0].Input["limit"] != "120" {
-		t.Fatalf("expected limit to be preserved, got %#v", calls[0].Input)
+	if calls[0].Name != "Write" || calls[0].Input["content"] != content {
+		t.Fatalf("unexpected DSML CDATA parse result: %#v", calls[0])
 	}
 }
 
-func TestParseToolCallsRewritesLocalFileResourceReadToExecCommand(t *testing.T) {
-	text := `<tool_calls>
-  <tool_call>
-    <tool_name>codex-dev.read_mcp_resource</tool_name>
-    <parameters>
-      <server>codex-dev</server>
-      <url>file:///Users/lbcheng/.codex/skills/cheng%E8%AF%AD%E8%A8%80/SKILL.md</url>
-    </parameters>
-  </tool_call>
-</tool_calls>`
-
-	calls := ParseToolCalls(text, []string{"read_mcp_resource", "exec_command"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 rewritten call, got %#v", calls)
-	}
-	if calls[0].Name != "exec_command" {
-		t.Fatalf("expected exec_command call, got %#v", calls[0])
-	}
-	cmd, _ := calls[0].Input["cmd"].(string)
-	if !strings.Contains(cmd, `sed -n '1,200p'`) || !strings.Contains(cmd, `/Users/lbcheng/.codex/skills/cheng语言/SKILL.md`) {
-		t.Fatalf("expected bounded local read command, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsRewritesCodexSkillResourceRead(t *testing.T) {
-	text := `<tool_calls>
-  <tool_call>
-    <tool_name>read_mcp_resource</tool_name>
-    <parameters>
-      <server>codex</server>
-      <uri>skill://cheng%E8%AF%AD%E8%A8%80/SKILL.md</uri>
-    </parameters>
-  </tool_call>
-</tool_calls>`
-
-	calls := ParseToolCalls(text, []string{"read_mcp_resource", "exec_command"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 rewritten call, got %#v", calls)
-	}
-	if calls[0].Name != "exec_command" {
-		t.Fatalf("expected exec_command call, got %#v", calls[0])
-	}
-	cmd, _ := calls[0].Input["cmd"].(string)
-	if !strings.Contains(cmd, `sed -n '1,200p'`) || !strings.Contains(cmd, `.codex/skills/cheng语言/SKILL.md`) {
-		t.Fatalf("expected bounded local skill read command, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsRewritesUnavailableReadFileToExecCommand(t *testing.T) {
-	text := `<tool_calls>
-  <tool_call>
-    <tool_name>read_file</tool_name>
-    <parameters>
-      <path>/Users/lbcheng/.codex/skills/cheng语言/SKILL.md</path>
-    </parameters>
-  </tool_call>
-</tool_calls>`
-
-	calls := ParseToolCalls(text, []string{"exec_command"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 rewritten call, got %#v", calls)
-	}
-	if calls[0].Name != "exec_command" {
-		t.Fatalf("expected exec_command call, got %#v", calls[0])
-	}
-	cmd, _ := calls[0].Input["cmd"].(string)
-	if !strings.Contains(cmd, `sed -n '1,200p'`) || !strings.Contains(cmd, `.codex/skills/cheng语言/SKILL.md`) {
-		t.Fatalf("expected bounded local read command, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsSelfClosingValueParameters(t *testing.T) {
-	text := `<tool_calls>
-<tool_call>
-<tool_call_name>read_mcp_resource</tool_call_name>
-<parameter name="server" value="cheng" />
-<parameter name="uri" value="skill://cheng语言/SKILL.md" />
-</tool_call>
-</tool_calls>`
-
-	calls := ParseToolCalls(text, []string{"read_mcp_resource"})
+func TestParseToolCallsPreservesSimpleCDATAInlineMarkupAsText(t *testing.T) {
+	text := `<tool_calls><invoke name="Write"><parameter name="description"><![CDATA[<b>urgent</b>]]></parameter></invoke></tool_calls>`
+	calls := ParseToolCalls(text, []string{"Write"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
 	}
-	if calls[0].Name != "read_mcp_resource" || calls[0].Input["server"] != "cheng" || calls[0].Input["uri"] != "skill://cheng语言/SKILL.md" {
-		t.Fatalf("expected self-closing value parameters, got %#v", calls[0])
+	got, ok := calls[0].Input["description"].(string)
+	if !ok {
+		t.Fatalf("expected description to remain a string, got %#v", calls[0].Input["description"])
+	}
+	if got != "<b>urgent</b>" {
+		t.Fatalf("expected inline markup CDATA to stay raw, got %q", got)
 	}
 }
 
-func TestParseToolCallsSupportsVisibleJSONToolArray(t *testing.T) {
-	text := `[
-  {
-    "tool": "Read",
-    "arguments": {
-      "file_path": "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng",
-      "offset": 345,
-      "limit": 65
-    }
-  },
-  {
-    "tool": "Read",
-    "arguments": {
-      "file_path": "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng",
-      "offset": 773,
-      "limit": 30
-    }
-  }
-]`
-	calls := ParseToolCalls(text, []string{"Read"})
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 visible JSON tool calls, got %#v", calls)
+func TestParseToolCallsTreatsUnclosedCDATAAsText(t *testing.T) {
+	text := `<tool_calls><invoke name="Write"><parameter name="content"><![CDATA[hello world</parameter></invoke></tool_calls>`
+	res := ParseToolCallsDetailed(text, []string{"Write"})
+	if len(res.Calls) != 1 {
+		t.Fatalf("expected unclosed CDATA to still parse via outer wrapper, got %#v", res.Calls)
 	}
-	if calls[0].Name != "Read" || calls[0].Input["file_path"] != "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng" {
-		t.Fatalf("expected first Read call with file_path, got %#v", calls[0])
-	}
-	if fmt.Sprint(calls[0].Input["offset"]) != "345" || fmt.Sprint(calls[0].Input["limit"]) != "65" {
-		t.Fatalf("expected numeric offset/limit to be preserved, got %#v", calls[0].Input)
-	}
-	if calls[1].Name != "Read" || fmt.Sprint(calls[1].Input["offset"]) != "773" || fmt.Sprint(calls[1].Input["limit"]) != "30" {
-		t.Fatalf("expected second Read call, got %#v", calls[1])
+	got, _ := res.Calls[0].Input["content"].(string)
+	if got != "hello world" {
+		t.Fatalf("expected recovered CDATA payload, got %q", got)
 	}
 }
 
-func TestParseToolCallsSplitsReadFilePathArray(t *testing.T) {
-	text := `{
-  "tool": "Read",
-  "arguments": {
-    "file_path": [
-      "/Users/lbcheng/cheng-lang/README.md",
-      "/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md"
-    ],
-    "offset": [1, 200],
-    "limit": 120
-  }
-}`
-	calls := ParseToolCalls(text, []string{"Read"})
-	if len(calls) != 2 {
-		t.Fatalf("expected Read file_path array to split into 2 calls, got %#v", calls)
-	}
-	if calls[0].Name != "Read" || calls[0].Input["file_path"] != "/Users/lbcheng/cheng-lang/README.md" {
-		t.Fatalf("expected first scalar Read call, got %#v", calls[0])
-	}
-	if calls[1].Input["file_path"] != "/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md" {
-		t.Fatalf("expected second scalar Read call, got %#v", calls[1])
-	}
-	if fmt.Sprint(calls[0].Input["offset"]) != "1" || fmt.Sprint(calls[1].Input["offset"]) != "200" {
-		t.Fatalf("expected per-file offsets, got %#v %#v", calls[0].Input, calls[1].Input)
-	}
-	if fmt.Sprint(calls[0].Input["limit"]) != "120" || fmt.Sprint(calls[1].Input["limit"]) != "120" {
-		t.Fatalf("expected shared limit on both calls, got %#v %#v", calls[0].Input, calls[1].Input)
-	}
-}
-
-func TestParseToolCallsDropsDegenerateBashCommand(t *testing.T) {
-	text := `{"tool":"Bash","arguments":{"command":">","description":"broken shell redirect"}}`
+func TestParseToolCallsNormalizesMixedDSMLAndCanonicalToolTags(t *testing.T) {
+	// Models commonly mix DSML wrapper tags with canonical inner tags.
+	// These should be normalized and parsed, not rejected.
+	text := `<|DSML|tool_calls><invoke name="Bash"><|DSML|parameter name="command">pwd</|DSML|parameter></invoke></|DSML|tool_calls>`
 	calls := ParseToolCalls(text, []string{"Bash"})
-	if len(calls) != 0 {
-		t.Fatalf("expected degenerate Bash command to be dropped, got %#v", calls)
-	}
-}
-
-func TestParseToolCallsSupportsVisibleJSONToolObjectSequence(t *testing.T) {
-	text := `{
-  "tool": "Read",
-  "arguments": {
-    "file_path": "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng",
-    "offset": 345,
-    "limit": 65
-  }
-}
-{
-  "tool": "Read",
-  "arguments": {
-    "file_path": "/Users/lbcheng/cheng-lang/src/core/backend/primary_object_plan.cheng",
-    "offset": 773,
-    "limit": 30
-  }
-}`
-	calls := ParseToolCalls(text, []string{"Read"})
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 visible JSON object tool calls, got %#v", calls)
-	}
-	if calls[0].Name != "Read" || fmt.Sprint(calls[0].Input["offset"]) != "345" || fmt.Sprint(calls[0].Input["limit"]) != "65" {
-		t.Fatalf("expected first Read call offset/limit, got %#v", calls[0])
-	}
-	if calls[1].Name != "Read" || fmt.Sprint(calls[1].Input["offset"]) != "773" || fmt.Sprint(calls[1].Input["limit"]) != "30" {
-		t.Fatalf("expected second Read call offset/limit, got %#v", calls[1])
-	}
-}
-
-func TestParseToolCallsInfersVisibleBashObjectSequence(t *testing.T) {
-	text := `{
-  "command": "cd /Users/lbcheng/cheng-lang && git log --oneline -20",
-  "description": "Check recent commits for related work"
-}
-{
-  "command": "cd /Users/lbcheng/cheng-lang && rg -n 'function_task|Schedule' src/core -l | head -40",
-  "description": "Check function-level parallelism status"
-}`
-	calls := ParseToolCalls(text, []string{"Bash", "Read"})
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 inferred Bash calls, got %#v", calls)
-	}
-	if calls[0].Name != "Bash" || calls[0].Input["command"] != "cd /Users/lbcheng/cheng-lang && git log --oneline -20" {
-		t.Fatalf("expected first inferred Bash call, got %#v", calls[0])
-	}
-	if calls[1].Name != "Bash" || calls[1].Input["description"] != "Check function-level parallelism status" {
-		t.Fatalf("expected second inferred Bash call, got %#v", calls[1])
-	}
-}
-
-func TestParseToolCallsDoesNotTreatArbitraryVisibleJSONAsToolCall(t *testing.T) {
-	text := `{
-  "description": "normal JSON payload",
-  "enabled": true
-}`
-	res := ParseToolCallsDetailed(text, []string{"Bash", "Read"})
-	if len(res.Calls) != 0 || res.SawToolCallSyntax {
-		t.Fatalf("expected arbitrary JSON to remain non-tool text, got %#v", res)
-	}
-}
-
-func TestParseToolCallsAnyToolWildcardAcceptsVisibleJSONName(t *testing.T) {
-	text := `{"tool":"Read","arguments":{"file_path":"/tmp/a.txt"}}`
-	calls := ParseToolCalls(text, []string{"__any_tool__"})
 	if len(calls) != 1 {
-		t.Fatalf("expected wildcard to accept parsed tool name, got %#v", calls)
+		t.Fatalf("expected mixed DSML/XML tool tags to be normalized and parsed, got %#v", calls)
 	}
-	if calls[0].Name != "Read" || calls[0].Input["file_path"] != "/tmp/a.txt" {
-		t.Fatalf("expected Read call through wildcard, got %#v", calls[0])
-	}
-}
-
-func TestExtractVisibleJSONToolCallsWithLeadingProse(t *testing.T) {
-	text := `Let me read the rest of the plan and start examining the codebase in parallel.
-{
-  "tool": "Read",
-  "arguments": {
-    "file_path": "/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md",
-    "offset": 200,
-    "limit": 200
-  }
-}
-{
-  "tool": "TaskCreate",
-  "arguments": {
-    "description": "评估实现进度",
-    "prompt": "检查 docs/cheng-plan-full.md"
-  }
-}`
-	prefix, calls, suffix, ok := ExtractVisibleJSONToolCalls(text, []string{"Read", "TaskCreate"})
-	if !ok {
-		t.Fatalf("expected visible JSON tool calls to be extracted")
-	}
-	if !strings.Contains(prefix, "Let me read the rest") || strings.TrimSpace(suffix) != "" {
-		t.Fatalf("unexpected prefix/suffix: prefix=%q suffix=%q", prefix, suffix)
-	}
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 extracted calls, got %#v", calls)
-	}
-	if calls[0].Name != "Read" || calls[0].Input["file_path"] != "/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md" {
-		t.Fatalf("expected first Read call, got %#v", calls[0])
-	}
-	if calls[1].Name != "TaskCreate" {
-		t.Fatalf("expected TaskCreate second call, got %#v", calls[1])
+	if calls[0].Name != "Bash" || calls[0].Input["command"] != "pwd" {
+		t.Fatalf("unexpected mixed DSML parse result: %#v", calls[0])
 	}
 }
 
-func TestExtractVisibleJSONToolCallsRepairsLooseBashCommandQuotes(t *testing.T) {
-	text := `Let me start by reading the full plan document and surveying the codebase structure in parallel.
-{
-  "tool": "Read",
-  "arguments": {
-    "file_path": "/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md",
-    "limit": 200
-  }
-}
-{
-  "tool": "Bash",
-  "arguments": {
-    "command": "cd /Users/lbcheng/cheng-lang && git ls-files | head -80 && echo "---" && git ls-files | wc -l",
-    "description": "List tracked files and count"
-  }
-}
-{
-  "tool": "Bash",
-  "arguments": {
-    "command": "cd /Users/lbcheng/cheng-lang && git ls-files "*.cheng" | head -60 && echo "COUNT=$(git ls-files "*.cheng" | wc -l)"",
-    "description": "List .cheng source files"
-  }
-}`
-	prefix, calls, suffix, ok := ExtractVisibleJSONToolCalls(text, []string{"Read", "Bash"})
-	if !ok {
-		t.Fatalf("expected loose visible JSON tool calls to be extracted")
-	}
-	if !strings.Contains(prefix, "Let me start") || strings.TrimSpace(suffix) != "" {
-		t.Fatalf("unexpected prefix/suffix: prefix=%q suffix=%q", prefix, suffix)
-	}
-	if len(calls) != 3 {
-		t.Fatalf("expected 3 extracted calls, got %#v", calls)
-	}
-	if calls[0].Name != "Read" || calls[1].Name != "Bash" || calls[2].Name != "Bash" {
-		t.Fatalf("unexpected call names: %#v", calls)
-	}
-	if !strings.Contains(fmt.Sprint(calls[1].Input["command"]), `echo "---"`) {
-		t.Fatalf("expected first Bash command quotes preserved, got %#v", calls[1])
-	}
-	if !strings.Contains(fmt.Sprint(calls[2].Input["command"]), `COUNT=$(`) {
-		t.Fatalf("expected second Bash command preserved, got %#v", calls[2])
-	}
-}
-
-func TestExtractVisibleJSONToolCallsIgnoresFencedExamples(t *testing.T) {
-	text := "Here is an example:\n```json\n{\"tool\":\"Read\",\"arguments\":{\"file_path\":\"/tmp/a\"}}\n```\nDo not execute it."
-	_, calls, _, ok := ExtractVisibleJSONToolCalls(text, []string{"Read"})
-	if ok || len(calls) != 0 {
-		t.Fatalf("expected fenced JSON tool example to stay text, got ok=%v calls=%#v", ok, calls)
-	}
-}
-
-func TestParseToolCallsIgnoresVisibleJSONToolArrayInsideFence(t *testing.T) {
-	text := "```json\n[{\"tool\":\"Read\",\"arguments\":{\"file_path\":\"/tmp/a\"}}]\n```"
-	calls := ParseToolCalls(text, []string{"Read"})
-	if len(calls) != 0 {
-		t.Fatalf("expected fenced JSON tool example to stay text, got %#v", calls)
-	}
-}
-
-func TestParseToolCallsIgnoresPlainJSONArray(t *testing.T) {
-	text := `[{"name":"not a tool","value":1}]`
-	calls := ParseToolCalls(text, []string{"Read"})
-	if len(calls) != 0 {
-		t.Fatalf("expected ordinary JSON array to stay text, got %#v", calls)
-	}
-}
-
-func TestParseToolCallsRepairsDuplicateToolCallNameOpenWithSelfClosingParams(t *testing.T) {
-	text := `<tool_calls>
-<tool_call>
-<tool_call_name>read_mcp_resource</tool_call_name>
-<tool_call_name>
-<parameter name="server" value="filesystem" />
-<parameter name="uri" value="file:///Users/lbcheng/.codex/skills/cheng%E8%AF%AD%E8%A8%80/SKILL.md" />
-</parameter>
-</tool_call>
-</tool_calls>`
-
-	calls := ParseToolCalls(text, []string{"read_mcp_resource", "exec_command"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 rewritten call, got %#v", calls)
-	}
-	if calls[0].Name != "exec_command" {
-		t.Fatalf("expected exec_command call, got %#v", calls[0])
-	}
-	cmd, _ := calls[0].Input["cmd"].(string)
-	if !strings.Contains(cmd, `sed -n '1,200p'`) || !strings.Contains(cmd, `.codex/skills/cheng语言/SKILL.md`) {
-		t.Fatalf("expected bounded local read command, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsMultilineCDATAAndRepeatedXMLTags(t *testing.T) {
-	text := `<tool_call><tool_name>write_file</tool_name><parameters><path>script.sh</path><content><![CDATA[#!/bin/bash
+func TestParseToolCallsSupportsStandaloneToolWithMultilineCDATAAndRepeatedXMLTags(t *testing.T) {
+	text := `<tool_calls><invoke name="write_file"><parameter name="path">script.sh</parameter><parameter name="content"><![CDATA[#!/bin/bash
 echo "hello"
-]]></content><item>first</item><item>second</item></parameters></tool_call>`
+]]></parameter><parameter name="item">first</parameter><parameter name="item">second</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"write_file"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -795,8 +117,34 @@ echo "hello"
 	}
 }
 
-func TestParseToolCallsSupportsCanonicalXMLParametersJSON(t *testing.T) {
-	text := `<tool_call><tool_name>get_weather</tool_name><parameters>{"city":"beijing","unit":"c"}</parameters></tool_call>`
+func TestParseToolCallsKeepsToolSyntaxInsideCDATAAsParameterText(t *testing.T) {
+	payload := strings.Join([]string{
+		"# Release notes",
+		"",
+		"```xml",
+		"<tool_calls>",
+		"  <invoke name=\"demo\">",
+		"    <parameter name=\"value\">x</parameter>",
+		"  </invoke>",
+		"</tool_calls>",
+		"```",
+	}, "\n")
+	text := `<tool_calls><invoke name="Write"><parameter name="content"><![CDATA[` + payload + `]]></parameter><parameter name="file_path">DS2API-4.0-Release-Notes.md</parameter></invoke></tool_calls>`
+	calls := ParseToolCalls(text, []string{"Write"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	content, _ := calls[0].Input["content"].(string)
+	if content != payload {
+		t.Fatalf("expected CDATA payload with nested tool syntax to survive intact, got %q", content)
+	}
+	if calls[0].Input["file_path"] != "DS2API-4.0-Release-Notes.md" {
+		t.Fatalf("expected file_path parameter, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsSupportsInvokeParameters(t *testing.T) {
+	text := `<tool_calls><invoke name="get_weather"><parameter name="city">beijing</parameter><parameter name="unit">c</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"get_weather"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -809,8 +157,116 @@ func TestParseToolCallsSupportsCanonicalXMLParametersJSON(t *testing.T) {
 	}
 }
 
-func TestParseToolCallsPreservesRawMalformedXMLParameters(t *testing.T) {
-	text := `<tool_call><tool_name>execute_command</tool_name><parameters>cd /root && git status</parameters></tool_call>`
+func TestParseToolCallsSupportsJSONScalarParameters(t *testing.T) {
+	text := `<tool_calls><invoke name="configure"><parameter name="count">123</parameter><parameter name="max_tokens"><![CDATA[256]]></parameter><parameter name="enabled">true</parameter></invoke></tool_calls>`
+	calls := ParseToolCalls(text, []string{"configure"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %#v", calls)
+	}
+	if got, ok := calls[0].Input["count"].(float64); !ok || got != 123 {
+		t.Fatalf("expected numeric count, got %#v", calls[0].Input["count"])
+	}
+	if got, ok := calls[0].Input["max_tokens"].(float64); !ok || got != 256 {
+		t.Fatalf("expected numeric max_tokens, got %#v", calls[0].Input["max_tokens"])
+	}
+	if got, ok := calls[0].Input["enabled"].(bool); !ok || !got {
+		t.Fatalf("expected boolean enabled, got %#v", calls[0].Input["enabled"])
+	}
+}
+
+func TestParseToolCallsTreatsItemOnlyParameterBodyAsArray(t *testing.T) {
+	text := strings.Join([]string{
+		`<|DSML|tool_calls>`,
+		`<|DSML|invoke name="AskUserQuestion">`,
+		`<|DSML|parameter name="questions">`,
+		`<item>`,
+		`<question><![CDATA[What would you like to do next?]]></question>`,
+		`<header><![CDATA[Next step]]></header>`,
+		`<options>`,
+		`<item><label><![CDATA[Run tests]]></label><description><![CDATA[Run the test suite]]></description></item>`,
+		`<item><label><![CDATA[Other task]]></label><description><![CDATA[Something else entirely]]></description></item>`,
+		`</options>`,
+		`<multiSelect>false</multiSelect>`,
+		`</item>`,
+		`</|DSML|parameter>`,
+		`</|DSML|invoke>`,
+		`</|DSML|tool_calls>`,
+	}, "\n")
+	calls := ParseToolCalls(text, []string{"AskUserQuestion"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one AskUserQuestion call, got %#v", calls)
+	}
+	questions, ok := calls[0].Input["questions"].([]any)
+	if !ok || len(questions) != 1 {
+		t.Fatalf("expected questions to parse as array, got %#v", calls[0].Input["questions"])
+	}
+	first, ok := questions[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first question object, got %#v", questions[0])
+	}
+	if first["question"] != "What would you like to do next?" || first["header"] != "Next step" || first["multiSelect"] != false {
+		t.Fatalf("unexpected question payload: %#v", first)
+	}
+	options, ok := first["options"].([]any)
+	if !ok || len(options) != 2 {
+		t.Fatalf("expected options to parse as array, got %#v", first["options"])
+	}
+}
+
+func TestParseToolCallsTreatsCDATAItemOnlyBodyAsArray(t *testing.T) {
+	todos := `<br>  <item><br>    <activeForm>Testing EnterWorktree tool</activeForm><br>    <content>Test EnterWorktree tool</content><br>    <status>in_progress</status><br>  </item><br>  <item><br>    <activeForm>Testing TodoWrite tool</activeForm><br>    <content>Test TodoWrite tool</content><br>    <status>completed</status><br>  </item><br>`
+	text := `<|DSML|tool_calls><|DSML|invoke name="TodoWrite"><|DSML|parameter name="todos"><![CDATA[` + todos + `]]></|DSML|parameter></|DSML|invoke></|DSML|tool_calls>`
+	calls := ParseToolCalls(text, []string{"TodoWrite"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one TodoWrite call, got %#v", calls)
+	}
+	items, ok := calls[0].Input["todos"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("expected todos CDATA item body to parse as array, got %#v", calls[0].Input["todos"])
+	}
+	first, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first todo object, got %#v", items[0])
+	}
+	if first["activeForm"] != "Testing EnterWorktree tool" || first["content"] != "Test EnterWorktree tool" || first["status"] != "in_progress" {
+		t.Fatalf("unexpected first todo: %#v", first)
+	}
+}
+
+func TestParseToolCallsTreatsSingleItemCDATAAsArray(t *testing.T) {
+	text := `<tool_calls><invoke name="TodoWrite"><parameter name="todos"><![CDATA[<item>one</item>]]></parameter></invoke></tool_calls>`
+	calls := ParseToolCalls(text, []string{"TodoWrite"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one TodoWrite call, got %#v", calls)
+	}
+	items, ok := calls[0].Input["todos"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected single-item CDATA body to parse as array, got %#v", calls[0].Input["todos"])
+	}
+	if got, ok := items[0].(string); !ok || got != "one" {
+		t.Fatalf("expected single item value to stay intact, got %#v", items[0])
+	}
+}
+
+func TestParseToolCallsTreatsCDATAObjectFragmentAsObject(t *testing.T) {
+	payload := `<question><![CDATA[Pick one]]></question><options><item><label><![CDATA[A]]></label></item><item><label><![CDATA[B]]></label></item></options>`
+	text := `<tool_calls><invoke name="AskUserQuestion"><parameter name="questions"><![CDATA[` + payload + `]]></parameter></invoke></tool_calls>`
+	calls := ParseToolCalls(text, []string{"AskUserQuestion"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one AskUserQuestion call, got %#v", calls)
+	}
+	question, ok := calls[0].Input["questions"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected CDATA XML object fragment to parse as object, got %#v", calls[0].Input["questions"])
+	}
+	options, ok := question["options"].([]any)
+	if question["question"] != "Pick one" || !ok || len(options) != 2 {
+		t.Fatalf("unexpected parsed question: %#v", question)
+	}
+}
+
+func TestParseToolCallsPreservesRawMalformedParams(t *testing.T) {
+	text := `<tool_calls><invoke name="execute_command"><parameter name="command">cd /root && git status</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"execute_command"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -818,17 +274,17 @@ func TestParseToolCallsPreservesRawMalformedXMLParameters(t *testing.T) {
 	if calls[0].Name != "execute_command" {
 		t.Fatalf("expected tool name execute_command, got %q", calls[0].Name)
 	}
-	raw, ok := calls[0].Input["_raw"].(string)
+	raw, ok := calls[0].Input["command"].(string)
 	if !ok {
-		t.Fatalf("expected raw argument tracking, got %#v", calls[0].Input)
+		t.Fatalf("expected raw command tracking, got %#v", calls[0].Input)
 	}
 	if raw != "cd /root && git status" {
 		t.Fatalf("expected raw arguments to be preserved, got %q", raw)
 	}
 }
 
-func TestParseToolCallsSupportsXMLParametersJSONWithAmpersandCommand(t *testing.T) {
-	text := `<tool_calls><tool_call><tool_name>execute_command</tool_name><parameters>{"command":"sshpass -p 'xxx' ssh -o StrictHostKeyChecking=no -p 1111 root@111.111.111.111 'cd /root && git clone https://github.com/ericc-ch/copilot-api.git'","cwd":null,"timeout":null}</parameters></tool_call></tool_calls>`
+func TestParseToolCallsSupportsParamsJSONWithAmpersandCommand(t *testing.T) {
+	text := `<tool_calls><invoke name="execute_command"><parameter name="command">sshpass -p 'xxx' ssh -o StrictHostKeyChecking=no -p 1111 root@111.111.111.111 'cd /root && git clone https://github.com/ericc-ch/copilot-api.git'</parameter><parameter name="cwd"></parameter><parameter name="timeout"></parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"execute_command"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -842,8 +298,8 @@ func TestParseToolCallsSupportsXMLParametersJSONWithAmpersandCommand(t *testing.
 	}
 }
 
-func TestParseToolCallsDoesNotTreatParameterNameTagAsToolName(t *testing.T) {
-	text := `<tool_call><tool name="execute_command"><parameters><name>file.txt</name><command>pwd</command></parameters></tool></tool_call>`
+func TestParseToolCallsDoesNotTreatParamsNameTagAsToolName(t *testing.T) {
+	text := `<tool_calls><invoke name="execute_command"><parameter name="tool_name">file.txt</parameter><parameter name="command">pwd</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"execute_command"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -851,13 +307,13 @@ func TestParseToolCallsDoesNotTreatParameterNameTagAsToolName(t *testing.T) {
 	if calls[0].Name != "execute_command" {
 		t.Fatalf("expected tool name execute_command, got %q", calls[0].Name)
 	}
-	if calls[0].Input["name"] != "file.txt" {
+	if calls[0].Input["tool_name"] != "file.txt" {
 		t.Fatalf("expected parameter name preserved, got %#v", calls[0].Input)
 	}
 }
 
-func TestParseToolCallsDetailedMarksXMLToolCallSyntax(t *testing.T) {
-	text := `<tool_call><tool_name>Bash</tool_name><parameters><command>pwd</command></parameters></tool_call>`
+func TestParseToolCallsDetailedMarksToolCallsSyntax(t *testing.T) {
+	text := `<tool_calls><invoke name="Bash"><parameter name="command">pwd</parameter></invoke></tool_calls>`
 	res := ParseToolCallsDetailed(text, []string{"bash"})
 	if !res.SawToolCallSyntax {
 		t.Fatalf("expected SawToolCallSyntax=true, got %#v", res)
@@ -867,40 +323,8 @@ func TestParseToolCallsDetailedMarksXMLToolCallSyntax(t *testing.T) {
 	}
 }
 
-func TestParseToolCallsDetailedMarksUpperCamelToolCallSyntax(t *testing.T) {
-	text := `<ToolCall id="toolu_1"><command>pwd</command></ToolCall>`
-	res := ParseToolCallsDetailed(text, []string{"Bash"})
-	if !res.SawToolCallSyntax {
-		t.Fatalf("expected SawToolCallSyntax=true for ToolCall wrapper, got %#v", res)
-	}
-	if len(res.Calls) != 0 {
-		t.Fatalf("expected nonstandard ToolCall wrapper not to parse silently, got %#v", res.Calls)
-	}
-}
-
-func TestParseToolCallsSupportsUpperCamelToolCallJSONBody(t *testing.T) {
-	text := `先提交，再启动 4 个并行代理。
-
-<ToolCall id="toolu_1">
-{"command":"cd /tmp && git status","description":"Check repository status"}
-</ToolCall>`
-	res := ParseToolCallsDetailed(text, []string{"Bash", "Agent"})
-	if !res.SawToolCallSyntax {
-		t.Fatalf("expected SawToolCallSyntax=true for ToolCall wrapper, got %#v", res)
-	}
-	if len(res.Calls) != 1 {
-		t.Fatalf("expected one inferred Bash call, got %#v", res.Calls)
-	}
-	if res.Calls[0].Name != "Bash" {
-		t.Fatalf("expected inferred Bash call, got %#v", res.Calls[0])
-	}
-	if res.Calls[0].Input["command"] != "cd /tmp && git status" {
-		t.Fatalf("expected command argument, got %#v", res.Calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsClaudeXMLJSONToolCall(t *testing.T) {
-	text := `<tool_call>{"tool":"Bash","params":{"command":"pwd","description":"show cwd"}}</tool_call>`
+func TestParseToolCallsSupportsInlineJSONToolObject(t *testing.T) {
+	text := `<tool_calls><invoke name="Bash">{"input":{"command":"pwd","description":"show cwd"}}</invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"bash"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -910,288 +334,69 @@ func TestParseToolCallsSupportsClaudeXMLJSONToolCall(t *testing.T) {
 	}
 	if calls[0].Input["command"] != "pwd" {
 		t.Fatalf("expected command argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsFunctionBodyInNestedToolCalls(t *testing.T) {
-	text := `<tool_calls>
-  <tool_calls>
-    <tool_call id="agent_linkerless_dod">Agent({"description":"Linkerless + DOD + hotspots","subagent_type":"Explore","prompt":"Search for direct_writer and report evidence."})</tool_call>
-  </tool_calls>
-</tool_calls>`
-	calls := ParseToolCalls(text, []string{"Agent"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "Agent" {
-		t.Fatalf("expected Agent call, got %#v", calls[0])
-	}
-	if calls[0].Input["description"] != "Linkerless + DOD + hotspots" {
-		t.Fatalf("expected description argument, got %#v", calls[0].Input)
-	}
-	if calls[0].Input["subagent_type"] != "Explore" {
-		t.Fatalf("expected subagent_type argument, got %#v", calls[0].Input)
-	}
-	if calls[0].Input["prompt"] != "Search for direct_writer and report evidence." {
-		t.Fatalf("expected prompt argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsFunctionCallTagStyle(t *testing.T) {
-	text := `<function_call>Bash</function_call><function parameter name="command">ls -la</function parameter><function parameter name="description">list</function parameter>`
-	calls := ParseToolCalls(text, []string{"bash"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "Bash" {
-		t.Fatalf("expected original tool name Bash, got %q", calls[0].Name)
-	}
-	if calls[0].Input["command"] != "ls -la" {
-		t.Fatalf("expected command argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsAntmlFunctionCallStyle(t *testing.T) {
-	text := `<antml:function_calls><antml:function_call name="Bash">{"command":"pwd","description":"x"}</antml:function_call></antml:function_calls>`
-	calls := ParseToolCalls(text, []string{"bash"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "Bash" {
-		t.Fatalf("expected original tool name Bash, got %q", calls[0].Name)
-	}
-	if calls[0].Input["command"] != "pwd" {
-		t.Fatalf("expected command argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsAntmlArgumentStyle(t *testing.T) {
-	text := `<antml:function_calls><antml:function_call id="1" name="Bash"><antml:argument name="command">pwd</antml:argument><antml:argument name="description">x</antml:argument></antml:function_call></antml:function_calls>`
-	calls := ParseToolCalls(text, []string{"bash"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "Bash" {
-		t.Fatalf("expected original tool name Bash, got %q", calls[0].Name)
-	}
-	if calls[0].Input["command"] != "pwd" {
-		t.Fatalf("expected command argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsInvokeFunctionCallStyle(t *testing.T) {
-	text := `<function_calls><invoke name="Bash"><parameter name="command">pwd</parameter><parameter name="description">d</parameter></invoke></function_calls>`
-	calls := ParseToolCalls(text, []string{"bash"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "Bash" {
-		t.Fatalf("expected original tool name Bash, got %q", calls[0].Name)
-	}
-	if calls[0].Input["command"] != "pwd" {
-		t.Fatalf("expected command argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsInvokeParameterTypeAttributes(t *testing.T) {
-	text := `<tool_calls>
-<invoke name="task">
-<parameter name="description" string="true">审查cheng语言代码结构</parameter>
-<parameter name="prompt" string="true">探索 /Users/lbcheng/cheng-lang 项目的完整目录结构。</parameter>
-<parameter name="subagent_type" string="true">explore</parameter>
-<parameter name="max_retries" string="false">2</parameter>
-</invoke>
-</tool_calls>`
-	calls := ParseToolCalls(text, []string{"task"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 task call, got %#v", calls)
-	}
-	if calls[0].Name != "task" {
-		t.Fatalf("expected task tool name, got %q", calls[0].Name)
-	}
-	for _, key := range []string{"description", "prompt", "subagent_type", "max_retries"} {
-		if _, ok := calls[0].Input[key]; !ok {
-			t.Fatalf("expected parameter %q in parsed input, got %#v", key, calls[0].Input)
-		}
-	}
-
-	schemas := ParameterSchemas{
-		"task": {
-			"type": "object",
-			"properties": map[string]any{
-				"description":   map[string]any{"type": "string"},
-				"prompt":        map[string]any{"type": "string"},
-				"subagent_type": map[string]any{"type": "string"},
-				"max_retries":   map[string]any{"type": "integer"},
-			},
-			"required": []any{"description", "prompt", "subagent_type"},
-		},
-	}
-	normalized := NormalizeCallsForSchemasWithMeta(calls, schemas, true)
-	if len(normalized) != 1 {
-		t.Fatalf("expected normalized task call, got %#v", normalized)
-	}
-	if normalized[0].Input["max_retries"] != int64(2) {
-		t.Fatalf("expected max_retries to normalize to int64(2), got %#v", normalized[0].Input["max_retries"])
-	}
-}
-
-func TestParseToolCallsSupportsLooseMarkupAttributeQuotes(t *testing.T) {
-	text := `<tool_calls>
-<invoke name='task'>
-<parameter name=description string=true>审查cheng语言代码结构</parameter>
-<parameter name='prompt' string='true'>探索 /Users/lbcheng/cheng-lang 项目的完整目录结构。</parameter>
-<parameter name=subagent_type string=true>explore</parameter>
-</invoke>
-</tool_calls>`
-	calls := ParseToolCalls(text, []string{"task"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 task call, got %#v", calls)
-	}
-	if calls[0].Input["description"] != "审查cheng语言代码结构" {
-		t.Fatalf("expected description from unquoted attribute, got %#v", calls[0].Input)
-	}
-	if calls[0].Input["prompt"] != "探索 /Users/lbcheng/cheng-lang 项目的完整目录结构。" {
-		t.Fatalf("expected prompt from single-quoted attribute, got %#v", calls[0].Input)
-	}
-	if calls[0].Input["subagent_type"] != "explore" {
-		t.Fatalf("expected subagent_type from unquoted attribute, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsToolUseFunctionParameterStyle(t *testing.T) {
-	text := `<tool_use><function name='search_web'><parameter name=query type=string>test</parameter></function></tool_use>`
-	calls := ParseToolCalls(text, []string{"search_web"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "search_web" {
-		t.Fatalf("expected canonical tool name search_web, got %q", calls[0].Name)
-	}
-	if calls[0].Input["query"] != "test" {
-		t.Fatalf("expected query argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsToolUseNameParametersStyle(t *testing.T) {
-	text := `<tool_use><tool_name>write_file</tool_name><parameters>{"path":"/tmp/a.txt","content":"abc"}</parameters></tool_use>`
-	calls := ParseToolCalls(text, []string{"write_file"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "write_file" {
-		t.Fatalf("expected tool name write_file, got %q", calls[0].Name)
-	}
-	if calls[0].Input["path"] != "/tmp/a.txt" {
-		t.Fatalf("expected path argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsToolUseFunctionNameParametersStyle(t *testing.T) {
-	text := `<tool_use><function_name>write_file</function_name><parameters>{"path":"/tmp/b.txt","content":"xyz"}</parameters></tool_use>`
-	calls := ParseToolCalls(text, []string{"write_file"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "write_file" {
-		t.Fatalf("expected tool name write_file, got %q", calls[0].Name)
-	}
-	if calls[0].Input["content"] != "xyz" {
-		t.Fatalf("expected content argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsToolUseToolNameBodyStyle(t *testing.T) {
-	text := `<tool_use><tool_name>write_file</tool_name><path>/tmp/c.txt</path><content>hello</content></tool_use>`
-	calls := ParseToolCalls(text, []string{"write_file"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "write_file" {
-		t.Fatalf("expected tool name write_file, got %q", calls[0].Name)
-	}
-	if calls[0].Input["path"] != "/tmp/c.txt" {
-		t.Fatalf("expected path argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsNestedToolTagStyle(t *testing.T) {
-	text := `<tool_call><tool name="Bash"><command>pwd</command><description>show cwd</description></tool></tool_call>`
-	calls := ParseToolCalls(text, []string{"bash"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "Bash" {
-		t.Fatalf("expected original tool name Bash, got %q", calls[0].Name)
-	}
-	if calls[0].Input["command"] != "pwd" {
-		t.Fatalf("expected command argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsDirectToolElementsInMalformedWrapper(t *testing.T) {
-	text := `<tool_calls>
-  <tool_call>
-    <tool name="Read">
-      <parameter name="file_path" type="string">/Users/lbcheng/cheng-lang/README.md</parameter>
-    </tool>
-    <parameter name="limit" type="number">200</parameter>
-  </tool>
-  <tool name="Read">
-    <parameter name="file_path" type="string">/Users/lbcheng/cheng-lang/task_plan.md</parameter>
-    <parameter name="limit" type="number">200</parameter>
-  </tool>
-</tool_calls>`
-	calls := ParseToolCalls(text, []string{"Read"})
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 direct tool calls, got %#v", calls)
-	}
-	if calls[0].Name != "Read" || calls[0].Input["file_path"] != "/Users/lbcheng/cheng-lang/README.md" {
-		t.Fatalf("unexpected first call: %#v", calls[0])
-	}
-	if calls[1].Name != "Read" || calls[1].Input["file_path"] != "/Users/lbcheng/cheng-lang/task_plan.md" || calls[1].Input["limit"] != float64(200) {
-		t.Fatalf("unexpected second call: %#v", calls[1])
-	}
-}
-
-func TestParseToolCallsSupportsAntmlFunctionAttributeWithParametersTag(t *testing.T) {
-	text := `<antml:function_calls><antml:function_call id="x" function="Bash"><antml:parameters>{"command":"pwd"}</antml:parameters></antml:function_call></antml:function_calls>`
-	calls := ParseToolCalls(text, []string{"bash"})
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %#v", calls)
-	}
-	if calls[0].Name != "Bash" {
-		t.Fatalf("expected original tool name Bash, got %q", calls[0].Name)
-	}
-	if calls[0].Input["command"] != "pwd" {
-		t.Fatalf("expected command argument, got %#v", calls[0].Input)
-	}
-}
-
-func TestParseToolCallsSupportsMultipleAntmlFunctionCalls(t *testing.T) {
-	text := `<antml:function_calls><antml:function_call id="1" function="Bash"><antml:parameters>{"command":"pwd"}</antml:parameters></antml:function_call><antml:function_call id="2" function="Read"><antml:parameters>{"file_path":"README.md"}</antml:parameters></antml:function_call></antml:function_calls>`
-	calls := ParseToolCalls(text, []string{"bash", "read"})
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 calls, got %#v", calls)
-	}
-	if calls[0].Name != "Bash" || calls[1].Name != "Read" {
-		t.Fatalf("expected original names [Bash Read], got %#v", calls)
 	}
 }
 
 func TestParseToolCallsDoesNotAcceptMismatchedMarkupTags(t *testing.T) {
-	text := `<tool_call><name>read_file</function><arguments>{"path":"README.md"}</arguments></tool_call>`
+	text := `<tool_calls><invoke name="read_file"><parameter name="path">README.md</function></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"read_file"})
 	if len(calls) != 0 {
 		t.Fatalf("expected mismatched tags to be rejected, got %#v", calls)
 	}
 }
 
-func TestParseToolCallsDoesNotTreatParametersFunctionNameAsToolName(t *testing.T) {
-	text := `<tool_call><parameters><function_name>data_only</function_name><path>README.md</path></parameters></tool_call>`
+func TestParseToolCallsDoesNotTreatNameInsideParamsAsToolName(t *testing.T) {
+	text := `<tool_calls><invoke><parameter name="path">README.md</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"read_file"})
 	if len(calls) != 0 {
-		t.Fatalf("expected no tool call when function_name appears only under parameters, got %#v", calls)
+		t.Fatalf("expected no tool call when name appears only under params, got %#v", calls)
+	}
+}
+
+func TestParseToolCallsRejectsLegacyToolsWrapper(t *testing.T) {
+	text := `<tools><tool_call><tool_name>read_file</tool_name><param>{"path":"README.md"}</param></tool_call></tools>`
+	calls := ParseToolCalls(text, []string{"read_file"})
+	if len(calls) != 0 {
+		t.Fatalf("expected legacy tools wrapper to be rejected, got %#v", calls)
+	}
+}
+
+func TestParseToolCallsRejectsBareInvokeWithoutToolCallsWrapper(t *testing.T) {
+	text := `<invoke name="read_file"><parameter name="path">README.md</parameter></invoke>`
+	res := ParseToolCallsDetailed(text, []string{"read_file"})
+	if len(res.Calls) != 0 {
+		t.Fatalf("expected bare invoke to be rejected, got %#v", res.Calls)
+	}
+	if res.SawToolCallSyntax {
+		t.Fatalf("expected bare invoke to no longer count as supported syntax, got %#v", res)
+	}
+}
+
+func TestParseToolCallsRepairsMissingOpeningToolCallsWrapperWhenClosingTagExists(t *testing.T) {
+	text := `Before tool call
+<invoke name="read_file"><parameter name="path">README.md</parameter></invoke>
+</tool_calls>
+after`
+	res := ParseToolCallsDetailed(text, []string{"read_file"})
+	if len(res.Calls) != 1 {
+		t.Fatalf("expected repaired wrapper to parse exactly one call, got %#v", res)
+	}
+	if res.Calls[0].Name != "read_file" {
+		t.Fatalf("expected repaired wrapper to preserve tool name, got %#v", res.Calls[0])
+	}
+	if got, _ := res.Calls[0].Input["path"].(string); got != "README.md" {
+		t.Fatalf("expected repaired wrapper to preserve args, got %#v", res.Calls[0].Input)
+	}
+	if !res.SawToolCallSyntax {
+		t.Fatalf("expected repaired wrapper to mark tool syntax seen, got %#v", res)
+	}
+}
+
+func TestParseToolCallsRejectsLegacyCanonicalBody(t *testing.T) {
+	text := `<tool_calls><invoke name="read_file"><tool_name>read_file</tool_name><param>{"path":"README.md"}</param></invoke></tool_calls>`
+	calls := ParseToolCalls(text, []string{"read_file"})
+	if len(calls) != 0 {
+		t.Fatalf("expected legacy canonical body to be rejected, got %#v", calls)
 	}
 }
 
@@ -1333,7 +538,7 @@ func TestRepairLooseJSONWithNestedObjects(t *testing.T) {
 }
 
 func TestParseToolCallsUnescapesHTMLEntityArguments(t *testing.T) {
-	text := `<tool_call><tool_name>Bash</tool_name><parameters>{"command":"echo a &gt; out.txt"}</parameters></tool_call>`
+	text := `<tool_calls><invoke name="Bash"><parameter name="command">echo a &gt; out.txt</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"bash"})
 	if len(calls) != 1 {
 		t.Fatalf("expected one call, got %#v", calls)
@@ -1345,7 +550,7 @@ func TestParseToolCallsUnescapesHTMLEntityArguments(t *testing.T) {
 }
 
 func TestParseToolCallsIgnoresXMLInsideFencedCodeBlock(t *testing.T) {
-	text := "Here is an example:\n```xml\n<tool_call><tool_name>read_file</tool_name><parameters>{\"path\":\"README.md\"}</parameters></tool_call>\n```\nDo not execute it."
+	text := "Here is an example:\n```xml\n<tool_calls><invoke name=\"read_file\"><parameter name=\"path\">README.md</parameter></invoke></tool_calls>\n```\nDo not execute it."
 	res := ParseToolCallsDetailed(text, []string{"read_file"})
 	if len(res.Calls) != 0 {
 		t.Fatalf("expected no parsed calls for fenced example, got %#v", res.Calls)
@@ -1353,7 +558,7 @@ func TestParseToolCallsIgnoresXMLInsideFencedCodeBlock(t *testing.T) {
 }
 
 func TestParseToolCallsParsesOnlyNonFencedXMLToolCall(t *testing.T) {
-	text := "```xml\n<tool_call><tool_name>read_file</tool_name><parameters>{\"path\":\"README.md\"}</parameters></tool_call>\n```\n<tool_call><tool_name>search</tool_name><parameters>{\"q\":\"golang\"}</parameters></tool_call>"
+	text := "```xml\n<tool_calls><invoke name=\"read_file\"><parameter name=\"path\">README.md</parameter></invoke></tool_calls>\n```\n<tool_calls><invoke name=\"search\"><parameter name=\"q\">golang</parameter></invoke></tool_calls>"
 	res := ParseToolCallsDetailed(text, []string{"read_file", "search"})
 	if len(res.Calls) != 1 {
 		t.Fatalf("expected exactly one parsed call outside fence, got %#v", res.Calls)
@@ -1364,12 +569,111 @@ func TestParseToolCallsParsesOnlyNonFencedXMLToolCall(t *testing.T) {
 }
 
 func TestParseToolCallsParsesAfterFourBacktickFence(t *testing.T) {
-	text := "````markdown\n```xml\n<tool_call><tool_name>read_file</tool_name><parameters>{\"path\":\"README.md\"}</parameters></tool_call>\n```\n````\n<tool_call><tool_name>search</tool_name><parameters>{\"q\":\"outside\"}</parameters></tool_call>"
+	text := "````markdown\n```xml\n<tool_calls><invoke name=\"read_file\"><parameter name=\"path\">README.md</parameter></invoke></tool_calls>\n```\n````\n<tool_calls><invoke name=\"search\"><parameter name=\"q\">outside</parameter></invoke></tool_calls>"
 	res := ParseToolCallsDetailed(text, []string{"read_file", "search"})
 	if len(res.Calls) != 1 {
 		t.Fatalf("expected exactly one parsed call outside four-backtick fence, got %#v", res.Calls)
 	}
 	if res.Calls[0].Name != "search" {
 		t.Fatalf("expected non-fenced tool call to be parsed, got %#v", res.Calls[0])
+	}
+}
+
+func TestParseToolCallsToleratesDSMLSpaceSeparatorTypo(t *testing.T) {
+	text := strings.Join([]string{
+		"<|DSML tool_calls>",
+		"<|DSML invoke name=\"Read\">",
+		"<|DSML parameter name=\"file_path\"><![CDATA[/tmp/input.txt]]></|DSML parameter>",
+		"</|DSML invoke>",
+		"</|DSML tool_calls>",
+	}, "\n")
+	calls := ParseToolCalls(text, []string{"Read"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one call from DSML space-separator typo, got %#v", calls)
+	}
+	if calls[0].Name != "Read" {
+		t.Fatalf("expected Read call, got %#v", calls[0])
+	}
+	if got, _ := calls[0].Input["file_path"].(string); got != "/tmp/input.txt" {
+		t.Fatalf("expected file_path to parse, got %q", got)
+	}
+}
+
+func TestParseToolCallsDoesNotAcceptDSMLSpaceLookalikeTagName(t *testing.T) {
+	text := strings.Join([]string{
+		"<|DSML tool_calls_extra>",
+		"<|DSML invoke name=\"Read\">",
+		"<|DSML parameter name=\"file_path\">/tmp/input.txt</|DSML parameter>",
+		"</|DSML invoke>",
+		"</|DSML tool_calls_extra>",
+	}, "\n")
+	calls := ParseToolCalls(text, []string{"Read"})
+	if len(calls) != 0 {
+		t.Fatalf("expected no calls from lookalike tag, got %#v", calls)
+	}
+}
+
+func TestParseToolCallsToleratesDSMLCollapsedTagNames(t *testing.T) {
+	todos := `[x] 检查 toolcalls_format.go 格式化逻辑
+[x] 检查 toolcalls_parse.go 解析逻辑
+[x] 检查 toolcalls_xml.go 和 toolcalls_dsml.go
+[x] 检查 toolcalls_markup.go 和 toolcalls_json_repair.go
+[x] 检查 prompt/tool_calls.go 注入逻辑
+[x] 检查 toolstream 流式解析
+[x] 查看测试文件确认预期行为
+[x] 给出调查结论`
+	text := strings.Join([]string{
+		"[]",
+		"<DSMLtool_calls>",
+		"<DSMLinvoke name=\"update_todo_list\">",
+		"<DSMLparameter name=\"todos\"><![CDATA[" + todos + "]]></DSMLparameter>",
+		"</DSMLinvoke>",
+		"</DSMLtool_calls>",
+	}, "\n")
+	calls := ParseToolCalls(text, []string{"update_todo_list"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one call from collapsed DSML tags, got %#v", calls)
+	}
+	if calls[0].Name != "update_todo_list" {
+		t.Fatalf("expected update_todo_list call, got %#v", calls[0])
+	}
+	if got, _ := calls[0].Input["todos"].(string); got != todos {
+		t.Fatalf("expected todos to round-trip, got %q", got)
+	}
+}
+
+func TestParseToolCallsDoesNotAcceptDSMLCollapsedLookalikeTagName(t *testing.T) {
+	text := strings.Join([]string{
+		"<DSMLtool_calls_extra>",
+		"<DSMLinvoke name=\"update_todo_list\">",
+		"<DSMLparameter name=\"todos\">x</DSMLparameter>",
+		"</DSMLinvoke>",
+		"</DSMLtool_calls_extra>",
+	}, "\n")
+	calls := ParseToolCalls(text, []string{"update_todo_list"})
+	if len(calls) != 0 {
+		t.Fatalf("expected no calls from collapsed lookalike tag, got %#v", calls)
+	}
+}
+
+func TestParseToolCallsSkipsProseMentionOfSameWrapperVariant(t *testing.T) {
+	text := strings.Join([]string{
+		"Summary: support canonical <tool_calls> and DSML <|DSML|tool_calls> wrappers.",
+		"",
+		"<|DSML|tool_calls>",
+		"<|DSML|invoke name=\"Bash\">",
+		"<|DSML|parameter name=\"command\"><![CDATA[git status]]></|DSML|parameter>",
+		"</|DSML|invoke>",
+		"</|DSML|tool_calls>",
+	}, "\n")
+	res := ParseToolCallsDetailed(text, []string{"Bash"})
+	if len(res.Calls) != 1 {
+		t.Fatalf("expected one parsed call after prose mention, got %#v", res.Calls)
+	}
+	if res.Calls[0].Name != "Bash" {
+		t.Fatalf("expected Bash call, got %#v", res.Calls[0])
+	}
+	if got, _ := res.Calls[0].Input["command"].(string); got != "git status" {
+		t.Fatalf("expected command to parse, got %q", got)
 	}
 }

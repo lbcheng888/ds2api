@@ -41,6 +41,9 @@ func DetectMissingToolCall(in MissingToolCallInput) MissingToolCallDecision {
 	if parsed.SawToolCallSyntax {
 		return invalidToolSyntaxDecision()
 	}
+	if looksLikeInvalidLegacyToolCallSyntax(finalText) {
+		return invalidToolSyntaxDecision()
+	}
 	if LooksLikeUnexecutedAgentLaunch(finalText, in.FinalPrompt, in.AllowMetaAgentTools) {
 		return missingToolDecision()
 	}
@@ -57,6 +60,11 @@ func DetectMissingToolCall(in MissingToolCallInput) MissingToolCallDecision {
 		return MissingToolCallDecision{}
 	}
 	return missingToolDecision()
+}
+
+func looksLikeInvalidLegacyToolCallSyntax(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "<toolcall") || strings.Contains(lower, "</toolcall>")
 }
 
 func HasCallableTools(toolNames []string) bool {

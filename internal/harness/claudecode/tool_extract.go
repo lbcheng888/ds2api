@@ -15,6 +15,7 @@ type FinalToolCallInput struct {
 
 var finalXMLToolCallsBlockPattern = regexp.MustCompile(`(?is)<\s*tool_calls\b.*?</\s*tool_calls\s*>`)
 var finalXMLSingleToolCallBlockPattern = regexp.MustCompile(`(?is)<\s*(?:tool_call|ToolCall)\b.*?</\s*(?:tool_call|ToolCall)\s*>`)
+var finalDSMLToolCallsBlockPattern = regexp.MustCompile(`(?is)<\s*\|DSML\|tool_calls\b.*?</\s*\|DSML\|tool_calls\s*>`)
 
 func DetectFinalToolCalls(in FinalToolCallInput) (toolcall.ToolCallParseResult, string) {
 	text := in.Text
@@ -44,12 +45,19 @@ func detectToolCallsInText(text string, toolNames []string) (toolcall.ToolCallPa
 				SawToolCallSyntax: true,
 			}
 			visibleText = joinExtractedToolText(prefix, suffix)
+		} else if prefix, calls, suffix, ok := ConsumeOrphanAgentParameterCapture(text, toolNames, true, true); ok {
+			detected = toolcall.ToolCallParseResult{
+				Calls:             calls,
+				SawToolCallSyntax: true,
+			}
+			visibleText = joinExtractedToolText(prefix, suffix)
 		}
 	}
 	return detected, visibleText
 }
 
 func stripFinalXMLToolCallBlocks(text string) string {
+	text = finalDSMLToolCallsBlockPattern.ReplaceAllString(text, "")
 	text = finalXMLToolCallsBlockPattern.ReplaceAllString(text, "")
 	text = finalXMLSingleToolCallBlockPattern.ReplaceAllString(text, "")
 	lower := strings.ToLower(text)

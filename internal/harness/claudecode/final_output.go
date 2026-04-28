@@ -1,12 +1,15 @@
 package claudecode
 
 import (
+	"encoding/json"
+	"fmt"
 	"html"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
-	"ds2api/internal/prompt"
 	"ds2api/internal/protocol"
 	"ds2api/internal/toolcall"
 )
@@ -30,16 +33,18 @@ type FinalOutputResult struct {
 
 func RepairFinalOutput(in FinalOutputInput) FinalOutputResult {
 	out := FinalOutputResult{Text: in.Text}
-	if stripped, changed := StripEmptyToolCallContainerNoise(out.Text); changed {
-		out.Text = stripped
-		out.Changed = true
-		out.Reason = "empty_tool_container_noise"
-	}
 	if repaired := SynthesizeReadToolCallTextFromIncompleteReadIntent(in.FinalPrompt, out.Text, in.ToolNames); repaired != "" {
 		out.Text = repaired
 		out.Changed = true
 		out.Reason = "read_intent_from_incomplete_call"
 		out.ToolCall = true
+		recordRepair(out.Reason)
+		return out
+	}
+	if stripped, changed := StripEmptyToolCallContainerNoise(out.Text); changed {
+		out.Text = stripped
+		out.Changed = true
+		out.Reason = "empty_tool_container_noise"
 	}
 	if repaired := SynthesizeTaskOutputToolCallTextFromAgentWaiting(in.FinalPrompt, out.Text, in.ToolNames, in.AllowMetaAgentTools); repaired != "" {
 		out.Text = repaired
@@ -96,7 +101,7 @@ func SynthesizeReadToolCallTextFromIncompleteReadIntent(finalPrompt, finalText s
 		Name: readToolName,
 		Input: map[string]any{
 			"file_path": path,
-			"limit":     200,
+			"limit":     "200",
 		},
 	}})
 }
@@ -123,7 +128,7 @@ func FormatParsedToolCallsAsPromptXML(calls []toolcall.ParsedToolCall) string {
 	if len(calls) == 0 {
 		return ""
 	}
-	raw := make([]any, 0, len(calls))
+	blocks := make([]string, 0, len(calls))
 	for _, call := range calls {
 		name := strings.TrimSpace(call.Name)
 		if name == "" {
@@ -133,12 +138,71 @@ func FormatParsedToolCallsAsPromptXML(calls []toolcall.ParsedToolCall) string {
 		if input == nil {
 			input = map[string]any{}
 		}
-		raw = append(raw, map[string]any{
-			"name":  name,
-			"input": input,
-		})
+		blocks = append(blocks, formatCanonicalToolCall(name, input))
 	}
-	return prompt.FormatToolCallsForPrompt(raw)
+	if len(blocks) == 0 {
+		return ""
+	}
+	return "<tool_calls>\n" + strings.Join(blocks, "\n") + "\n</tool_calls>"
+}
+
+func formatCanonicalToolCall(name string, input map[string]any) string {
+	var b strings.Builder
+	b.WriteString("<tool_call>\n")
+	b.WriteString("<tool_name>")
+	b.WriteString(html.EscapeString(name))
+	b.WriteString("</tool_name>\n")
+	b.WriteString("<parameters>")
+	keys := sortedMapKeys(input)
+	for _, key := range keys {
+		b.WriteString("<")
+		b.WriteString(html.EscapeString(key))
+		b.WriteString(">")
+		b.WriteString(canonicalToolParameterValue(key, input[key]))
+		b.WriteString("</")
+		b.WriteString(html.EscapeString(key))
+		b.WriteString(">")
+	}
+	b.WriteString("</parameters>\n")
+	b.WriteString("</tool_call>")
+	return b.String()
+}
+
+func sortedMapKeys(input map[string]any) []string {
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func canonicalToolParameterValue(key string, value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		if strings.EqualFold(strings.TrimSpace(key), "limit") {
+			return html.EscapeString(strconv.Quote(v))
+		}
+		return html.EscapeString(v)
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return html.EscapeString(strconv.Quote(fmt.Sprint(v)))
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return html.EscapeString(inputString(v))
+		}
+		return html.EscapeString(string(b))
+	}
 }
 
 func containsIncompleteReadToolCall(text string, toolNames []string) bool {
@@ -273,6 +337,9 @@ func SynthesizeAgentToolCallsFromLaunchPromise(finalPrompt, finalText string, to
 		return nil
 	}
 	if !LooksLikeUnexecutedAgentLaunch(finalText, finalPrompt, allowMetaAgentTools) {
+		return nil
+	}
+	if looksLikeInvalidLegacyToolCallSyntax(finalText) {
 		return nil
 	}
 	if toolcall.LooksLikeToolCallSyntax(finalText) {

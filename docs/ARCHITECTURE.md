@@ -4,9 +4,9 @@
 
 > 本文档用于集中维护“代码目录结构 + 模块边界 + 主链路调用关系”。
 
-## 1. 顶层目录结构（展开）
+## 1. 顶层目录结构（核心目录）
 
-> 说明：以下为仓库内业务相关目录的**完整展开**（排除 `.git/` 与 `webui/node_modules/` 这类依赖/元数据目录），并标注每个文件夹作用。
+> 说明：以下为仓库内主要业务目录（排除 `.git/` 与 `webui/node_modules/` 这类依赖/元数据目录），并标注每个文件夹作用。新增目录以代码为准，不要求在本文做逐文件展开。
 
 ```text
 ds2api/
@@ -21,34 +21,46 @@ ds2api/
 ├── docs/                                 # 项目文档目录
 ├── internal/                             # 核心业务实现（不对外暴露）
 │   ├── account/                          # 账号池、并发槽位、等待队列
-│   ├── adapter/                          # 多协议适配层
-│   │   ├── claude/                       # Claude 协议适配
-│   │   ├── gemini/                       # Gemini 协议适配
-│   │   └── openai/                       # OpenAI 协议与统一执行核心
-│   ├── admin/                            # Admin API（配置/账号/运维）
 │   ├── auth/                             # 鉴权/JWT/凭证解析
+│   ├── chathistory/                      # 服务器端对话记录存储与查询
 │   ├── claudeconv/                       # Claude 消息格式转换工具
 │   ├── compat/                           # 兼容性辅助与回归支持
 │   ├── config/                           # 配置加载、校验、热更新
-│   ├── deepseek/                         # DeepSeek 上游客户端能力
+│   ├── deepseek/                         # DeepSeek 上游 client/protocol/transport
+│   │   ├── client/                       # 登录、会话、completion、上传/删除等上游调用
+│   │   ├── protocol/                     # DeepSeek URL、常量、skip path/pattern
 │   │   └── transport/                    # DeepSeek 传输层细节
 │   ├── devcapture/                       # 开发抓包与调试采集
 │   ├── format/                           # 响应格式化层
 │   │   ├── claude/                       # Claude 输出格式化
 │   │   └── openai/                       # OpenAI 输出格式化
+│   ├── httpapi/                          # HTTP surface：OpenAI/Claude/Gemini/Admin
+│   │   ├── admin/                        # Admin API 根装配与资源子包
+│   │   ├── claude/                       # Claude HTTP 协议适配
+│   │   ├── gemini/                       # Gemini HTTP 协议适配
+│   │   └── openai/                       # OpenAI HTTP surface
+│   │       ├── chat/                     # Chat Completions 执行入口
+│   │       ├── responses/                # Responses API 与 response store
+│   │       ├── files/                    # Files API 与 inline file 预处理
+│   │       ├── embeddings/               # Embeddings API
+│   │       ├── history/                  # OpenAI context file handling
+│   │       └── shared/                   # OpenAI HTTP 公共错误/模型/工具格式
 │   ├── js/                               # Node Runtime 相关逻辑
 │   │   ├── chat-stream/                  # Node 流式输出桥接
 │   │   ├── helpers/                      # JS 辅助函数
 │   │   │   └── stream-tool-sieve/        # Tool sieve JS 实现
 │   │   └── shared/                       # Go/Node 共用语义片段
 │   ├── prompt/                           # Prompt 组装
+│   ├── promptcompat/                     # API 请求到 DeepSeek 网页纯文本上下文兼容层
 │   ├── rawsample/                        # raw sample 读写与管理
 │   ├── server/                           # 路由与中间件装配
+│   │   └── data/                         # 路由/运行时辅助数据
 │   ├── sse/                              # SSE 解析工具
 │   ├── stream/                           # 统一流式消费引擎
 │   ├── testsuite/                        # 测试集执行框架
 │   ├── textclean/                        # 文本清洗
 │   ├── toolcall/                         # 工具调用解析与修复
+│   ├── toolstream/                       # Go 流式 tool call 防泄漏与增量检测
 │   ├── translatorcliproxy/               # 多协议互转桥
 │   ├── util/                             # 通用工具函数
 │   ├── version/                          # 版本查询/比较
@@ -90,34 +102,82 @@ ds2api/
 
 ```mermaid
 flowchart LR
-    C[Client/SDK] --> R[internal/server/router.go]
-    R --> OA[OpenAI Adapter]
-    R --> CA[Claude Adapter]
-    R --> GA[Gemini Adapter]
-    R --> AD[Admin API]
+    C[Client / SDK] --> R[internal/server/router.go]
 
-    CA --> BR[translatorcliproxy]
-    GA --> BR
-    BR --> CORE[internal/adapter/openai ChatCompletions]
-    OA --> CORE
+    subgraph HTTP[HTTP API surface]
+        OA[internal/httpapi/openai]
+        CHAT[openai/chat]
+        RESP[openai/responses]
+        FILES[openai/files + embeddings]
+        CA[internal/httpapi/claude]
+        GA[internal/httpapi/gemini]
+        AD[internal/httpapi/admin/*]
+        WEB[internal/webui static admin]
+    end
 
-    CORE --> AUTH[internal/auth + config key/account resolver]
-    CORE --> POOL[internal/account queue + concurrency]
-    CORE --> TOOL[internal/toolcall parser + sieve]
-    CORE --> DS[internal/deepseek client]
+    subgraph COMPAT[Prompt compatibility core]
+        PC[internal/promptcompat]
+        PROMPT[internal/prompt]
+        HIST[internal/httpapi/openai/history]
+    end
+
+    subgraph RUNTIME[Shared runtime]
+        AUTH[internal/auth]
+        POOL[internal/account queue + concurrency]
+        STREAM[internal/stream + internal/sse]
+        TOOL[internal/toolcall + internal/toolstream]
+        DS[internal/deepseek/client]
+        POW[pow + internal/deepseek/protocol]
+    end
+
+    subgraph NODE[Vercel Node Runtime]
+        NCS[api/chat-stream.js]
+        JS[internal/js/chat-stream + stream-tool-sieve]
+    end
+
+    R --> OA --> CHAT
+    OA --> RESP
+    OA --> FILES
+    R --> CA
+    R --> GA
+    R --> AD
+    R --> WEB
+    R -.Vercel stream.-> NCS
+
+    CA --> PC
+    GA --> PC
+    CHAT --> PC
+    RESP --> PC
+    PC --> PROMPT
+    PC -.长历史.-> HIST
+    PC --> AUTH
+
+    NCS -.Go prepare/release.-> CHAT
+    NCS --> JS
+    JS --> TOOL
+
+    AUTH --> POOL
+    CHAT --> STREAM
+    RESP --> STREAM
+    STREAM --> TOOL
+    POOL --> DS
+    DS --> POW
     DS --> U[DeepSeek upstream]
 ```
 
 ## 3. internal/ 子模块职责
 
 - `internal/server`：路由树和中间件挂载（健康检查、协议入口、Admin/WebUI）。
-- `internal/adapter/openai`：统一执行内核（chat/responses/embeddings 与 tool calling 语义）。
-- `internal/adapter/{claude,gemini}`：协议输入输出适配，不重复实现上游调用逻辑。
+- `internal/httpapi/openai/*`：OpenAI HTTP surface，按 chat、responses、files、embeddings、history、shared 拆分；chat/responses 共享 promptcompat、stream、toolcall 等核心语义。
+- `internal/httpapi/{claude,gemini}`：协议输入输出适配，归一到同一套 prompt compatibility 语义，不重复实现上游调用逻辑。
+- `internal/promptcompat`：OpenAI/Claude/Gemini 请求到 DeepSeek 网页纯文本上下文的兼容内核。
 - `internal/translatorcliproxy`：Claude/Gemini 与 OpenAI 结构互转。
-- `internal/deepseek`：上游请求、会话、PoW、SSE 消费。
-- `internal/stream` + `internal/sse`：流式解析与增量处理。
-- `internal/toolcall`：以 XML/Markup 家族为核心的工具调用解析与防泄漏筛分（`<tool_call>` / `<function_call>` / `<invoke>` / `tool_use` / antml 变体）。
-- `internal/admin`：配置管理、账号管理、Vercel 同步、版本检查、开发抓包。
+- `internal/deepseek/{client,protocol,transport}`：上游请求、会话、PoW 适配、协议常量与传输层。
+- `internal/js/chat-stream` + `api/chat-stream.js`：Vercel Node 流式桥；Go prepare/release 管理鉴权、账号租约和 completion payload，Node 侧负责实时 SSE 转发并保持 Go 对齐的终结态和 tool sieve 语义。
+- `internal/stream` + `internal/sse`：Go 流式解析与增量处理。
+- `internal/toolcall` + `internal/toolstream`：DSML 外壳兼容与 canonical XML 工具调用解析、防泄漏筛分；DSML 会在入口归一化回 XML，内部仍按 XML 语义解析。
+- `internal/httpapi/admin/*`：Admin API 根装配与 auth/accounts/config/settings/proxies/rawsamples/vercel/history/devcapture/version 等资源子包。
+- `internal/chathistory`：服务器端对话记录持久化、分页、单条详情和保留策略。
 - `internal/config`：配置加载、校验、运行时 settings 热更新。
 - `internal/account`：托管账号池、并发槽位、等待队列。
 

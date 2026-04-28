@@ -70,9 +70,9 @@ Built-in GitHub Actions workflow: `.github/workflows/release-artifacts.yml`
 
 | Platform | Architecture | Format |
 | --- | --- | --- |
-| Linux | amd64, arm64 | `.tar.gz` |
+| Linux | amd64, arm64, armv7 | `.tar.gz` |
 | macOS | amd64, arm64 | `.tar.gz` |
-| Windows | amd64 | `.zip` |
+| Windows | amd64, arm64 | `.zip` |
 
 Each archive includes:
 
@@ -259,12 +259,13 @@ VERCEL_TEAM_ID=team_xxxxxxxxxxxx   # optional for personal accounts
 | `DS2API_ENV_WRITEBACK` | When `DS2API_CONFIG_JSON` is present, auto-write to `DS2API_CONFIG_PATH` and switch to file-backed mode after success (`1/true/yes/on`) | Disabled |
 | `DS2API_VERCEL_INTERNAL_SECRET` | Hybrid streaming internal auth | Falls back to `DS2API_ADMIN_KEY` |
 | `DS2API_VERCEL_STREAM_LEASE_TTL_SECONDS` | Stream lease TTL | `900` |
+| `DS2API_RAW_STREAM_SAMPLE_ROOT` | Raw stream sample root for saving/reading samples | `tests/raw_stream_samples` |
 | `VERCEL_TOKEN` | Vercel sync token | — |
 | `VERCEL_PROJECT_ID` | Vercel project ID | — |
 | `VERCEL_TEAM_ID` | Vercel team ID | — |
 | `DS2API_VERCEL_PROTECTION_BYPASS` | Deployment protection bypass for internal Node→Go calls | — |
 
-### 3.3 Vercel Architecture
+### 3.4 Vercel Architecture
 
 ```text
 Request ──────┐
@@ -300,13 +301,14 @@ Vercel Go Runtime applies platform-level response buffering, so this project use
 
 - `api/chat-stream.js` falls back to Go entry (`?__go=1`) for non-stream requests only
 - Streaming requests (including requests with `tools`) stay on the Node path and use Go-aligned tool-call anti-leak handling
+- The Node stream path also mirrors Go finalization semantics: empty visible output returns the same shaped error SSE, and empty `content_filter` returns a `content_filter` error
 - WebUI non-stream test calls `?__go=1` directly to avoid Node hop timeout on long requests
 
 #### Function Duration
 
 `vercel.json` sets `maxDuration: 300` for both `api/chat-stream.js` and `api/index.go` (subject to your Vercel plan limits).
 
-### 3.4 Vercel Troubleshooting
+### 3.5 Vercel Troubleshooting
 
 #### Go Build Failure
 
@@ -350,7 +352,7 @@ If API responses return Vercel HTML `Authentication Required`:
 - **Option B**: Add `x-vercel-protection-bypass` header to requests
 - **Option C**: Set `VERCEL_AUTOMATION_BYPASS_SECRET` (or `DS2API_VERCEL_PROTECTION_BYPASS`) for internal Node→Go calls
 
-### 3.5 Build Artifacts Not Committed
+### 3.6 Build Artifacts Not Committed
 
 - `static/admin` directory is not in Git
 - Vercel / Docker automatically generate WebUI assets during build
@@ -536,7 +538,7 @@ curl -s http://127.0.0.1:5001/readyz
 
 # 3. Model list
 curl -s http://127.0.0.1:5001/v1/models
-# Expected: {"object":"list","data":[...]}
+# Expected: {"object":"list","data":[...]} (including `*-nothinking` variants)
 
 # 4. Admin panel (if WebUI is built)
 curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5001/admin
@@ -546,7 +548,7 @@ curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5001/admin
 curl http://127.0.0.1:5001/v1/chat/completions \
   -H "Authorization: Bearer your-api-key" \
   -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 ---
@@ -577,4 +579,4 @@ The testsuite automatically performs:
 - ✅ Live scenario verification (OpenAI/Claude/Admin/concurrency/toolcall/streaming)
 - ✅ Full request/response artifact logging for debugging
 
-For detailed testsuite documentation, see [TESTING.md](TESTING.md).
+For detailed testsuite documentation, see [TESTING.md](TESTING.md). The fixed local PR gates are listed in [TESTING.md](TESTING.md#pr-门禁--pr-gates).

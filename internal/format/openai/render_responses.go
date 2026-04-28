@@ -1,7 +1,6 @@
 package openai
 
 import (
-	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/toolcall"
 	"encoding/json"
 	"strings"
@@ -11,32 +10,20 @@ import (
 )
 
 func BuildResponseObject(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string) map[string]any {
-	return BuildResponseObjectWithMeta(responseID, model, finalPrompt, finalThinking, finalText, toolNames, false)
-}
-
-func BuildResponseObjectWithMeta(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string, allowMetaAgentTools bool) map[string]any {
 	// Strict mode: only standalone, structured tool-call payloads are treated
 	// as executable tool calls.
-	detected, finalText := claudecodeharness.DetectFinalToolCalls(claudecodeharness.FinalToolCallInput{
-		Text:      finalText,
-		Thinking:  finalThinking,
-		ToolNames: toolNames,
-	})
-	if !allowMetaAgentTools && toolcall.AllCallsAreMetaAgentTools(detected.Calls) {
-		finalText = toolcall.MetaAgentToolBlockedMessage()
-		detected.Calls = nil
-	}
-	detected.Calls = claudecodeharness.FilterInvalidTaskOutputCalls(detected.Calls, finalPrompt)
-	calls := toolcall.NormalizeCallsForSchemasWithMeta(detected.Calls, nil, allowMetaAgentTools)
-	return BuildResponseObjectFromToolCalls(responseID, model, finalPrompt, finalThinking, finalText, calls)
+	detected := toolcall.ParseAssistantToolCallsDetailed(finalText, finalThinking, toolNames)
+	return BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText, detected.Calls)
 }
 
-func BuildResponseObjectFromToolCalls(responseID, model, finalPrompt, finalThinking, finalText string, calls []toolcall.ParsedToolCall) map[string]any {
+func BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText string, detected []toolcall.ParsedToolCall) map[string]any {
 	exposedOutputText := finalText
+	usageThinking := finalThinking
 	output := make([]any, 0, 2)
-	if len(calls) > 0 {
+	if len(detected) > 0 {
 		exposedOutputText = ""
-		output = append(output, toResponsesFunctionCallItems(calls)...)
+		usageThinking = ""
+		output = append(output, toResponsesFunctionCallItems(detected)...)
 	} else {
 		content := make([]any, 0, 2)
 		if finalThinking != "" {
@@ -65,7 +52,7 @@ func BuildResponseObjectFromToolCalls(responseID, model, finalPrompt, finalThink
 		responseID,
 		model,
 		finalPrompt,
-		finalThinking,
+		usageThinking,
 		finalText,
 		output,
 		exposedOutputText,
@@ -85,7 +72,7 @@ func BuildResponseObjectFromItems(responseID, model, finalPrompt, finalThinking,
 		"model":       model,
 		"output":      output,
 		"output_text": outputText,
-		"usage":       BuildResponsesUsageWithPromptCache(finalPrompt, finalThinking, finalText),
+		"usage":       BuildResponsesUsage(finalPrompt, finalThinking, finalText),
 	}
 }
 

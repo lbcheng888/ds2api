@@ -54,6 +54,27 @@ function splitThinkingParts(parts) {
   return { parts: out, transitioned: thinkingDone };
 }
 
+function dropThinkingParts(parts) {
+  if (!Array.isArray(parts) || parts.length === 0) {
+    return parts;
+  }
+  return parts.filter((p) => p && p.type !== 'thinking');
+}
+
+function finalizeThinkingParts(parts, thinkingEnabled, newType) {
+  const splitResult = splitThinkingParts(parts);
+  let finalType = newType;
+  let finalParts = splitResult.parts;
+  if (splitResult.transitioned) {
+    finalType = 'text';
+  }
+  if (!thinkingEnabled) {
+    finalParts = dropThinkingParts(finalParts);
+    finalType = 'text';
+  }
+  return { parts: finalParts, newType: finalType };
+}
+
 function parseChunkForContent(chunk, thinkingEnabled, currentType, stripReferenceMarkers = true) {
   if (!chunk || typeof chunk !== 'object') {
     return {
@@ -194,7 +215,9 @@ function parseChunkForContent(chunk, thinkingEnabled, currentType, stripReferenc
 
   let partType = 'text';
   if (pathValue === 'response/thinking_content') {
-    if (newType === 'text') {
+    if (!thinkingEnabled) {
+      partType = 'thinking';
+    } else if (newType === 'text') {
       partType = 'text';
     } else {
       partType = 'thinking';
@@ -239,20 +262,17 @@ function parseChunkForContent(chunk, thinkingEnabled, currentType, stripReferenc
     }
     
     let resolvedParts = filterLeakedContentFilterParts(parts);
-    const splitResult = splitThinkingParts(resolvedParts);
-    if (splitResult.transitioned) {
-      newType = 'text';
-    }
+    const finalized = finalizeThinkingParts(resolvedParts, thinkingEnabled, newType);
     
     return {
       parsed: true,
-      parts: splitResult.parts,
+      parts: finalized.parts,
       finished: false,
       contentFilter: false,
       errorMessage: '',
       promptTokens,
       outputTokens,
-      newType,
+      newType: finalized.newType,
     };
   }
 
@@ -273,20 +293,17 @@ function parseChunkForContent(chunk, thinkingEnabled, currentType, stripReferenc
     parts.push(...extracted.parts);
     
     let resolvedParts = filterLeakedContentFilterParts(parts);
-    const splitResult = splitThinkingParts(resolvedParts);
-    if (splitResult.transitioned) {
-      newType = 'text';
-    }
+    const finalized = finalizeThinkingParts(resolvedParts, thinkingEnabled, newType);
     
     return {
       parsed: true,
-      parts: splitResult.parts,
+      parts: finalized.parts,
       finished: false,
       contentFilter: false,
       errorMessage: '',
       promptTokens,
       outputTokens,
-      newType,
+      newType: finalized.newType,
     };
   }
 
@@ -316,20 +333,17 @@ function parseChunkForContent(chunk, thinkingEnabled, currentType, stripReferenc
   }
   
   let resolvedParts = filterLeakedContentFilterParts(parts);
-  const splitResult = splitThinkingParts(resolvedParts);
-  if (splitResult.transitioned) {
-    newType = 'text';
-  }
+  const finalized = finalizeThinkingParts(resolvedParts, thinkingEnabled, newType);
 
   return {
     parsed: true,
-    parts: splitResult.parts,
+    parts: finalized.parts,
     finished: false,
     contentFilter: false,
     errorMessage: '',
     promptTokens,
     outputTokens,
-    newType,
+    newType: finalized.newType,
   };
 }
 

@@ -7,121 +7,10 @@ import (
 	"strings"
 )
 
-var toolCallMarkupTagNames = []string{"tool_call", "function_call", "invoke"}
-var toolCallMarkupTagPatternByName = map[string]*regexp.Regexp{
-	"tool_call":     regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?tool_call\b([^>]*)>(.*?)</(?:[a-z0-9_:-]+:)?tool_call>`),
-	"function_call": regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?function_call\b([^>]*)>(.*?)</(?:[a-z0-9_:-]+:)?function_call>`),
-	"invoke":        regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?invoke\b([^>]*)>(.*?)</(?:[a-z0-9_:-]+:)?invoke>`),
-}
-var toolCallMarkupSelfClosingPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?invoke\b([^>]*)/>`)
 var toolCallMarkupKVPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?([a-z0-9_\-.]+)\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?([a-z0-9_\-.]+)>`)
-var anyTagPattern = regexp.MustCompile(`(?is)<[^>]+>`)
-var toolCallMarkupNameTagNames = []string{"name", "function", "tool_name", "function_name", "tool_call_name"}
-var toolCallMarkupNamePatternByTag = map[string]*regexp.Regexp{
-	"name":           regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?name\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?name>`),
-	"function":       regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?function\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?function>`),
-	"tool_name":      regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?tool_name\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?tool_name>`),
-	"function_name":  regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?function_name\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?function_name>`),
-	"tool_call_name": regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?tool_call_name\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?tool_call_name>`),
-}
 
 // cdataPattern matches a standalone CDATA section.
 var cdataPattern = regexp.MustCompile(`(?is)^<!\[CDATA\[(.*?)]]>$`)
-var toolCallMarkupArgsTagNames = []string{"input", "arguments", "argument", "parameters", "parameter", "args", "params"}
-var toolCallMarkupArgsPatternByTag = map[string]*regexp.Regexp{
-	"input":      regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?input\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?input>`),
-	"arguments":  regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?arguments\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?arguments>`),
-	"argument":   regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?argument\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?argument>`),
-	"parameters": regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?parameters\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?parameters>`),
-	"parameter":  regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?parameter\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?parameter>`),
-	"args":       regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?args\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?args>`),
-	"params":     regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?params\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?params>`),
-}
-
-func parseMarkupToolCalls(text string) []ParsedToolCall {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return nil
-	}
-
-	out := make([]ParsedToolCall, 0)
-	for _, tagName := range toolCallMarkupTagNames {
-		pattern := toolCallMarkupTagPatternByName[tagName]
-		for _, m := range pattern.FindAllStringSubmatch(trimmed, -1) {
-			if len(m) < 3 {
-				continue
-			}
-			attrs := strings.TrimSpace(m[1])
-			inner := strings.TrimSpace(m[2])
-			if parsed := parseMarkupSingleToolCall(attrs, inner); parsed.Name != "" || len(parsed.Input) > 0 {
-				out = append(out, parsed)
-			}
-		}
-	}
-	for _, m := range toolCallMarkupSelfClosingPattern.FindAllStringSubmatch(trimmed, -1) {
-		if len(m) < 2 {
-			continue
-		}
-		if parsed := parseMarkupSingleToolCall(strings.TrimSpace(m[1]), ""); parsed.Name != "" || len(parsed.Input) > 0 {
-			out = append(out, parsed)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func parseMarkupSingleToolCall(attrs string, inner string) ParsedToolCall {
-	// Try parsing inner content as a JSON tool call object.
-	if raw := strings.TrimSpace(inner); raw != "" && strings.HasPrefix(raw, "{") {
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(raw), &obj); err == nil {
-			name, _ := obj["name"].(string)
-			if name == "" {
-				if fn, ok := obj["function"].(map[string]any); ok {
-					name, _ = fn["name"].(string)
-				}
-			}
-			if name == "" {
-				if fc, ok := obj["functionCall"].(map[string]any); ok {
-					name, _ = fc["name"].(string)
-				}
-			}
-			if strings.TrimSpace(name) != "" {
-				input := parseToolCallInput(obj["input"])
-				if len(input) == 0 {
-					if args, ok := obj["arguments"]; ok {
-						input = parseToolCallInput(args)
-					}
-				}
-				return ParsedToolCall{Name: strings.TrimSpace(name), Input: input}
-			}
-		}
-	}
-
-	name := ""
-	name = markupAttrValue(attrs, "name", "function", "tool")
-	if name == "" {
-		name = findMarkupTagValue(stripTopLevelXMLParameters(inner), toolCallMarkupNameTagNames, toolCallMarkupNamePatternByTag)
-	}
-	input := map[string]any{}
-	if named := parseNamedMarkupParameters(inner); len(named) > 0 {
-		input = named
-	} else if argsRaw := findMarkupTagValue(inner, toolCallMarkupArgsTagNames, toolCallMarkupArgsPatternByTag); argsRaw != "" {
-		input = parseMarkupInput(argsRaw)
-	} else if kv := parseMarkupKVObject(inner); len(kv) > 0 {
-		input = kv
-	}
-	if name == "" && len(input) == 0 {
-		return ParsedToolCall{}
-	}
-	return ParsedToolCall{Name: name, Input: input}
-}
-
-func parseMarkupInput(raw string) map[string]any {
-	return parseStructuredToolCallInput(raw)
-}
 
 func parseMarkupKVObject(text string) map[string]any {
 	matches := toolCallMarkupKVPattern.FindAllStringSubmatch(strings.TrimSpace(text), -1)
@@ -138,7 +27,7 @@ func parseMarkupKVObject(text string) map[string]any {
 		if key == "" {
 			continue
 		}
-		if !strings.EqualFold(key, endKey) && !isLooseParameterClose(key, endKey) && !isLooseValueClose(key, endKey) {
+		if !strings.EqualFold(key, endKey) {
 			continue
 		}
 		value := parseMarkupValue(m[2])
@@ -153,32 +42,82 @@ func parseMarkupKVObject(text string) map[string]any {
 	return out
 }
 
-func isLooseValueClose(key, endKey string) bool {
-	key = strings.ToLower(strings.TrimSpace(key))
-	endKey = strings.ToLower(strings.TrimSpace(endKey))
-	if key == "" || endKey == "" || key == endKey {
-		return false
+func markupAttrValue(attrs string, key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
 	}
-	if isXMLToolMetadataTag(key) || isXMLToolMetadataTag(endKey) {
-		return false
+	for i := 0; i < len(attrs); {
+		for i < len(attrs) && isMarkupAttrSpace(attrs[i]) {
+			i++
+		}
+		start := i
+		for i < len(attrs) && isMarkupAttrNameByte(attrs[i]) {
+			i++
+		}
+		name := strings.TrimSpace(attrs[start:i])
+		for i < len(attrs) && isMarkupAttrSpace(attrs[i]) {
+			i++
+		}
+		if i >= len(attrs) || attrs[i] != '=' {
+			for i < len(attrs) && !isMarkupAttrSpace(attrs[i]) {
+				i++
+			}
+			continue
+		}
+		i++
+		for i < len(attrs) && isMarkupAttrSpace(attrs[i]) {
+			i++
+		}
+		if i >= len(attrs) {
+			return ""
+		}
+		var value string
+		if attrs[i] == '"' || attrs[i] == '\'' {
+			quote := attrs[i]
+			i++
+			valueStart := i
+			for i < len(attrs) && attrs[i] != quote {
+				i++
+			}
+			value = attrs[valueStart:i]
+			if i < len(attrs) {
+				i++
+			}
+		} else {
+			valueStart := i
+			for i < len(attrs) && !isMarkupAttrSpace(attrs[i]) {
+				i++
+			}
+			value = attrs[valueStart:i]
+		}
+		if strings.EqualFold(name, key) {
+			return strings.TrimSpace(html.UnescapeString(value))
+		}
 	}
-	return true
+	return ""
 }
 
-func isLooseParameterClose(key, endKey string) bool {
-	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "parameters", "parameter", "arguments", "argument", "args", "params", "tool_call", "tool_calls", "tool_name", "function_name", "tool_call_name", "name", "function", "tool":
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(endKey)) {
-	case "parameter", "argument", "param":
+func isMarkupAttrSpace(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\n', '\r':
 		return true
 	default:
 		return false
 	}
 }
 
+func isMarkupAttrNameByte(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '_' || ch == '-' || ch == ':' || ch == '.'
+}
+
 func parseMarkupValue(inner string) any {
+	if value, ok := extractStandaloneCDATA(inner); ok {
+		return value
+	}
 	value := strings.TrimSpace(extractRawTagValue(inner))
 	if value == "" {
 		return ""
@@ -225,8 +164,8 @@ func extractRawTagValue(inner string) string {
 	}
 
 	// 1. Check for CDATA - if present, it's the ultimate "safe" container.
-	if cdataMatches := cdataPattern.FindStringSubmatch(trimmed); len(cdataMatches) >= 2 {
-		return cdataMatches[1] // Return raw content between CDATA brackets
+	if value, ok := extractStandaloneCDATA(trimmed); ok {
+		return value // Return raw content between CDATA brackets
 	}
 
 	// 2. If no CDATA, we still want to be robust.
@@ -239,22 +178,77 @@ func extractRawTagValue(inner string) string {
 	return html.UnescapeString(inner)
 }
 
-func stripTagText(text string) string {
-	return strings.TrimSpace(anyTagPattern.ReplaceAllString(text, ""))
+func extractStandaloneCDATA(inner string) (string, bool) {
+	trimmed := strings.TrimSpace(inner)
+	if cdataMatches := cdataPattern.FindStringSubmatch(trimmed); len(cdataMatches) >= 2 {
+		return cdataMatches[1], true
+	}
+	if strings.HasPrefix(strings.ToLower(trimmed), "<![cdata[") {
+		return trimmed[len("<![CDATA["):], true
+	}
+	return "", false
 }
 
-func findMarkupTagValue(text string, tagNames []string, patternByTag map[string]*regexp.Regexp) string {
-	for _, tag := range tagNames {
-		pattern := patternByTag[tag]
-		if pattern == nil {
+func parseJSONLiteralValue(raw string) (any, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, false
+	}
+
+	switch trimmed[0] {
+	case '{', '[', '"', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 't', 'f', 'n':
+	default:
+		return nil, false
+	}
+
+	var parsed any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return nil, false
+	}
+	return parsed, true
+}
+
+// SanitizeLooseCDATA repairs malformed trailing CDATA openings just enough for
+// final parsing and flush-time recovery. Properly closed CDATA blocks are left
+// untouched; an unclosed opener is stripped so the remaining text can still be
+// parsed as part of the surrounding tool markup.
+func SanitizeLooseCDATA(text string) string {
+	if text == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(text)
+	const openMarker = "<![cdata["
+	const closeMarker = "]]>"
+
+	var b strings.Builder
+	b.Grow(len(text))
+	changed := false
+	pos := 0
+	for pos < len(text) {
+		startRel := strings.Index(lower[pos:], openMarker)
+		if startRel < 0 {
+			b.WriteString(text[pos:])
+			break
+		}
+		start := pos + startRel
+		contentStart := start + len(openMarker)
+		b.WriteString(text[pos:start])
+
+		if endRel := strings.Index(lower[contentStart:], closeMarker); endRel >= 0 {
+			end := contentStart + endRel + len(closeMarker)
+			b.WriteString(text[start:end])
+			pos = end
 			continue
 		}
-		if m := pattern.FindStringSubmatch(text); len(m) >= 2 {
-			value := extractRawTagValue(m[1])
-			if value != "" {
-				return value
-			}
-		}
+
+		changed = true
+		b.WriteString(text[contentStart:])
+		pos = len(text)
 	}
-	return ""
+
+	if !changed {
+		return text
+	}
+	return b.String()
 }

@@ -64,13 +64,71 @@ func ExtractVisibleJSONToolCalls(text string, availableToolNames []string) (pref
 			continue
 		}
 		block := text[start : start+end]
-		parsed := ParseToolCalls(block, availableToolNames)
+		parsed := normalizeVisibleJSONToolCalls(parseVisibleJSONToolCalls(block), availableToolNames)
 		if len(parsed) == 0 {
 			continue
 		}
 		return text[:start], parsed, text[start+end:], true
 	}
 	return "", nil, "", false
+}
+
+func normalizeVisibleJSONToolCalls(calls []ParsedToolCall, availableToolNames []string) []ParsedToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]ParsedToolCall, 0, len(calls))
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Name)
+		if name == "" {
+			name = inferVisibleJSONToolName(call.Input, availableToolNames)
+		}
+		if name == "" {
+			continue
+		}
+		call.Name = name
+		if call.Input == nil {
+			call.Input = map[string]any{}
+		}
+		out = append(out, call)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func inferVisibleJSONToolName(input map[string]any, availableToolNames []string) string {
+	if input == nil {
+		return ""
+	}
+	if _, ok := input["command"]; ok {
+		if name := firstAvailableToolName(availableToolNames, "Bash", "execute_command", "exec_command"); name != "" {
+			return name
+		}
+	}
+	if _, ok := input["cmd"]; ok {
+		if name := firstAvailableToolName(availableToolNames, "exec_command", "Bash", "execute_command"); name != "" {
+			return name
+		}
+	}
+	if _, ok := input["file_path"]; ok {
+		if name := firstAvailableToolName(availableToolNames, "Read", "read_file"); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func firstAvailableToolName(available []string, candidates ...string) string {
+	for _, candidate := range candidates {
+		for _, name := range available {
+			if strings.EqualFold(strings.TrimSpace(name), candidate) {
+				return strings.TrimSpace(name)
+			}
+		}
+	}
+	return ""
 }
 
 func findVisibleJSONToolStart(text string, from int) int {
@@ -193,6 +251,17 @@ func parseVisibleJSONToolCallObject(obj map[string]any) (ParsedToolCall, bool) {
 		return ParsedToolCall{}, false
 	}
 	return ParsedToolCall{Name: name, Input: input}, true
+}
+
+func asString(v any) string {
+	switch value := v.(type) {
+	case string:
+		return value
+	case json.Number:
+		return value.String()
+	default:
+		return ""
+	}
 }
 
 func firstVisibleJSONInput(obj map[string]any) map[string]any {

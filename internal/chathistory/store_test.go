@@ -46,7 +46,7 @@ func TestStoreCreatesAndPersistsEntries(t *testing.T) {
 	started, err := store.Start(StartParams{
 		CallerID:  "caller:abc",
 		AccountID: "user@example.com",
-		Model:     "deepseek-chat",
+		Model:     "deepseek-v4-flash",
 		Stream:    true,
 		UserInput: "hello",
 	})
@@ -113,7 +113,7 @@ func TestStoreTrimsToConfiguredLimit(t *testing.T) {
 	}
 
 	for i := 0; i < 12; i++ {
-		entry, err := store.Start(StartParams{Model: "deepseek-chat", UserInput: "msg"})
+		entry, err := store.Start(StartParams{Model: "deepseek-v4-flash", UserInput: "msg"})
 		if err != nil {
 			t.Fatalf("start %d failed: %v", i, err)
 		}
@@ -197,7 +197,7 @@ func TestStoreConcurrentUpdatesKeepSplitFilesValid(t *testing.T) {
 			defer wg.Done()
 			entry, err := store.Start(StartParams{
 				CallerID:  "caller:test",
-				Model:     "deepseek-chat",
+				Model:     "deepseek-v4-flash",
 				UserInput: "hello",
 			})
 			if err != nil {
@@ -299,7 +299,7 @@ func TestStoreAutoMigratesMetadataOnlyLegacyMonolith(t *testing.T) {
 			Status:       "error",
 			CallerID:     "caller:test",
 			AccountID:    "acct:test",
-			Model:        "deepseek-chat",
+			Model:        "deepseek-v4-flash",
 			Stream:       true,
 			UserInput:    "hello",
 			Error:        "boom",

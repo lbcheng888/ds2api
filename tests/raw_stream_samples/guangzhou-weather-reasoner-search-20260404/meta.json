@@ -2,7 +2,7 @@
   "sample_id": "guangzhou-weather-reasoner-search-20260404",
   "captured_at_utc": "2026-04-04T16:01:27Z",
   "request": {
-    "model": "deepseek-reasoner-search",
+    "model": "deepseek-v4-pro-search",
     "stream": true,
     "messages": [
       {

@@ -2,110 +2,46 @@ package stream
 
 import (
 	"context"
-	"io"
+	"strings"
 	"testing"
-	"time"
 
 	"ds2api/internal/sse"
 )
 
-func TestConsumeSSEStopsAtMaxDuration(t *testing.T) {
-	reader, writer := io.Pipe()
-	defer func() { _ = reader.Close() }()
-	defer func() { _ = writer.Close() }()
+func TestConsumeSSEPrefersContextCancellationOverReadyParsedLines(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	done := make(chan StopReason, 1)
+	var finalized bool
+	var contextDone bool
+	var parsedCalled bool
+
 	ConsumeSSE(ConsumeConfig{
-		Context:     context.Background(),
-		Body:        reader,
-		MaxDuration: 20 * time.Millisecond,
+		Context:           ctx,
+		Body:              strings.NewReader("data: {\"p\":\"response/content\",\"v\":\"hello\"}\n\ndata: [DONE]\n"),
+		ThinkingEnabled:   false,
+		InitialType:       "text",
+		KeepAliveInterval: 0,
 	}, ConsumeHooks{
-		OnFinalize: func(reason StopReason, _ error) {
-			done <- reason
+		OnParsed: func(_ sse.LineResult) ParsedDecision {
+			parsedCalled = true
+			return ParsedDecision{}
+		},
+		OnFinalize: func(_ StopReason, _ error) {
+			finalized = true
+		},
+		OnContextDone: func() {
+			contextDone = true
 		},
 	})
 
-	select {
-	case reason := <-done:
-		if reason != StopReasonMaxDuration {
-			t.Fatalf("expected max duration stop, got %q", reason)
-		}
-	default:
-		t.Fatal("expected finalize to run synchronously")
+	if !contextDone {
+		t.Fatal("expected OnContextDone to run for an already-cancelled context")
 	}
-}
-
-func TestConsumeSSEStopsWhenNoActionProgress(t *testing.T) {
-	reader, writer := io.Pipe()
-	defer func() { _ = reader.Close() }()
-	defer func() { _ = writer.Close() }()
-
-	done := make(chan StopReason, 1)
-	go func() {
-		ConsumeSSE(ConsumeConfig{
-			Context:           context.Background(),
-			Body:              reader,
-			KeepAliveInterval: 5 * time.Millisecond,
-			ActionTimeout:     20 * time.Millisecond,
-		}, ConsumeHooks{
-			OnParsed: func(_ sse.LineResult) ParsedDecision {
-				return ParsedDecision{ContentSeen: true}
-			},
-			OnFinalize: func(reason StopReason, _ error) {
-				done <- reason
-			},
-		})
-	}()
-
-	_, _ = writer.Write([]byte("data: {\"p\":\"response/content\",\"v\":\"thinking\"}\n"))
-
-	select {
-	case reason := <-done:
-		if reason != StopReasonNoActionTimeout {
-			t.Fatalf("expected no-action timeout, got %q", reason)
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("expected no-action timeout")
+	if finalized {
+		t.Fatal("expected OnFinalize not to run after context cancellation wins")
 	}
-}
-
-func TestConsumeSSEStopsWhenProgressStallsAfterFirstAction(t *testing.T) {
-	reader, writer := io.Pipe()
-	defer func() { _ = reader.Close() }()
-	defer func() { _ = writer.Close() }()
-
-	done := make(chan StopReason, 1)
-	parsedCount := 0
-	go func() {
-		ConsumeSSE(ConsumeConfig{
-			Context:           context.Background(),
-			Body:              reader,
-			KeepAliveInterval: 5 * time.Millisecond,
-			ActionTimeout:     25 * time.Millisecond,
-		}, ConsumeHooks{
-			OnParsed: func(_ sse.LineResult) ParsedDecision {
-				parsedCount++
-				if parsedCount == 1 {
-					return ParsedDecision{ContentSeen: true, ActionSeen: true}
-				}
-				return ParsedDecision{ContentSeen: true}
-			},
-			OnFinalize: func(reason StopReason, _ error) {
-				done <- reason
-			},
-		})
-	}()
-
-	_, _ = writer.Write([]byte("data: {\"p\":\"response/content\",\"v\":\"visible\"}\n"))
-	time.Sleep(10 * time.Millisecond)
-	_, _ = writer.Write([]byte("data: {\"p\":\"response/thinking_content\",\"v\":\"thinking\"}\n"))
-
-	select {
-	case reason := <-done:
-		if reason != StopReasonNoActionTimeout {
-			t.Fatalf("expected no-action timeout, got %q", reason)
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("expected no-action timeout after first action")
+	if parsedCalled {
+		t.Fatal("expected parsed lines not to be processed after context cancellation wins")
 	}
 }

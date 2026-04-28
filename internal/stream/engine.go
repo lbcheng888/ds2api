@@ -84,18 +84,33 @@ func ConsumeSSE(cfg ConsumeConfig, hooks ConsumeHooks) {
 			hooks.OnFinalize(reason, scannerErr)
 		}
 	}
+	contextDone := func() bool {
+		if cfg.Context.Err() == nil {
+			return false
+		}
+		if hooks.OnContextDone != nil {
+			hooks.OnContextDone()
+		}
+		return true
+	}
 
 	for {
+		if contextDone() {
+			return
+		}
 		select {
 		case <-cfg.Context.Done():
-			if hooks.OnContextDone != nil {
-				hooks.OnContextDone()
+			if contextDone() {
+				return
 			}
 			return
 		case <-maxDurationCh:
 			finalize(StopReasonMaxDuration, nil)
 			return
 		case <-tickCh(ticker):
+			if contextDone() {
+				return
+			}
 			if !hasContent {
 				keepaliveCount++
 				if cfg.MaxKeepAliveNoInput > 0 && keepaliveCount >= cfg.MaxKeepAliveNoInput {
@@ -115,6 +130,9 @@ func ConsumeSSE(cfg ConsumeConfig, hooks ConsumeHooks) {
 				hooks.OnKeepAlive()
 			}
 		case parsed, ok := <-parsedLines:
+			if contextDone() {
+				return
+			}
 			if !ok {
 				finalize(StopReasonUpstreamCompleted, <-done)
 				return

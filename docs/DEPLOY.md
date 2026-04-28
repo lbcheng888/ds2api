@@ -70,9 +70,9 @@ cp config.example.json config.json
 
 | 平台 | 架构 | 文件格式 |
 | --- | --- | --- |
-| Linux | amd64, arm64 | `.tar.gz` |
+| Linux | amd64, arm64, armv7 | `.tar.gz` |
 | macOS | amd64, arm64 | `.tar.gz` |
-| Windows | amd64 | `.zip` |
+| Windows | amd64, arm64 | `.zip` |
 
 每个压缩包包含：
 
@@ -258,7 +258,8 @@ VERCEL_TEAM_ID=team_xxxxxxxxxxxx   # 个人账号可留空
 | `DS2API_GLOBAL_MAX_INFLIGHT` | 全局并发上限 | `recommended_concurrency` |
 | `DS2API_ENV_WRITEBACK` | 检测到 `DS2API_CONFIG_JSON` 时自动写入 `DS2API_CONFIG_PATH`，并在成功后转为文件模式（`1/true/yes/on`） | 关闭 |
 | `DS2API_VERCEL_INTERNAL_SECRET` | 混合流式内部鉴权 | 回退用 `DS2API_ADMIN_KEY` |
-| `DS2API_VERCEL_STREAM_LEASE_TTL_SECONDS` | 流式 lease TTL | 默认与 `responses.store_ttl_seconds` 同步，若未设置则为 `900` |
+| `DS2API_VERCEL_STREAM_LEASE_TTL_SECONDS` | 流式 lease TTL | `900` |
+| `DS2API_RAW_STREAM_SAMPLE_ROOT` | raw stream 样本保存/读取根目录 | `tests/raw_stream_samples` |
 | `VERCEL_TOKEN` | Vercel 同步 token | — |
 | `VERCEL_PROJECT_ID` | Vercel 项目 ID | — |
 | `VERCEL_TEAM_ID` | Vercel 团队 ID | — |
@@ -274,7 +275,7 @@ VERCEL_TEAM_ID=team_xxxxxxxxxxxx   # 个人账号可留空
 
 详细说明参见 [API.md](../API.md#admin-接口) 中 `/admin/settings` 部分。
 
-### 3.3 Vercel 架构说明
+### 3.4 Vercel 架构说明
 
 ```text
 请求 ─────┐
@@ -310,13 +311,14 @@ api/index.go  api/chat-stream.js
 
 - `api/chat-stream.js` 仅对非流式请求回退到 Go 入口（`?__go=1`）
 - 流式请求（包括带 `tools`）走 Node 路径，并执行与 Go 对齐的 tool-call 防泄漏处理
+- Node 流式路径同时对齐 Go 的终结态语义：空可见输出会返回同形状错误 SSE，空 `content_filter` 会返回 `content_filter` 错误
 - WebUI 的"非流式测试"直接请求 `?__go=1`，避免 Node 中转造成长请求超时
 
 #### 函数时长
 
 `vercel.json` 已将 `api/chat-stream.js` 与 `api/index.go` 的 `maxDuration` 设为 `300`（受 Vercel 套餐上限约束）。
 
-### 3.4 Vercel 常见报错排查
+### 3.5 Vercel 常见报错排查
 
 #### Go 构建失败
 
@@ -360,7 +362,7 @@ No Output Directory named "public" found after the Build completed.
 - **方案 B**：请求中添加 `x-vercel-protection-bypass` 头
 - **方案 C**：设置 `VERCEL_AUTOMATION_BYPASS_SECRET`（或 `DS2API_VERCEL_PROTECTION_BYPASS`），仅影响内部 Node→Go 调用
 
-### 3.5 仓库不提交构建产物
+### 3.6 仓库不提交构建产物
 
 - `static/admin` 目录不在 Git 中
 - Vercel / Docker 构建阶段自动生成 WebUI 静态文件
@@ -546,7 +548,7 @@ curl -s http://127.0.0.1:5001/readyz
 
 # 3. 模型列表
 curl -s http://127.0.0.1:5001/v1/models
-# 预期: {"object":"list","data":[...]}
+# 预期: {"object":"list","data":[...]}（包含 `*-nothinking` 变体）
 
 # 4. 管理台页面（如果已构建 WebUI）
 curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5001/admin
@@ -556,7 +558,7 @@ curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5001/admin
 curl http://127.0.0.1:5001/v1/chat/completions \
   -H "Authorization: Bearer your-api-key" \
   -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 ---
@@ -587,4 +589,4 @@ go run ./cmd/ds2api-tests \
 - ✅ 真实调用场景验证（OpenAI/Claude/Admin/并发/toolcall/流式）
 - ✅ 全量请求与响应日志落盘（用于故障复盘）
 
-详细测试集说明参阅 [TESTING.md](TESTING.md)。
+详细测试集说明参阅 [TESTING.md](TESTING.md)。PR 前的固定本地门禁以 [TESTING.md](TESTING.md#pr-门禁--pr-gates) 为准。

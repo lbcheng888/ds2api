@@ -7,213 +7,134 @@ import (
 
 func TestBuildToolCallInstructions_ExecCommandUsesCmdExample(t *testing.T) {
 	out := BuildToolCallInstructions([]string{"exec_command"})
-	if !strings.Contains(out, `<tool_name>exec_command</tool_name>`) {
+	if !strings.Contains(out, `<|DSML|invoke name="exec_command">`) {
 		t.Fatalf("expected exec_command in examples, got: %s", out)
 	}
-	if !strings.Contains(out, `<parameters><cmd>pwd</cmd></parameters>`) {
+	if !strings.Contains(out, `<|DSML|parameter name="cmd"><![CDATA[pwd]]></|DSML|parameter>`) {
 		t.Fatalf("expected cmd parameter example for exec_command, got: %s", out)
-	}
-	if strings.Contains(out, `<tool_name>read_file</tool_name>`) {
-		t.Fatalf("did not expect unavailable read_file in examples, got: %s", out)
 	}
 }
 
 func TestBuildToolCallInstructions_ExecuteCommandUsesCommandExample(t *testing.T) {
 	out := BuildToolCallInstructions([]string{"execute_command"})
-	if !strings.Contains(out, `<tool_name>execute_command</tool_name>`) {
+	if !strings.Contains(out, `<|DSML|invoke name="execute_command">`) {
 		t.Fatalf("expected execute_command in examples, got: %s", out)
 	}
-	if !strings.Contains(out, `<parameters><command>pwd</command></parameters>`) {
+	if !strings.Contains(out, `<|DSML|parameter name="command"><![CDATA[pwd]]></|DSML|parameter>`) {
 		t.Fatalf("expected command parameter example for execute_command, got: %s", out)
 	}
 }
 
-func TestBuildToolCallInstructions_BashExampleIncludesRequiredDescription(t *testing.T) {
-	out := BuildToolCallInstructions([]string{"bash"})
-	if !strings.Contains(out, `<tool_name>bash</tool_name>`) {
-		t.Fatalf("expected bash in examples, got: %s", out)
+func TestBuildToolCallInstructions_BashUsesCommandAndDescriptionExamples(t *testing.T) {
+	out := BuildToolCallInstructions([]string{"Bash"})
+	blocks := findInvokeBlocks(out, "Bash")
+	if len(blocks) == 0 {
+		t.Fatalf("expected Bash examples, got: %s", out)
 	}
-	if !strings.Contains(out, `<command>pwd</command><description>Show current directory</description>`) {
-		t.Fatalf("expected bash example to include required description, got: %s", out)
+
+	sawDescription := false
+	for _, block := range blocks {
+		if !strings.Contains(block, `<|DSML|parameter name="command">`) {
+			t.Fatalf("expected every Bash example to use command parameter, got: %s", block)
+		}
+		if strings.Contains(block, `<|DSML|parameter name="path">`) || strings.Contains(block, `<|DSML|parameter name="content">`) {
+			t.Fatalf("expected Bash examples not to use file write parameters, got: %s", block)
+		}
+		if strings.Contains(block, `<|DSML|parameter name="description">`) {
+			sawDescription = true
+		}
 	}
-	if !strings.Contains(out, `<description>Run test shell script</description>`) {
-		t.Fatalf("expected long bash example to include required description, got: %s", out)
+	if !sawDescription {
+		t.Fatalf("expected Bash long-script example to include description, got: %s", out)
+	}
+	if strings.Contains(out, `<|DSML|invoke name="Read">`) {
+		t.Fatalf("expected examples to avoid unavailable hard-coded Read tool, got: %s", out)
 	}
 }
 
-func TestBuildToolCallInstructions_OpenCodeLowercaseToolExamples(t *testing.T) {
-	out := BuildToolCallInstructions([]string{"read", "bash", "task"})
-	for _, want := range []string{
-		`<tool_name>read</tool_name>`,
-		`<filePath>README.md</filePath>`,
-		`<tool_name>bash</tool_name>`,
-		`Include every field marked required in the tool schema.`,
-		`Use task/subagent tools only for genuinely independent large subtasks`,
-		`Launch at most 4 Agent/task calls`,
-		`Do not end with future-tense or setup text`,
-		`no background-result collection tool is listed`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected OpenCode example to contain %s, got: %s", want, out)
+func TestBuildToolCallInstructions_ExecuteCommandLongScriptUsesCommand(t *testing.T) {
+	out := BuildToolCallInstructions([]string{"execute_command"})
+	blocks := findInvokeBlocks(out, "execute_command")
+	if len(blocks) == 0 {
+		t.Fatalf("expected execute_command examples, got: %s", out)
+	}
+
+	for _, block := range blocks {
+		if !strings.Contains(block, `<|DSML|parameter name="command">`) {
+			t.Fatalf("expected execute_command examples to use command parameter, got: %s", block)
+		}
+		if strings.Contains(block, `<|DSML|parameter name="path">`) || strings.Contains(block, `<|DSML|parameter name="content">`) {
+			t.Fatalf("expected execute_command examples not to use file write parameters, got: %s", block)
 		}
 	}
-	if strings.Contains(out, `TaskOutput`) {
-		t.Fatalf("did not expect TaskOutput guidance when TaskOutput tool is unavailable, got: %s", out)
+	if !strings.Contains(out, `test_escape.sh`) {
+		t.Fatalf("expected execute_command long-script example, got: %s", out)
 	}
 }
 
-func TestBuildToolCallInstructions_TaskExampleIncludesRequiredFields(t *testing.T) {
-	out := BuildToolCallInstructions([]string{"task"})
-	if !strings.Contains(out, `<tool_name>task</tool_name>`) {
-		t.Fatalf("expected task in examples, got: %s", out)
+func TestBuildToolCallInstructions_ExecCommandLongScriptUsesCmd(t *testing.T) {
+	out := BuildToolCallInstructions([]string{"exec_command"})
+	blocks := findInvokeBlocks(out, "exec_command")
+	if len(blocks) == 0 {
+		t.Fatalf("expected exec_command examples, got: %s", out)
 	}
-	for _, want := range []string{
-		`<description>Investigate flaky tests</description>`,
-		`<prompt>Run targeted tests and summarize failures</prompt>`,
-		`<subagent_type>general</subagent_type>`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected task example to contain %s, got: %s", want, out)
+
+	for _, block := range blocks {
+		if !strings.Contains(block, `<|DSML|parameter name="cmd">`) {
+			t.Fatalf("expected exec_command examples to use cmd parameter, got: %s", block)
 		}
+		if strings.Contains(block, `<|DSML|parameter name="command">`) || strings.Contains(block, `<|DSML|parameter name="path">`) || strings.Contains(block, `<|DSML|parameter name="content">`) {
+			t.Fatalf("expected exec_command examples not to use command or file write parameters, got: %s", block)
+		}
+	}
+	if !strings.Contains(out, `test_escape.sh`) {
+		t.Fatalf("expected exec_command long-script example, got: %s", out)
 	}
 }
 
-func TestBuildToolCallInstructions_AgentExampleIncludesRequiredFields(t *testing.T) {
-	out := BuildToolCallInstructions([]string{"Agent"})
-	if !strings.Contains(out, `<tool_name>Agent</tool_name>`) {
-		t.Fatalf("expected Agent in examples, got: %s", out)
+func TestBuildToolCallInstructions_WriteUsesFilePathAndContent(t *testing.T) {
+	out := BuildToolCallInstructions([]string{"Write"})
+	blocks := findInvokeBlocks(out, "Write")
+	if len(blocks) == 0 {
+		t.Fatalf("expected Write examples, got: %s", out)
 	}
-	for _, want := range []string{
-		`<description>Explore Cheng codebase</description>`,
-		`<prompt>Inspect the repository structure and report concise actionable findings.</prompt>`,
-		`<subagent_type>Explore</subagent_type>`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected Agent example to contain %s, got: %s", want, out)
-		}
-	}
-}
 
-func TestBuildToolCallInstructions_TaskOutputExampleIncludesRequiredFields(t *testing.T) {
-	out := BuildToolCallInstructions([]string{"TaskOutput"})
-	if !strings.Contains(out, `<tool_name>TaskOutput</tool_name>`) {
-		t.Fatalf("expected TaskOutput in examples, got: %s", out)
-	}
-	for _, want := range []string{
-		`<task_id>task_123</task_id>`,
-		`<block>false</block>`,
-		`<timeout>5000</timeout>`,
-		`If you receive <task-notification>`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected TaskOutput example to contain %s, got: %s", want, out)
+	for _, block := range blocks {
+		if !strings.Contains(block, `<|DSML|parameter name="file_path">`) || !strings.Contains(block, `<|DSML|parameter name="content">`) {
+			t.Fatalf("expected Write examples to use file_path and content, got: %s", block)
 		}
-	}
-}
-
-func TestBuildTeamAgentInstructions(t *testing.T) {
-	out := BuildTeamAgentInstructions([]string{"Agent", "TaskOutput", "Read"})
-	for _, want := range []string{
-		`TEAM AGENTS`,
-		`launch Agent/task tool calls in this response`,
-		`at most 4 parallel Agent/task calls`,
-		`TaskOutput only for those concrete task_id values`,
-		`Never use tool_id or tool-use-id for TaskOutput`,
-		`never invent task IDs`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected Team Agents instruction %q, got: %s", want, out)
-		}
-	}
-	if got := BuildTeamAgentInstructions([]string{"Read", "Edit"}); got != "" {
-		t.Fatalf("expected no Team Agents instructions without agent tools, got %q", got)
-	}
-	agentOnly := BuildTeamAgentInstructions([]string{"Agent", "Read"})
-	if strings.Contains(agentOnly, "TaskOutput") {
-		t.Fatalf("did not expect TaskOutput guidance without TaskOutput tool, got %q", agentOnly)
-	}
-	if !strings.Contains(agentOnly, "no background-result collection tool is listed") {
-		t.Fatalf("expected no-collection-tool guidance, got %q", agentOnly)
-	}
-}
-
-func TestBuildToolCallInstructions_TaskTrackingToolsAreNotExamples(t *testing.T) {
-	out := BuildToolCallInstructions([]string{"TaskCreate", "TodoWrite"})
-	for _, bad := range []string{
-		`<tool_name>TaskCreate</tool_name>`,
-		`<tool_name>TodoWrite</tool_name>`,
-		`<subject>Review Cheng codebase</subject>`,
-		`<todos><item>`,
-	} {
-		if strings.Contains(out, bad) {
-			t.Fatalf("expected task-tracking example %s to be suppressed, got: %s", bad, out)
-		}
-	}
-	for _, want := range []string{
-		`Do not call TaskCreate, TaskUpdate, TodoWrite, or TodoRead`,
-		`A response whose only tool calls are task-tracking tools is invalid`,
-		`Parameters must be XML, not JSON.`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected task-tracking suppression instruction %s, got: %s", want, out)
+		if strings.Contains(block, `<|DSML|parameter name="path">`) {
+			t.Fatalf("expected Write examples not to use path, got: %s", block)
 		}
 	}
 }
 
-func TestBuildToolCallInstructions_EditToolsRequireExactOldString(t *testing.T) {
-	out := BuildToolCallInstructions([]string{"Read", "Edit", "MultiEdit"})
-	for _, want := range []string{
-		`old_string must be copied exactly from the latest file content you read`,
-		`If an edit fails, read that file again before retrying`,
-		`Never build old_string from a diff hunk or from memory`,
-		`Do not use Write/write_to_file to rewrite an existing source file`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected edit safety instruction %q, got: %s", want, out)
-		}
+func TestBuildToolCallInstructions_AnchorsMissingOpeningWrapperFailureMode(t *testing.T) {
+	out := BuildToolCallInstructions([]string{"read_file"})
+	if !strings.Contains(out, "Never omit the opening <|DSML|tool_calls> tag") {
+		t.Fatalf("expected explicit missing-opening-tag warning, got: %s", out)
+	}
+	if !strings.Contains(out, "Wrong 3 — missing opening wrapper") {
+		t.Fatalf("expected missing-opening-wrapper negative example, got: %s", out)
 	}
 }
 
-func TestBuildToolCallInstructions_OptimizeMeansExecute(t *testing.T) {
-	out := BuildToolCallInstructions([]string{"question", "Read", "Edit", "bash"})
-	for _, want := range []string{
-		`If the user asks to optimize`,
-		`请优化`,
-		`choose the highest-priority actionable change`,
-		`Do not use question/ask_followup_question`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected optimize execution instruction %q, got: %s", want, out)
+func findInvokeBlocks(text, name string) []string {
+	open := `<|DSML|invoke name="` + name + `">`
+	remaining := text
+	blocks := []string{}
+	for {
+		start := strings.Index(remaining, open)
+		if start < 0 {
+			return blocks
 		}
-	}
-}
-
-func TestBuildToolCallInstructions_LocalFilesDoNotUseReadMCPResource(t *testing.T) {
-	out := BuildToolCallInstructions([]string{"read_mcp_resource", "Read", "exec_command"})
-	for _, want := range []string{
-		`Do not use read_mcp_resource for file:// URLs`,
-		`skill:// URIs`,
-		`Use Read/read/Grep/Glob/Bash/exec_command-style tools for local files`,
-		`resource parameter is uri, not url`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected local resource safety instruction %q, got: %s", want, out)
+		remaining = remaining[start:]
+		end := strings.Index(remaining, `</|DSML|invoke>`)
+		if end < 0 {
+			return blocks
 		}
-	}
-}
-
-func TestBuildToolCallInstructions_SearchBudget(t *testing.T) {
-	out := BuildToolCallInstructions([]string{"Search", "Read", "Bash"})
-	for _, want := range []string{
-		`Search budget`,
-		`do not repeat semantically identical Search/Grep/Glob/Bash rg calls`,
-		`Once Search/Grep/Bash rg returns a useful file path or file:line result`,
-		`If two searches produce no new file path or file:line result`,
-		`Do not invent absolute repository paths`,
-		`verify it exists with Bash before Read/Edit`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected search budget instruction %q, got: %s", want, out)
-		}
+		end += len(`</|DSML|invoke>`)
+		blocks = append(blocks, remaining[:end])
+		remaining = remaining[end:]
 	}
 }

@@ -6,8 +6,9 @@ const {
 } = require('./state');
 const { trimWrappingJSONFence } = require('./jsonscan');
 const {
-  XML_TOOL_SEGMENT_TAGS,
-} = require('./tool-keywords');
+  findToolMarkupTagOutsideIgnored,
+  sanitizeLooseCDATA,
+} = require('./parse_payload');
 const {
   consumeXMLToolCapture: consumeXMLToolCaptureImpl,
   hasOpenXMLToolTag,
@@ -19,6 +20,9 @@ const {
   consumeVisibleJSONToolCapture,
   visibleJSONToolCaptureMayContinue,
 } = require('./visible-json');
+
+const INVALID_TOOL_CALL_CODE = 'upstream_invalid_tool_call';
+const INVALID_TOOL_CALL_MESSAGE = 'Upstream model emitted invalid tool call syntax.';
 function processToolSieveChunk(state, chunk, toolNames) {
   if (!state) {
     return [];
@@ -49,6 +53,10 @@ function processToolSieveChunk(state, chunk, toolNames) {
       resetIncrementalToolState(state);
 
       if (Array.isArray(consumed.calls) && consumed.calls.length > 0) {
+        if (consumed.prefix) {
+          noteText(state, consumed.prefix);
+          events.push({ type: 'text', text: consumed.prefix });
+        }
         state.pendingToolRaw = captured;
         state.pendingToolCalls = consumed.calls;
         if (consumed.suffix) {
@@ -122,8 +130,31 @@ function flushToolSieve(state, toolNames) {
       }
     } else if (state.capture) {
       const content = state.capture;
-      noteText(state, content);
-      events.push({ type: 'text', text: content });
+      const recovered = sanitizeLooseCDATA(content);
+      if (recovered !== content) {
+        const recoveredResult = consumeXMLToolCaptureImpl(recovered, toolNames, trimWrappingJSONFence);
+        if (recoveredResult.ready && Array.isArray(recoveredResult.calls) && recoveredResult.calls.length > 0) {
+          if (recoveredResult.prefix) {
+            noteText(state, recoveredResult.prefix);
+            events.push({ type: 'text', text: recoveredResult.prefix });
+          }
+          events.push({ type: 'tool_calls', calls: recoveredResult.calls });
+          if (recoveredResult.suffix) {
+            noteText(state, recoveredResult.suffix);
+            events.push({ type: 'text', text: recoveredResult.suffix });
+          }
+        } else if (incompleteToolTransactionError(content)) {
+          events.push({ type: 'error', code: INVALID_TOOL_CALL_CODE, message: INVALID_TOOL_CALL_MESSAGE });
+        } else {
+          noteText(state, content);
+          events.push({ type: 'text', text: content });
+        }
+      } else if (incompleteToolTransactionError(content)) {
+        events.push({ type: 'error', code: INVALID_TOOL_CALL_CODE, message: INVALID_TOOL_CALL_MESSAGE });
+      } else {
+        noteText(state, content);
+        events.push({ type: 'text', text: content });
+      }
     }
     state.capture = '';
     state.capturing = false;
@@ -135,6 +166,44 @@ function flushToolSieve(state, toolNames) {
     state.pending = '';
   }
   return events;
+}
+
+function incompleteToolTransactionError(captured) {
+  const trimmed = String(captured || '').trim();
+  if (!trimmed) {
+    return false;
+  }
+  const lower = trimmed.toLowerCase();
+  if (hasOpenXMLToolTag(trimmed) ||
+      lower.includes('<tool_call') ||
+      lower.includes('<tool_calls') ||
+      lower.includes('<invoke') ||
+      lower.includes('<function_call') ||
+      lower.includes('<function_calls') ||
+      lower.includes('<tool_use') ||
+      lower.includes('<attempt_completion') ||
+      lower.includes('<ask_followup_question') ||
+      lower.includes('<new_task') ||
+      lower.includes('<|dsml') ||
+      lower.includes('<｜dsml') ||
+      lower.includes('<dsml')) {
+    return true;
+  }
+  return (trimmed.startsWith('{') || trimmed.startsWith('[')) &&
+    visibleJSONToolCaptureMayContinue(trimmed) &&
+    hasVisibleJSONToolHints(lower);
+}
+
+function hasVisibleJSONToolHints(lower) {
+  const hasName = lower.includes('"tool"') ||
+    lower.includes('"name"') ||
+    lower.includes('"tool_name"') ||
+    lower.includes('"function"');
+  const hasArgs = lower.includes('"arguments"') ||
+    lower.includes('"input"') ||
+    lower.includes('"params"') ||
+    lower.includes('"parameters"');
+  return hasName && hasArgs;
 }
 
 function splitSafeContentForToolDetection(state, s) {
@@ -167,26 +236,16 @@ function findToolSegmentStart(state, s) {
   if (!s) {
     return -1;
   }
-  const lower = s.toLowerCase();
   let offset = 0;
   while (true) {
-    // Only check XML tool tags.
-    let bestIdx = -1;
-    let matchedTag = '';
-    for (const tag of XML_TOOL_SEGMENT_TAGS) {
-      const idx = lower.indexOf(tag, offset);
-      if (idx >= 0 && (bestIdx < 0 || idx < bestIdx)) {
-        bestIdx = idx;
-        matchedTag = tag;
-      }
-    }
-    if (bestIdx < 0) {
+    const tag = findToolMarkupTagOutsideIgnored(s, offset);
+    if (!tag) {
       return -1;
     }
-    if (!insideCodeFenceWithState(state, s.slice(0, bestIdx))) {
-      return bestIdx;
+    if (!insideCodeFenceWithState(state, s.slice(0, tag.start))) {
+      return tag.start;
     }
-    offset = bestIdx + matchedTag.length;
+    offset = tag.end + 1;
   }
 }
 

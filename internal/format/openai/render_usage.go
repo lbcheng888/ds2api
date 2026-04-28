@@ -45,15 +45,18 @@ func buildResponsesUsage(finalPrompt, finalThinking, finalText string, cacheStat
 	promptTokens := util.EstimateTokens(finalPrompt)
 	reasoningTokens := util.EstimateTokens(finalThinking)
 	completionTokens := util.EstimateTokens(finalText)
-	return map[string]any{
+	usage := map[string]any{
 		"input_tokens":             promptTokens,
 		"input_cache_hit_tokens":   cacheStats.HitTokens,
 		"input_cache_miss_tokens":  cacheStats.MissTokens,
 		"output_tokens":            reasoningTokens + completionTokens,
 		"total_tokens":             promptTokens + reasoningTokens + completionTokens,
-		"output_tokens_details":    map[string]any{"reasoning_tokens": reasoningTokens},
 		"input_tokens_details":     map[string]any{"cache_read_tokens": cacheStats.HitTokens, "cache_creation_tokens": cacheStats.MissTokens},
 		"prompt_cache_hit_tokens":  cacheStats.HitTokens,
 		"prompt_cache_miss_tokens": cacheStats.MissTokens,
 	}
+	if reasoningTokens > 0 {
+		usage["output_tokens_details"] = map[string]any{"reasoning_tokens": reasoningTokens}
+	}
+	return usage
 }

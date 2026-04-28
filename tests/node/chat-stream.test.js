@@ -2,13 +2,18 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 
 const handler = require('../../api/chat-stream.js');
+const { handleVercelStream } = require('../../internal/js/chat-stream/vercel_stream.js');
 const {
   createToolSieveState,
   processToolSieveChunk,
   flushToolSieve,
 } = require('../../internal/js/helpers/stream-tool-sieve.js');
+const {
+  setCorsHeaders,
+} = require('../../internal/js/chat-stream/http_internal.js');
 
 const {
   parseChunkForContent,
@@ -26,9 +31,276 @@ const {
   trimContinuationOverlap,
 } = handler.__test;
 
+function createMockResponse() {
+  const headers = new Map();
+  return {
+    setHeader(key, value) {
+      headers.set(String(key).toLowerCase(), value);
+    },
+    getHeader(key) {
+      return headers.get(String(key).toLowerCase());
+    },
+  };
+}
+
+class MockStreamRequest extends EventEmitter {
+  constructor() {
+    super();
+    this.url = '/v1/chat/completions';
+    this.headers = { host: 'example.test', 'content-type': 'application/json' };
+  }
+}
+
+class MockStreamResponse extends EventEmitter {
+  constructor() {
+    super();
+    this.headers = new Map();
+    this.statusCode = 0;
+    this.chunks = [];
+    this.writableEnded = false;
+    this.destroyed = false;
+  }
+
+  setHeader(key, value) {
+    this.headers.set(String(key).toLowerCase(), value);
+  }
+
+  getHeader(key) {
+    return this.headers.get(String(key).toLowerCase());
+  }
+
+  write(chunk) {
+    this.chunks.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+    return true;
+  }
+
+  end(chunk) {
+    if (chunk) {
+      this.write(chunk);
+    }
+    this.writableEnded = true;
+  }
+
+  flushHeaders() {}
+
+  flush() {}
+
+  bodyText() {
+    return this.chunks.join('');
+  }
+}
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function sseResponse(lines) {
+  const encoder = new TextEncoder();
+  return new Response(new ReadableStream({
+    start(controller) {
+      for (const line of lines) {
+        controller.enqueue(encoder.encode(line));
+      }
+      controller.close();
+    },
+  }), {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+
+function parseSSEDataFrames(body) {
+  return body
+    .split('\n\n')
+    .map((frame) => frame.trim())
+    .filter((frame) => frame.startsWith('data:'))
+    .map((frame) => frame.slice(5).trim());
+}
+
+async function runMockVercelStream(upstreamLines, prepareOverrides = {}) {
+  return runMockVercelStreamSequence([upstreamLines], prepareOverrides);
+}
+
+async function runMockVercelStreamSequence(upstreamSequences, prepareOverrides = {}) {
+  const originalFetch = global.fetch;
+  const fetchURLs = [];
+  const fetchBodies = [];
+  let completionCalls = 0;
+  let continueCalls = 0;
+  const prepareBody = {
+    session_id: 'chatcmpl-test',
+    lease_id: 'lease-test',
+    model: 'gpt-test',
+    final_prompt: 'hello',
+    thinking_enabled: false,
+    search_enabled: false,
+    compat: { strip_reference_markers: true },
+    tool_names: [],
+    deepseek_token: 'deepseek-token',
+    pow_header: 'pow-header',
+    payload: { prompt: 'hello' },
+    ...prepareOverrides,
+  };
+  global.fetch = async (url, init = {}) => {
+    const textURL = String(url);
+    fetchURLs.push(textURL);
+    if (init && init.body) {
+      fetchBodies.push(JSON.parse(String(init.body)));
+    }
+    if (textURL.includes('__stream_prepare=1')) {
+      return jsonResponse(prepareBody);
+    }
+    if (textURL.includes('__stream_pow=1')) {
+      return jsonResponse({ pow_header: 'pow-header-refreshed' });
+    }
+    if (textURL.includes('__stream_release=1')) {
+      return jsonResponse({ success: true });
+    }
+    if (textURL.includes('/continue')) {
+      const idx = Math.min(continueCalls + 1, upstreamSequences.length - 1);
+      continueCalls += 1;
+      return sseResponse(upstreamSequences[idx]);
+    }
+    const idx = Math.min(completionCalls, upstreamSequences.length - 1);
+    completionCalls += 1;
+    return sseResponse(upstreamSequences[idx]);
+  };
+  try {
+    const req = new MockStreamRequest();
+    const res = new MockStreamResponse();
+    const payload = { model: 'gpt-test', stream: true };
+    await handleVercelStream(req, res, Buffer.from(JSON.stringify(payload)), payload);
+    return { res, frames: parseSSEDataFrames(res.bodyText()), fetchURLs, fetchBodies };
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
 test('chat-stream exposes parser test hooks', () => {
   assert.equal(typeof parseChunkForContent, 'function');
   assert.equal(typeof resolveToolcallPolicy, 'function');
+});
+
+test('vercel stream emits Go-parity empty-output failure on DONE', async () => {
+  const { frames } = await runMockVercelStream(['data: [DONE]\n\n']);
+  assert.equal(frames.length, 2);
+  const failed = JSON.parse(frames[0]);
+  assert.equal(failed.status_code, 429);
+  assert.equal(failed.error.type, 'rate_limit_error');
+  assert.equal(failed.error.code, 'upstream_empty_output');
+  assert.equal(frames[1], '[DONE]');
+});
+
+test('vercel stream retries empty output once and keeps one terminal frame', async () => {
+  const { frames, fetchURLs, fetchBodies } = await runMockVercelStreamSequence([
+    ['data: [DONE]\n\n'],
+    ['data: {"p":"response/content","v":"visible"}\n\n', 'data: [DONE]\n\n'],
+  ]);
+  const parsed = frames.filter((frame) => frame !== '[DONE]').map((frame) => JSON.parse(frame));
+  const completionBodies = fetchBodies.filter((body) => Object.hasOwn(body, 'prompt'));
+  assert.equal(fetchURLs.filter((url) => url === 'https://chat.deepseek.com/api/v0/chat/completion').length, 2);
+  assert.equal(fetchURLs.filter((url) => url.includes('__stream_pow=1')).length, 1);
+  assert.equal(frames.filter((frame) => frame === '[DONE]').length, 1);
+  assert.equal(parsed[0].choices[0].delta.content, 'visible');
+  assert.equal(parsed[1].choices[0].finish_reason, 'stop');
+  assert.equal(parsed[0].id, parsed[1].id);
+  assert.match(completionBodies[1].prompt, /Previous reply had no visible output\. Please regenerate the visible final answer or tool call now\.$/);
+});
+
+test('vercel stream exhausts DeepSeek continue before synthetic retry', async () => {
+  const { frames, fetchURLs, fetchBodies } = await runMockVercelStreamSequence([
+    [
+      'data: {"response_message_id":7,"v":{"response":{"message_id":7,"status":"WIP","auto_continue":true}}}\n\n',
+      'data: [DONE]\n\n',
+    ],
+    ['data: {"p":"response/content","v":"continued"}\n\n', 'data: [DONE]\n\n'],
+  ]);
+  const parsed = frames.filter((frame) => frame !== '[DONE]').map((frame) => JSON.parse(frame));
+  assert.equal(fetchURLs.filter((url) => url === 'https://chat.deepseek.com/api/v0/chat/completion').length, 1);
+  assert.equal(fetchURLs.filter((url) => url === 'https://chat.deepseek.com/api/v0/chat/continue').length, 1);
+  assert.equal(fetchURLs.filter((url) => url.includes('__stream_pow=1')).length, 1);
+  assert.equal(parsed[0].choices[0].delta.content, 'continued');
+  assert.equal(parsed[1].choices[0].finish_reason, 'stop');
+  assert.equal(fetchBodies.some((body) => String(body.prompt || '').includes('Previous reply had no visible output')), false);
+});
+
+test('vercel stream reuses prior PoW when refresh fails', async () => {
+  const originalFetch = global.fetch;
+  const fetchURLs = [];
+  const completionPowHeaders = [];
+  let completionCalls = 0;
+  global.fetch = async (url, init = {}) => {
+    const textURL = String(url);
+    fetchURLs.push(textURL);
+    if (textURL.includes('__stream_prepare=1')) {
+      return jsonResponse({
+        session_id: 'chatcmpl-test',
+        lease_id: 'lease-test',
+        model: 'gpt-test',
+        final_prompt: 'hello',
+        thinking_enabled: false,
+        search_enabled: false,
+        compat: { strip_reference_markers: true },
+        tool_names: [],
+        deepseek_token: 'deepseek-token',
+        pow_header: 'pow-header-initial',
+        payload: { prompt: 'hello' },
+      });
+    }
+    if (textURL.includes('__stream_pow=1')) {
+      return jsonResponse({}, 500);
+    }
+    if (textURL.includes('__stream_release=1')) {
+      return jsonResponse({ success: true });
+    }
+    if (textURL === 'https://chat.deepseek.com/api/v0/chat/completion') {
+      completionPowHeaders.push(init.headers['x-ds-pow-response']);
+      completionCalls += 1;
+      if (completionCalls === 1) {
+        return sseResponse(['data: [DONE]\n\n']);
+      }
+      return sseResponse(['data: {"p":"response/content","v":"visible"}\n\n', 'data: [DONE]\n\n']);
+    }
+    throw new Error(`unexpected fetch url: ${textURL}`);
+  };
+  try {
+    const req = new MockStreamRequest();
+    const res = new MockStreamResponse();
+    const payload = { model: 'gpt-test', stream: true };
+    await handleVercelStream(req, res, Buffer.from(JSON.stringify(payload)), payload);
+    const frames = parseSSEDataFrames(res.bodyText());
+    const parsed = frames.filter((frame) => frame !== '[DONE]').map((frame) => JSON.parse(frame));
+    assert.deepEqual(completionPowHeaders, ['pow-header-initial', 'pow-header-initial']);
+    assert.equal(fetchURLs.filter((url) => url.includes('__stream_pow=1')).length, 1);
+    assert.equal(parsed[0].choices[0].delta.content, 'visible');
+    assert.equal(parsed[1].choices[0].finish_reason, 'stop');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('vercel stream emits content_filter failure when upstream filters empty output', async () => {
+  const { frames } = await runMockVercelStream(['data: {"code":"content_filter"}\n\n']);
+  assert.equal(frames.length, 2);
+  const failed = JSON.parse(frames[0]);
+  assert.equal(failed.status_code, 400);
+  assert.equal(failed.error.type, 'invalid_request_error');
+  assert.equal(failed.error.code, 'content_filter');
+  assert.equal(frames[1], '[DONE]');
+});
+
+test('vercel stream keeps stop finish when content_filter arrives after visible text', async () => {
+  const { frames } = await runMockVercelStream([
+    'data: {"p":"response/content","v":"hello"}\n\n',
+    'data: {"code":"content_filter"}\n\n',
+  ]);
+  const parsed = frames.filter((frame) => frame !== '[DONE]').map((frame) => JSON.parse(frame));
+  assert.equal(parsed[0].choices[0].delta.content, 'hello');
+  assert.equal(parsed[1].choices[0].finish_reason, 'stop');
+  assert.equal(parsed[1].usage.completion_tokens, 1);
 });
 
 test('resolveToolcallPolicy defaults to feature-match + early emit when prepare flags missing', () => {
@@ -218,6 +490,24 @@ test('parseChunkForContent handles response/fragments APPEND with thinking and r
   ]);
 });
 
+test('parseChunkForContent drops thinking content when thinking is disabled', () => {
+  const thinking = parseChunkForContent(
+    { p: 'response/thinking_content', v: 'hidden thought' },
+    false,
+    'text',
+  );
+  assert.equal(thinking.finished, false);
+  assert.equal(thinking.newType, 'text');
+  assert.deepEqual(thinking.parts, []);
+
+  const answer = parseChunkForContent(
+    { p: 'response/content', v: 'visible answer' },
+    false,
+    thinking.newType,
+  );
+  assert.deepEqual(answer.parts, [{ text: 'visible answer', type: 'text' }]);
+});
+
 test('parseChunkForContent supports wrapped response.fragments object shape', () => {
   const chunk = {
     p: 'response',
@@ -398,6 +688,32 @@ test('node stream path guard only allows /v1/chat/completions', () => {
 test('extractPathname strips query only', () => {
   assert.equal(extractPathname('/v1/chat/completions?stream=true'), '/v1/chat/completions');
   assert.equal(extractPathname('/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=1'), '/v1beta/models/gemini-2.5-flash:streamGenerateContent');
+});
+
+test('setCorsHeaders reflects requested third-party headers and blocks internal-only headers', () => {
+  const res = createMockResponse();
+  setCorsHeaders(res, {
+    headers: {
+      origin: 'app://obsidian.md',
+      'access-control-request-headers': 'authorization, x-stainless-os, x-stainless-runtime, x-ds2-internal-token',
+      'access-control-request-private-network': 'true',
+    },
+  });
+
+  assert.equal(res.getHeader('access-control-allow-origin'), 'app://obsidian.md');
+  assert.equal(res.getHeader('access-control-allow-private-network'), 'true');
+  assert.equal(res.getHeader('access-control-max-age'), '600');
+
+  const allowHeaders = String(res.getHeader('access-control-allow-headers') || '').toLowerCase();
+  assert.equal(allowHeaders.includes('authorization'), true);
+  assert.equal(allowHeaders.includes('x-stainless-os'), true);
+  assert.equal(allowHeaders.includes('x-stainless-runtime'), true);
+  assert.equal(allowHeaders.includes('x-ds2-internal-token'), false);
+
+  const vary = String(res.getHeader('vary') || '').toLowerCase();
+  assert.equal(vary.includes('origin'), true);
+  assert.equal(vary.includes('access-control-request-headers'), true);
+  assert.equal(vary.includes('access-control-request-private-network'), true);
 });
 
 test('trimContinuationOverlap preserves short normal tokens and trims long snapshots', () => {

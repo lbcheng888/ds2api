@@ -239,7 +239,7 @@ func TestRepairFinalOutputConvertsIncompleteReadIntentToRequestedFile(t *testing
 	}
 	if parsed.Calls[0].Name != "Read" ||
 		parsed.Calls[0].Input["file_path"] != "/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md" ||
-		parsed.Calls[0].Input["limit"] != "200" {
+		(parsed.Calls[0].Input["limit"] != "200" && parsed.Calls[0].Input["limit"] != float64(200)) {
 		t.Fatalf("expected synthesized bounded Read call, got %#v", parsed.Calls[0])
 	}
 }

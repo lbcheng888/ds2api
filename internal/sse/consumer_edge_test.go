@@ -56,6 +56,21 @@ func TestCollectStreamThinkingAndText(t *testing.T) {
 	}
 }
 
+func TestCollectStreamDropsThinkingWhenDisabled(t *testing.T) {
+	resp := makeHTTPResponse(
+		"data: {\"p\":\"response/thinking_content\",\"v\":\"Thinking...\"}\n" +
+			"data: {\"p\":\"response/content\",\"v\":\"Answer\"}\n" +
+			"data: [DONE]\n",
+	)
+	result := CollectStream(resp, false, true)
+	if result.Thinking != "" {
+		t.Fatalf("expected disabled thinking to be dropped, got %q", result.Thinking)
+	}
+	if result.Text != "Answer" {
+		t.Fatalf("expected only visible answer, got %q", result.Text)
+	}
+}
+
 func TestCollectStreamOnlyThinking(t *testing.T) {
 	resp := makeHTTPResponse(
 		"data: {\"p\":\"response/thinking_content\",\"v\":\"Only thinking\"}\n" +

@@ -67,23 +67,23 @@ func TestBuildResponseObjectReasoningOnlyFallsBackToOutputText(t *testing.T) {
 	}
 }
 
-func TestBuildResponseObjectIgnoresToolCallFromThinkingChannel(t *testing.T) {
+func TestBuildResponseObjectPromotesToolCallFromThinkingWhenTextEmpty(t *testing.T) {
 	obj := BuildResponseObject(
 		"resp_test",
 		"gpt-4o",
 		"prompt",
-		`{"tool_calls":[{"name":"search","input":{"q":"from-thinking"}}]}`,
+		`<tool_calls><invoke name="search"><parameter name="q">from-thinking</parameter></invoke></tool_calls>`,
 		"",
 		[]string{"search"},
 	)
 
 	output, _ := obj["output"].([]any)
 	if len(output) != 1 {
-		t.Fatalf("expected one message output item, got %#v", obj["output"])
+		t.Fatalf("expected one output item, got %#v", obj["output"])
 	}
 	first, _ := output[0].(map[string]any)
-	if first["type"] != "message" {
-		t.Fatalf("expected output message, got %#v", first["type"])
+	if first["type"] != "function_call" {
+		t.Fatalf("expected function_call output, got %#v", first["type"])
 	}
 }
 

@@ -1,41 +1,21 @@
 package claudeconv
 
-import "strings"
+import (
+	"strings"
 
-type ClaudeMappingProvider interface {
-	ClaudeMapping() map[string]string
-}
+	"ds2api/internal/config"
+)
 
-func ConvertClaudeToDeepSeek(claudeReq map[string]any, mappingProvider ClaudeMappingProvider, defaultClaudeModel string) map[string]any {
+func ConvertClaudeToDeepSeek(claudeReq map[string]any, aliasProvider config.ModelAliasReader, defaultClaudeModel string) map[string]any {
 	messages, _ := claudeReq["messages"].([]any)
 	model, _ := claudeReq["model"].(string)
 	if model == "" {
 		model = defaultClaudeModel
 	}
 
-	mapping := map[string]string{}
-	if mappingProvider != nil {
-		mapping = mappingProvider.ClaudeMapping()
-	}
-	dsModel := mapping["fast"]
-	if dsModel == "" {
-		dsModel = "deepseek-chat"
-	}
-
-	modelLower := strings.ToLower(strings.TrimSpace(model))
-	switch {
-	case strings.HasPrefix(modelLower, "deepseek-"):
-		dsModel = modelLower
-	case strings.Contains(modelLower, "haiku") && mapping["haiku"] != "":
-		dsModel = mapping["haiku"]
-	case strings.Contains(modelLower, "sonnet") && mapping["sonnet"] != "":
-		dsModel = mapping["sonnet"]
-	case strings.Contains(modelLower, "opus") && mapping["opus"] != "":
-		dsModel = mapping["opus"]
-	case strings.Contains(modelLower, "opus") || strings.Contains(modelLower, "reasoner") || strings.Contains(modelLower, "slow"):
-		if slow := mapping["slow"]; slow != "" {
-			dsModel = slow
-		}
+	dsModel, ok := config.ResolveModel(aliasProvider, model)
+	if !ok || strings.TrimSpace(dsModel) == "" {
+		dsModel = "deepseek-v4-flash"
 	}
 
 	convertedMessages := make([]any, 0, len(messages)+1)

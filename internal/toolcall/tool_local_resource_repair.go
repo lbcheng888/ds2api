@@ -219,6 +219,22 @@ func findAvailableToolName(availableToolNames []string, want string) (string, bo
 	return "", false
 }
 
+func resolveToolNameForAvailable(name string, availableToolNames []string) (string, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(availableToolNames) == 0 {
+		return "", false
+	}
+	if resolved, ok := findAvailableToolName(availableToolNames, name); ok {
+		return resolved, true
+	}
+	for _, alias := range knownToolNameAliases(strings.ToLower(name)) {
+		if resolved, ok := findAvailableToolName(availableToolNames, alias); ok {
+			return resolved, true
+		}
+	}
+	return "", false
+}
+
 func localReadToolInput(name, path string, original map[string]any) map[string]any {
 	input := map[string]any{}
 	switch strings.ToLower(strings.TrimSpace(name)) {

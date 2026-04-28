@@ -192,6 +192,18 @@ func (s *Store) Snapshot() (File, error) {
 	return cloneFile(s.state), nil
 }
 
+func (s *Store) Revision() (int64, error) {
+	if s == nil {
+		return 0, errors.New("chat history store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return 0, s.err
+	}
+	return s.state.Revision, nil
+}
+
 func (s *Store) Enabled() bool {
 	if s == nil {
 		return false
@@ -218,6 +230,22 @@ func (s *Store) Get(id string) (Entry, error) {
 		return Entry{}, errors.New("chat history entry not found")
 	}
 	return cloneEntry(item), nil
+}
+
+func (s *Store) DetailRevision(id string) (int64, error) {
+	if s == nil {
+		return 0, errors.New("chat history store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return 0, s.err
+	}
+	item, ok := s.details[strings.TrimSpace(id)]
+	if !ok {
+		return 0, errors.New("chat history entry not found")
+	}
+	return item.Revision, nil
 }
 
 func (s *Store) Start(params StartParams) (Entry, error) {

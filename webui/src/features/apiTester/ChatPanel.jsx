@@ -21,6 +21,7 @@ export default function ChatPanel({
     streamingContent,
     onRunTest,
     onStopGeneration,
+    hasAvailableModel,
 }) {
     const fileInputRef = useRef(null)
     const [uploadingFiles, setUploadingFiles] = useState(false)
@@ -181,7 +182,7 @@ export default function ChatPanel({
                     <div className="absolute left-2 bottom-2 z-10">
                         <button
                             onClick={() => fileInputRef.current?.click()}
-                            disabled={uploadingFiles || isStreaming}
+                            disabled={uploadingFiles || isStreaming || !hasAvailableModel}
                             className="p-2 text-muted-foreground hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             title="Attach files"
                         >
@@ -189,11 +190,12 @@ export default function ChatPanel({
                         </button>
                     </div>
                     <textarea
-                        className="w-full bg-[#09090b] border border-border rounded-xl pl-12 pr-12 py-3 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none custom-scrollbar placeholder:text-muted-foreground/50 text-foreground shadow-inner"
-                        placeholder={t('apiTester.enterMessage')}
+                        className="w-full bg-[#09090b] border border-border rounded-xl pl-12 pr-12 py-3 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none custom-scrollbar placeholder:text-muted-foreground/50 text-foreground shadow-inner disabled:opacity-60 disabled:cursor-not-allowed"
+                        placeholder={hasAvailableModel ? t('apiTester.enterMessage') : t('apiTester.noModelsMessagePlaceholder')}
                         rows={1}
                         style={{ minHeight: '52px' }}
                         value={message}
+                        disabled={!hasAvailableModel}
                         onChange={e => setMessage(e.target.value)}
                         onKeyDown={e => {
                             if (e.key === 'Enter' && !e.shiftKey) {
@@ -212,7 +214,7 @@ export default function ChatPanel({
                         ) : (
                             <button
                                 onClick={onRunTest}
-                                disabled={loading || uploadingFiles || (!message.trim() && attachedFiles.length === 0)}
+                                disabled={loading || uploadingFiles || !hasAvailableModel || (!message.trim() && attachedFiles.length === 0)}
                                 className="p-2 text-primary hover:text-primary/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}

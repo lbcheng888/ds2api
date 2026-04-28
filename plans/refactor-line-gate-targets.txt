@@ -13,72 +13,70 @@ internal/config/store_index.go
 internal/config/store_accessors.go
 internal/config/account.go
 
-internal/admin/handler_config_read.go
-internal/admin/handler_config_write.go
-internal/admin/handler_config_import.go
-internal/admin/handler_settings_read.go
-internal/admin/handler_settings_write.go
-internal/admin/handler_settings_parse.go
-internal/admin/handler_settings_runtime.go
-internal/admin/handler_accounts_crud.go
-internal/admin/handler_accounts_testing.go
-internal/admin/handler_accounts_queue.go
+internal/httpapi/admin/configmgmt/handler_config_read.go
+internal/httpapi/admin/configmgmt/handler_config_write.go
+internal/httpapi/admin/configmgmt/handler_config_import.go
+internal/httpapi/admin/settings/handler_settings_read.go
+internal/httpapi/admin/settings/handler_settings_write.go
+internal/httpapi/admin/settings/handler_settings_parse.go
+internal/httpapi/admin/settings/handler_settings_runtime.go
+internal/httpapi/admin/accounts/handler_accounts_crud.go
+internal/httpapi/admin/accounts/handler_accounts_testing.go
+internal/httpapi/admin/accounts/handler_accounts_queue.go
 
 internal/account/pool_core.go
 internal/account/pool_acquire.go
 internal/account/pool_waiters.go
 internal/account/pool_limits.go
 
-internal/deepseek/client_core.go
-internal/deepseek/client_auth.go
-internal/deepseek/client_completion.go
-internal/deepseek/client_http_json.go
-internal/deepseek/client_http_helpers.go
+internal/deepseek/client/client_core.go
+internal/deepseek/client/client_auth.go
+internal/deepseek/client/client_completion.go
+internal/deepseek/client/client_http_json.go
+internal/deepseek/client/client_http_helpers.go
 
 internal/format/openai/render_chat.go
 internal/format/openai/render_responses.go
 internal/format/openai/render_stream_events.go
 internal/format/openai/render_usage.go
 
-internal/adapter/openai/handler_routes.go
-internal/adapter/openai/handler_chat.go
-internal/adapter/openai/handler_errors.go
-internal/adapter/openai/handler_toolcall_policy.go
-internal/adapter/openai/handler_toolcall_format.go
-internal/adapter/openai/responses_handler.go
-internal/adapter/openai/responses_input_normalize.go
-internal/adapter/openai/responses_input_items.go
-internal/adapter/openai/responses_stream_runtime_core.go
-internal/adapter/openai/responses_stream_runtime_events.go
-internal/adapter/openai/responses_stream_runtime_toolcalls.go
-internal/adapter/openai/tool_sieve_state.go
-internal/adapter/openai/tool_sieve_core.go
-internal/adapter/openai/tool_sieve_xml.go
-internal/adapter/openai/tool_sieve_json.go
-internal/adapter/openai/tool_sieve_jsonscan.go
+internal/httpapi/openai/shared/models.go
+internal/httpapi/openai/chat/handler_chat.go
+internal/httpapi/openai/shared/handler_errors.go
+internal/httpapi/openai/shared/handler_toolcall_policy.go
+internal/httpapi/openai/shared/handler_toolcall_format.go
+internal/httpapi/openai/responses/responses_handler.go
+internal/promptcompat/responses_input_normalize.go
+internal/promptcompat/responses_input_items.go
+internal/httpapi/openai/responses/responses_stream_runtime_core.go
+internal/httpapi/openai/responses/responses_stream_runtime_events.go
+internal/httpapi/openai/responses/responses_stream_runtime_toolcalls.go
+internal/toolstream/tool_sieve_state.go
+internal/toolstream/tool_sieve_core.go
+internal/toolstream/tool_sieve_xml.go
+internal/toolstream/tool_sieve_jsonscan.go
 
 internal/toolcall/toolcalls_parse.go
-internal/toolcall/toolcalls_json_visible.go
 internal/toolcall/toolcalls_candidates.go
 internal/toolcall/toolcalls_format.go
 
-internal/adapter/claude/handler_routes.go
-internal/adapter/claude/handler_messages.go
-internal/adapter/claude/handler_tokens.go
-internal/adapter/claude/handler_errors.go
-internal/adapter/claude/handler_utils.go
-internal/adapter/claude/stream_runtime_core.go
-internal/adapter/claude/stream_runtime_emit.go
-internal/adapter/claude/stream_runtime_finalize.go
+internal/httpapi/claude/handler_routes.go
+internal/httpapi/claude/handler_messages.go
+internal/httpapi/claude/handler_tokens.go
+internal/httpapi/claude/handler_errors.go
+internal/httpapi/claude/handler_utils.go
+internal/httpapi/claude/stream_runtime_core.go
+internal/httpapi/claude/stream_runtime_emit.go
+internal/httpapi/claude/stream_runtime_finalize.go
 
-internal/adapter/gemini/handler_routes.go
-internal/adapter/gemini/handler_generate.go
-internal/adapter/gemini/handler_stream_runtime.go
-internal/adapter/gemini/handler_errors.go
-internal/adapter/gemini/convert_request.go
-internal/adapter/gemini/convert_messages.go
-internal/adapter/gemini/convert_tools.go
-internal/adapter/gemini/convert_passthrough.go
+internal/httpapi/gemini/handler_routes.go
+internal/httpapi/gemini/handler_generate.go
+internal/httpapi/gemini/handler_stream_runtime.go
+internal/httpapi/gemini/handler_errors.go
+internal/httpapi/gemini/convert_request.go
+internal/httpapi/gemini/convert_messages.go
+internal/httpapi/gemini/convert_tools.go
+internal/httpapi/gemini/convert_passthrough.go
 
 internal/testsuite/runner_core.go
 internal/testsuite/runner_env.go
@@ -111,7 +109,6 @@ internal/js/helpers/stream-tool-sieve/state.js
 internal/js/helpers/stream-tool-sieve/sieve.js
 internal/js/helpers/stream-tool-sieve/sieve-xml.js
 internal/js/helpers/stream-tool-sieve/jsonscan.js
-internal/js/helpers/stream-tool-sieve/visible-json.js
 internal/js/helpers/stream-tool-sieve/parse.js
 internal/js/helpers/stream-tool-sieve/format.js
 

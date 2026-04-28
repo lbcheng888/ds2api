@@ -40,18 +40,9 @@ func TestValidateConfigRejectsInvalidValues(t *testing.T) {
 			want: "auto_delete.mode",
 		},
 		{
-			name: "history split",
-			cfg: Config{HistorySplit: HistorySplitConfig{
-				TriggerAfterTurns: intPtr(0),
-			}},
-			want: "history_split.trigger_after_turns",
-		},
-		{
-			name: "default reasoning effort",
-			cfg: Config{Compat: CompatConfig{
-				DefaultReasoningEffort: stringPtr("extreme"),
-			}},
-			want: "compat.default_reasoning_effort",
+			name: "current input file",
+			cfg:  Config{CurrentInputFile: CurrentInputFileConfig{MinChars: -1}},
+			want: "current_input_file.min_chars",
 		},
 	}
 
@@ -73,6 +64,3 @@ func TestValidateConfigAcceptsLegacyAutoDeleteSessions(t *testing.T) {
 		t.Fatalf("expected legacy auto_delete.sessions config to remain valid, got %v", err)
 	}
 }
-
-func intPtr(v int) *int          { return &v }
-func stringPtr(v string) *string { return &v }

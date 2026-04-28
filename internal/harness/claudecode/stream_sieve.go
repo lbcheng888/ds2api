@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"html"
 	"regexp"
 	"strings"
 
@@ -318,12 +319,39 @@ func ConsumeOrphanAgentParameterCapture(captured string, toolNames []string, all
 	}
 	parsed := toolcall.ParseToolCalls(captured[start:], []string{toolName})
 	if len(parsed) == 0 {
+		parsed = parseOrphanAgentParameterCalls(captured[start:], toolName)
+	}
+	if len(parsed) == 0 {
 		return "", nil, "", false
 	}
 	for i := range parsed {
 		parsed[i].Name = toolName
 	}
 	return captured[:start], parsed, "", true
+}
+
+var orphanAgentParameterGroupPattern = regexp.MustCompile(`(?is)<(?:parameter|param|argument)\b[^>]*\bname\s*=\s*["']description["'][^>]*>(.*?)</(?:parameter|param|argument)>\s*<(?:parameter|param|argument)\b[^>]*\bname\s*=\s*["']prompt["'][^>]*>(.*?)</(?:parameter|param|argument)>\s*([A-Za-z0-9_.-]+)?`)
+
+func parseOrphanAgentParameterCalls(text, toolName string) []toolcall.ParsedToolCall {
+	matches := orphanAgentParameterGroupPattern.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	calls := make([]toolcall.ParsedToolCall, 0, len(matches))
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		input := map[string]any{
+			"description": strings.TrimSpace(html.UnescapeString(match[1])),
+			"prompt":      strings.TrimSpace(html.UnescapeString(match[2])),
+		}
+		if len(match) >= 4 && strings.TrimSpace(match[3]) != "" {
+			input["subagent_type"] = strings.TrimSpace(match[3])
+		}
+		calls = append(calls, toolcall.ParsedToolCall{Name: toolName, Input: input})
+	}
+	return calls
 }
 
 func orphanAgentParameterStart(lower string) int {
