@@ -69,8 +69,9 @@ func TestRepairFinalOutputConvertsChineseMultipleSubagentLaunchPromise(t *testin
 	if !got.Changed || got.Reason != "agent_launch_promise" || !got.ToolCall {
 		t.Fatalf("expected Chinese multiple-subagent launch repair, got %#v", got)
 	}
-	if count := strings.Count(got.Text, "<tool_name>Agent</tool_name>"); count != 4 {
-		t.Fatalf("expected four Agent tool calls, got %d in %s", count, got.Text)
+	const expectAgents = 1 // adaptive launch: 1 file ref, no "implement"/"refactor" keywords
+	if count := strings.Count(got.Text, "<tool_name>Agent</tool_name>"); count != expectAgents {
+		t.Fatalf("expected %d Agent tool calls, got %d in %s", expectAgents, count, got.Text)
 	}
 }
 
@@ -112,15 +113,16 @@ func TestRepairFinalOutputConvertsLongChineseImplementationAgentLaunch(t *testin
 	if !got.Changed || got.Reason != "agent_launch_promise" || !got.ToolCall {
 		t.Fatalf("expected long Chinese implementation agent launch repair, got %#v", got)
 	}
-	if count := strings.Count(got.Text, "<tool_name>Agent</tool_name>"); count != 4 {
-		t.Fatalf("expected four Agent tool calls, got %d in %s", count, got.Text)
+	const expectAgents = 1 // adaptive launch: simple Chinese request, no file refs, no "implement"/"refactor" keywords
+	if count := strings.Count(got.Text, "<tool_name>Agent</tool_name>"); count != expectAgents {
+		t.Fatalf("expected %d Agent tool calls, got %d in %s", expectAgents, count, got.Text)
 	}
 	parsed, visible := DetectFinalToolCalls(FinalToolCallInput{
 		Text:      got.Text,
 		ToolNames: []string{"Agent"},
 	})
-	if len(parsed.Calls) != 4 {
-		t.Fatalf("expected synthesized XML to parse into four calls, got %#v", parsed)
+	if len(parsed.Calls) != expectAgents {
+		t.Fatalf("expected synthesized XML to parse into %d calls, got %#v", expectAgents, parsed)
 	}
 	if visible != "" {
 		t.Fatalf("expected synthesized Agent XML not to leak as visible text, got %q", visible)

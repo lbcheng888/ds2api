@@ -1,7 +1,10 @@
 import { X } from 'lucide-react'
-import { v4 as uuidv4 } from 'uuid'
 
 import { maskSecret } from '../../utils/maskSecret'
+
+function generateAPIKey() {
+    return `sk-${globalThis.crypto.randomUUID().replace(/-/g, '')}`
+}
 
 export default function AddKeyModal({ show, t, editingKey, newKey, setNewKey, loading, onClose, onAdd }) {
     if (!show) {
@@ -36,7 +39,7 @@ export default function AddKeyModal({ show, t, editingKey, newKey, setNewKey, lo
                             {!isEditing && (
                                 <button
                                     type="button"
-                                    onClick={() => setNewKey({ ...newKey, key: 'sk-' + uuidv4().replace(/-/g, '') })}
+                                    onClick={() => setNewKey({ ...newKey, key: generateAPIKey() })}
                                     className="px-3 py-2 bg-secondary text-secondary-foreground rounded-lg hover:bg-secondary/80 transition-colors text-sm font-medium border border-border whitespace-nowrap"
                                 >
                                     {t('accountManager.generate')}

@@ -8,11 +8,12 @@ import (
 )
 
 type Handler struct {
-	Store       adminshared.ConfigStore
-	Pool        adminshared.PoolController
-	DS          adminshared.DeepSeekCaller
-	OpenAI      adminshared.OpenAIChatCaller
-	ChatHistory *chathistory.Store
+	Store         adminshared.ConfigStore
+	Pool          adminshared.PoolController
+	AccountHealth adminshared.AccountHealthReporter
+	DS            adminshared.DeepSeekCaller
+	OpenAI        adminshared.OpenAIChatCaller
+	ChatHistory   *chathistory.Store
 }
 
 var writeJSON = adminshared.WriteJSON

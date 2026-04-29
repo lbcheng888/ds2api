@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"ds2api/internal/config"
+	"ds2api/internal/toolcall"
 	"ds2api/internal/util"
 )
 
@@ -35,24 +36,28 @@ func NormalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID 
 	toolPolicy := DefaultToolChoicePolicy()
 	finalPrompt, toolNames := BuildOpenAIPrompt(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled)
 	toolNames = ensureToolDetectionEnabled(toolNames, req["tools"])
+	toolSchemas := toolcall.ExtractParameterSchemas(req["tools"])
+	allowMetaAgentTools := compatAllowMetaAgentTools(store)
 	passThrough := collectOpenAIChatPassThrough(req)
 	refFileIDs := CollectOpenAIRefFileIDs(req)
 
 	return StandardRequest{
-		Surface:        "openai_chat",
-		RequestedModel: strings.TrimSpace(model),
-		ResolvedModel:  resolvedModel,
-		ResponseModel:  responseModel,
-		Messages:       messagesRaw,
-		ToolsRaw:       req["tools"],
-		FinalPrompt:    finalPrompt,
-		ToolNames:      toolNames,
-		ToolChoice:     toolPolicy,
-		Stream:         util.ToBool(req["stream"]),
-		Thinking:       thinkingEnabled,
-		Search:         searchEnabled,
-		RefFileIDs:     refFileIDs,
-		PassThrough:    passThrough,
+		Surface:             "openai_chat",
+		RequestedModel:      strings.TrimSpace(model),
+		ResolvedModel:       resolvedModel,
+		ResponseModel:       responseModel,
+		Messages:            messagesRaw,
+		ToolsRaw:            req["tools"],
+		FinalPrompt:         finalPrompt,
+		ToolNames:           toolNames,
+		ToolSchemas:         toolSchemas,
+		AllowMetaAgentTools: allowMetaAgentTools,
+		ToolChoice:          toolPolicy,
+		Stream:              util.ToBool(req["stream"]),
+		Thinking:            thinkingEnabled,
+		Search:              searchEnabled,
+		RefFileIDs:          refFileIDs,
+		PassThrough:         passThrough,
 	}, nil
 }
 
@@ -95,25 +100,40 @@ func NormalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 	if !toolPolicy.IsNone() {
 		toolPolicy.Allowed = namesToSet(toolNames)
 	}
+	toolSchemas := toolcall.ExtractParameterSchemas(req["tools"])
+	allowMetaAgentTools := compatAllowMetaAgentTools(store)
 	passThrough := collectOpenAIChatPassThrough(req)
 	refFileIDs := CollectOpenAIRefFileIDs(req)
 
 	return StandardRequest{
-		Surface:        "openai_responses",
-		RequestedModel: model,
-		ResolvedModel:  resolvedModel,
-		ResponseModel:  model,
-		Messages:       messagesRaw,
-		ToolsRaw:       req["tools"],
-		FinalPrompt:    finalPrompt,
-		ToolNames:      toolNames,
-		ToolChoice:     toolPolicy,
-		Stream:         util.ToBool(req["stream"]),
-		Thinking:       thinkingEnabled,
-		Search:         searchEnabled,
-		RefFileIDs:     refFileIDs,
-		PassThrough:    passThrough,
+		Surface:             "openai_responses",
+		RequestedModel:      model,
+		ResolvedModel:       resolvedModel,
+		ResponseModel:       model,
+		Messages:            messagesRaw,
+		ToolsRaw:            req["tools"],
+		FinalPrompt:         finalPrompt,
+		ToolNames:           toolNames,
+		ToolSchemas:         toolSchemas,
+		AllowMetaAgentTools: allowMetaAgentTools,
+		ToolChoice:          toolPolicy,
+		Stream:              util.ToBool(req["stream"]),
+		Thinking:            thinkingEnabled,
+		Search:              searchEnabled,
+		RefFileIDs:          refFileIDs,
+		PassThrough:         passThrough,
 	}, nil
+}
+
+func compatAllowMetaAgentTools(store ConfigReader) bool {
+	if store == nil {
+		return false
+	}
+	type metaAgentConfig interface {
+		CompatAllowMetaAgentTools() bool
+	}
+	cfg, ok := store.(metaAgentConfig)
+	return ok && cfg.CompatAllowMetaAgentTools()
 }
 
 func ensureToolDetectionEnabled(toolNames []string, toolsRaw any) []string {

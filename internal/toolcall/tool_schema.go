@@ -259,6 +259,29 @@ func normalizeToolList(raw any) []map[string]any {
 	}
 }
 
+// SchemaPropertyDefaults extracts default values from a tool's parameter schema.
+// Returns a map of property name -> default value for properties that have a "default" key.
+func SchemaPropertyDefaults(schemas ParameterSchemas, toolName string) map[string]any {
+	schema, ok := schemas[toolName]
+	if !ok || len(schema) == 0 {
+		return nil
+	}
+	properties := schemaProperties(schema)
+	if len(properties) == 0 {
+		return nil
+	}
+	defaults := make(map[string]any)
+	for name, propSchema := range properties {
+		if def, ok := propSchema["default"]; ok {
+			defaults[name] = def
+		}
+	}
+	if len(defaults) == 0 {
+		return nil
+	}
+	return defaults
+}
+
 func extractOneParameterSchema(tool map[string]any) (string, map[string]any) {
 	fn, _ := tool["function"].(map[string]any)
 	name := strings.TrimSpace(asSchemaString(tool["name"]))

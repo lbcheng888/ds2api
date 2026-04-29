@@ -41,6 +41,9 @@ type claudeStreamRuntime struct {
 	textBlockIndex     int
 	ended              bool
 	upstreamErr        string
+
+	recoveryNeeded bool
+	recoveryContext string
 }
 
 func newClaudeStreamRuntime(

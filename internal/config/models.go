@@ -19,6 +19,7 @@ const noThinkingModelSuffix = "-nothinking"
 var deepSeekBaseModels = []ModelInfo{
 	{ID: "deepseek-v4-flash", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
 	{ID: "deepseek-v4-pro", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
+	{ID: "deepseek-v4-pro[1m]", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
 	{ID: "deepseek-v4-flash-search", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
 	{ID: "deepseek-v4-pro-search", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
 	{ID: "deepseek-v4-vision", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
@@ -65,7 +66,7 @@ func GetModelConfig(model string) (thinking bool, search bool, ok bool) {
 		return false, false, false
 	}
 	switch baseModel {
-	case "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-vision":
+	case "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-vision":
 		return !noThinking, false, true
 	case "deepseek-v4-flash-search", "deepseek-v4-pro-search", "deepseek-v4-vision-search":
 		return !noThinking, true, true
@@ -79,7 +80,7 @@ func GetModelType(model string) (modelType string, ok bool) {
 	switch baseModel {
 	case "deepseek-v4-flash", "deepseek-v4-flash-search":
 		return "default", true
-	case "deepseek-v4-pro", "deepseek-v4-pro-search":
+	case "deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-pro-search":
 		return "expert", true
 	case "deepseek-v4-vision", "deepseek-v4-vision-search":
 		return "vision", true
@@ -208,11 +209,11 @@ func ResolveModel(store ModelAliasReader, requested string) (string, bool) {
 		return "", false
 	}
 	aliases := loadModelAliases(store)
-	if IsSupportedDeepSeekModel(model) {
-		return model, true
-	}
 	if mapped, ok := aliases[model]; ok && IsSupportedDeepSeekModel(mapped) {
 		return mapped, true
+	}
+	if IsSupportedDeepSeekModel(model) {
+		return model, true
 	}
 	baseModel, noThinking := splitNoThinkingModel(model)
 	resolvedModel, ok := resolveCanonicalModel(aliases, baseModel)

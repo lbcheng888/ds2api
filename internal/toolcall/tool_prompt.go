@@ -30,6 +30,7 @@ RULES:
 10) If you call a tool, the first non-whitespace characters of that tool block must be exactly <|DSML|tool_calls>.
 11) Never omit the opening <|DSML|tool_calls> tag, even if you already plan to close with </|DSML|tool_calls>.
 12) Compatibility note: the runtime also accepts the legacy XML tags <tool_calls> / <invoke> / <parameter>, but prefer the DSML-prefixed form above.
+13) TaskCreate, TaskUpdate, TodoWrite, and TodoRead are bookkeeping only. Do not call them as the only tool in a response; if work remains, call Read, Bash, Edit, MultiEdit, Agent, or another real execution tool in the same response.
 
 PARAMETER SHAPES:
 - string => <|DSML|parameter name="x"><![CDATA[value]]></|DSML|parameter>

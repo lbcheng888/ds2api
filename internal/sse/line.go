@@ -41,27 +41,27 @@ func ParseDeepSeekContentLine(raw []byte, thinkingEnabled bool, currentType stri
 	if done {
 		return LineResult{Parsed: true, Stop: true, Done: true, NextType: currentType}
 	}
-		if errObj, hasErr := chunk["error"]; hasErr {
-			return LineResult{
-				Parsed:       true,
-				Stop:         true,
-				ErrorMessage: fmt.Sprintf("%v", errObj),
-				ErrorCode:    "upstream_error",
-				NextType:     currentType,
-			}
+	if errObj, hasErr := chunk["error"]; hasErr {
+		return LineResult{
+			Parsed:       true,
+			Stop:         true,
+			ErrorMessage: fmt.Sprintf("%v", errObj),
+			ErrorCode:    "upstream_error",
+			NextType:     currentType,
 		}
-		if message, code, ok := parseUpstreamHintError(chunk); ok {
-			return LineResult{
-				Parsed:       true,
-				Stop:         true,
-				ErrorMessage: message,
-				ErrorCode:    code,
-				NextType:     currentType,
-			}
+	}
+	if message, code, ok := parseUpstreamHintError(chunk); ok {
+		return LineResult{
+			Parsed:       true,
+			Stop:         true,
+			ErrorMessage: message,
+			ErrorCode:    code,
+			NextType:     currentType,
 		}
-		if code, _ := chunk["code"].(string); code == "content_filter" {
-			return LineResult{
-				Parsed:        true,
+	}
+	if code, _ := chunk["code"].(string); code == "content_filter" {
+		return LineResult{
+			Parsed:        true,
 			Stop:          true,
 			ContentFilter: true,
 			NextType:      currentType,

@@ -320,10 +320,11 @@ async function handleVercelStream(req, res, rawBody, payload) {
               if (!parsed.parsed) {
                 continue;
               }
-              currentType = parsed.newType;
-              if (parsed.errorMessage) {
-                return { terminal: await finish('content_filter'), retryable: false };
-              }
+	              currentType = parsed.newType;
+	              if (parsed.errorMessage) {
+	                const detail = upstreamStreamErrorDetail(parsed.errorCode, parsed.errorMessage);
+	                return { terminal: await failTerminal(detail.status, detail.message, detail.code), retryable: false };
+	              }
               if (parsed.contentFilter) {
                 return { terminal: await finish(outputText.trim() === '' ? 'content_filter' : 'stop'), retryable: false };
               }
@@ -598,6 +599,32 @@ function upstreamEmptyOutputDetail(contentFilter, _text, thinking) {
     status: 429,
     message: 'Upstream account hit a rate limit and returned empty output.',
     code: 'upstream_empty_output',
+  };
+}
+
+function upstreamStreamErrorDetail(code, message) {
+  const normalizedCode = typeof code === 'string' ? code.trim() : '';
+  const normalizedMessage = typeof message === 'string' && message.trim() !== ''
+    ? message.trim()
+    : 'Upstream stream error.';
+  if (normalizedCode === 'input_exceeds_limit' || normalizedCode === 'upstream_input_exceeds_limit') {
+    return {
+      status: 413,
+      message: normalizedMessage,
+      code: 'input_exceeds_limit',
+    };
+  }
+  if (normalizedCode === 'content_filter') {
+    return {
+      status: 400,
+      message: normalizedMessage,
+      code: 'content_filter',
+    };
+  }
+  return {
+    status: 502,
+    message: normalizedMessage,
+    code: normalizedCode || 'upstream_error',
   };
 }
 

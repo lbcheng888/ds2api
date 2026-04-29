@@ -8,6 +8,7 @@ import (
 	openaifmt "ds2api/internal/format/openai"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
+	"ds2api/internal/toolcall"
 	"ds2api/internal/toolstream"
 )
 
@@ -16,11 +17,13 @@ type chatStreamRuntime struct {
 	rc       *http.ResponseController
 	canFlush bool
 
-	completionID string
-	created      int64
-	model        string
-	finalPrompt  string
-	toolNames    []string
+	completionID        string
+	created             int64
+	model               string
+	finalPrompt         string
+	toolNames           []string
+	toolSchemas         toolcall.ParameterSchemas
+	allowMetaAgentTools bool
 
 	thinkingEnabled       bool
 	searchEnabled         bool
@@ -62,6 +65,8 @@ func newChatStreamRuntime(
 	searchEnabled bool,
 	stripReferenceMarkers bool,
 	toolNames []string,
+	toolSchemas toolcall.ParameterSchemas,
+	allowMetaAgentTools bool,
 	bufferToolContent bool,
 	emitEarlyToolDeltas bool,
 ) *chatStreamRuntime {
@@ -74,6 +79,8 @@ func newChatStreamRuntime(
 		model:                 model,
 		finalPrompt:           finalPrompt,
 		toolNames:             toolNames,
+		toolSchemas:           toolSchemas,
+		allowMetaAgentTools:   allowMetaAgentTools,
 		thinkingEnabled:       thinkingEnabled,
 		searchEnabled:         searchEnabled,
 		stripReferenceMarkers: stripReferenceMarkers,
@@ -147,6 +154,7 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 	s.finalThinking = finalThinking
 	s.finalText = finalText
 	detected := detectAssistantToolCalls(finalText, finalThinking, finalToolDetectionThinking, s.toolNames)
+	detected.Calls = toolcall.NormalizeCallsForSchemasWithMeta(detected.Calls, s.toolSchemas, s.allowMetaAgentTools)
 	if status, message, code, ok := invalidTaskOutputCallDetail(detected.Calls, s.finalPrompt); ok {
 		s.sendFailedChunk(status, message, code)
 		return true
@@ -177,7 +185,11 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 				return true
 			}
 			if len(evt.ToolCalls) > 0 {
-				if status, message, code, ok := invalidTaskOutputCallDetail(evt.ToolCalls, s.finalPrompt); ok {
+				calls := toolcall.NormalizeCallsForSchemasWithMeta(evt.ToolCalls, s.toolSchemas, s.allowMetaAgentTools)
+				if len(calls) == 0 {
+					continue
+				}
+				if status, message, code, ok := invalidTaskOutputCallDetail(calls, s.finalPrompt); ok {
 					s.sendFailedChunk(status, message, code)
 					return true
 				}
@@ -185,7 +197,7 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 				s.toolCallsEmitted = true
 				s.toolCallsDoneEmitted = true
 				tcDelta := map[string]any{
-					"tool_calls": formatFinalStreamToolCallsWithStableIDs(evt.ToolCalls, s.streamToolCallIDs),
+					"tool_calls": formatFinalStreamToolCallsWithStableIDs(calls, s.streamToolCallIDs),
 				}
 				if !s.firstChunkSent {
 					tcDelta["role"] = "assistant"
@@ -200,32 +212,24 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 				))
 				s.resetStreamToolCallState()
 			}
-			if evt.Content == "" {
-				continue
-			}
-			cleaned := cleanVisibleOutput(evt.Content, s.stripReferenceMarkers)
-			if cleaned == "" {
-				continue
-			}
-			delta := map[string]any{
-				"content": cleaned,
-			}
-			if !s.firstChunkSent {
-				delta["role"] = "assistant"
-				s.firstChunkSent = true
-			}
-			s.sendChunk(openaifmt.BuildChatStreamChunk(
-				s.completionID,
-				s.created,
-				s.model,
-				[]map[string]any{openaifmt.BuildChatStreamDeltaChoice(0, delta)},
-				nil,
-			))
 		}
 	}
 
 	if len(detected.Calls) > 0 || s.toolCallsEmitted {
 		finishReason = "tool_calls"
+	}
+	if len(detected.Calls) == 0 && !s.toolCallsEmitted {
+		if status, message, code, ok := missingToolCallDetail(finalText, s.finalPrompt, s.toolNames, s.toolSchemas, s.allowMetaAgentTools); ok {
+			if deferEmptyOutput {
+				s.finalErrorStatus = status
+				s.finalErrorMessage = message
+				s.finalErrorCode = code
+				s.resetRetryableVisibleAttempt()
+				return false
+			}
+			s.sendFailedChunk(status, message, code)
+			return true
+		}
 	}
 	if len(detected.Calls) == 0 && !s.toolCallsEmitted && strings.TrimSpace(finalText) == "" {
 		status, message, code := upstreamEmptyOutputDetail(finishReason == "content_filter", finalText, finalThinking)
@@ -233,10 +237,14 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 			s.finalErrorStatus = status
 			s.finalErrorMessage = message
 			s.finalErrorCode = code
+			s.resetRetryableVisibleAttempt()
 			return false
 		}
 		s.sendFailedChunk(status, message, code)
 		return true
+	}
+	if len(detected.Calls) == 0 && !s.toolCallsEmitted && s.bufferToolContent {
+		s.emitFinalContent(finalText)
 	}
 	usage := openaifmt.BuildChatUsage(s.finalPrompt, finalThinking, finalText)
 	s.finalFinishReason = finishReason
@@ -251,6 +259,36 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 	))
 	s.sendDone()
 	return true
+}
+
+func (s *chatStreamRuntime) resetRetryableVisibleAttempt() {
+	s.text.Reset()
+	s.toolDetectionThinking.Reset()
+	s.toolSieve = toolstream.State{}
+	s.resetStreamToolCallState()
+	s.toolCallsEmitted = false
+	s.toolCallsDoneEmitted = false
+}
+
+func (s *chatStreamRuntime) emitFinalContent(text string) {
+	cleaned := cleanVisibleOutput(text, s.stripReferenceMarkers)
+	if strings.TrimSpace(cleaned) == "" {
+		return
+	}
+	delta := map[string]any{
+		"content": cleaned,
+	}
+	if !s.firstChunkSent {
+		delta["role"] = "assistant"
+		s.firstChunkSent = true
+	}
+	s.sendChunk(openaifmt.BuildChatStreamChunk(
+		s.completionID,
+		s.created,
+		s.model,
+		[]map[string]any{openaifmt.BuildChatStreamDeltaChoice(0, delta)},
+		nil,
+	))
 }
 
 func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedDecision {
@@ -293,10 +331,6 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 		}
 		contentSeen = true
 		delta := map[string]any{}
-		if !s.firstChunkSent {
-			delta["role"] = "assistant"
-			s.firstChunkSent = true
-		}
 		if p.Type == "thinking" {
 			if s.thinkingEnabled {
 				trimmed := sse.TrimContinuationOverlap(s.thinking.String(), cleanedText)
@@ -304,6 +338,10 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 					continue
 				}
 				s.thinking.WriteString(trimmed)
+				if !s.firstChunkSent {
+					delta["role"] = "assistant"
+					s.firstChunkSent = true
+				}
 				delta["reasoning_content"] = trimmed
 			}
 		} else {
@@ -313,6 +351,10 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 			}
 			s.text.WriteString(trimmed)
 			if !s.bufferToolContent {
+				if !s.firstChunkSent {
+					delta["role"] = "assistant"
+					s.firstChunkSent = true
+				}
 				delta["content"] = trimmed
 			} else {
 				events := toolstream.ProcessChunk(&s.toolSieve, trimmed, s.toolNames)
@@ -346,14 +388,18 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 						continue
 					}
 					if len(evt.ToolCalls) > 0 {
-						if status, message, code, ok := invalidTaskOutputCallDetail(evt.ToolCalls, s.finalPrompt); ok {
+						calls := toolcall.NormalizeCallsForSchemasWithMeta(evt.ToolCalls, s.toolSchemas, s.allowMetaAgentTools)
+						if len(calls) == 0 {
+							continue
+						}
+						if status, message, code, ok := invalidTaskOutputCallDetail(calls, s.finalPrompt); ok {
 							s.sendFailedChunk(status, message, code)
 							return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReasonHandlerRequested, ContentSeen: true}
 						}
 						s.toolCallsEmitted = true
 						s.toolCallsDoneEmitted = true
 						tcDelta := map[string]any{
-							"tool_calls": formatFinalStreamToolCallsWithStableIDs(evt.ToolCalls, s.streamToolCallIDs),
+							"tool_calls": formatFinalStreamToolCallsWithStableIDs(calls, s.streamToolCallIDs),
 						}
 						if !s.firstChunkSent {
 							tcDelta["role"] = "assistant"
@@ -364,18 +410,7 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 						continue
 					}
 					if evt.Content != "" {
-						cleaned := cleanVisibleOutput(evt.Content, s.stripReferenceMarkers)
-						if cleaned == "" {
-							continue
-						}
-						contentDelta := map[string]any{
-							"content": cleaned,
-						}
-						if !s.firstChunkSent {
-							contentDelta["role"] = "assistant"
-							s.firstChunkSent = true
-						}
-						newChoices = append(newChoices, openaifmt.BuildChatStreamDeltaChoice(0, contentDelta))
+						continue
 					}
 				}
 			}

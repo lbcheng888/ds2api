@@ -38,6 +38,9 @@ func DetectMissingToolCall(in MissingToolCallInput) MissingToolCallDecision {
 	if len(toolcall.NormalizeCallsForSchemasWithMeta(parsed.Calls, in.ToolSchemas, in.AllowMetaAgentTools)) > 0 {
 		return MissingToolCallDecision{}
 	}
+	if len(parsed.Calls) > 0 && toolcall.AllCallsAreTaskTrackingTools(parsed.Calls) {
+		return missingToolDecision()
+	}
 	if parsed.SawToolCallSyntax {
 		return invalidToolSyntaxDecision()
 	}
@@ -259,6 +262,8 @@ func looksLikeFutureToolAction(text string) bool {
 		"并行读取需修改",
 		"先读",
 		"先读取",
+		"逐个分析",
+		"然后处理",
 		"继续读取",
 		"reading the rest",
 		"now reading",
@@ -291,6 +296,7 @@ func futureActionPrefixes() []string {
 		"now i will ",
 		"我将",
 		"我会",
+		"我先",
 		"让我",
 		"先",
 		"接下来",

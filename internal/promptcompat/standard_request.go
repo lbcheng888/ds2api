@@ -18,6 +18,7 @@ type StandardRequest struct {
 	FinalPrompt             string
 	ToolNames               []string
 	ToolSchemas             toolcall.ParameterSchemas
+	AllowMetaAgentTools     bool
 	ToolChoice              ToolChoicePolicy
 	Stream                  bool
 	Thinking                bool

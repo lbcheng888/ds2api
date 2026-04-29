@@ -57,45 +57,100 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 			AllowMetaAgentTools: s.allowMetaAgentTools,
 		})
 		visibleText = evaluated.Text
-		if len(evaluated.DroppedTaskOutputIDs) > 0 {
-			s.sendError("Upstream model requested TaskOutput for an unknown or inactive task_id.")
-			return
-		}
-		detected := evaluated.Calls
-		if len(detected) > 0 {
-			stopReason = "tool_use"
+
+		// DroppedTaskOutputIDs: silently filter, keep valid calls. Do NOT error out.
+		// The filtering is already done inside EvaluateFinalOutput — evaluated.Calls
+		// already has invalid calls removed. Just proceed normally.
+
+		if evaluated.MissingToolDecision.Blocked {
+			// Smart recovery: emit visible text + correction prompt, end turn normally.
+			s.recoveryNeeded = true
+			s.recoveryContext = "The model described planned work but didn't emit tool calls. Retrying with clearer instructions..."
+			if visibleText == "" {
+				visibleText = "Let me try again with the correct tool calls."
+			}
 			s.emitBufferedText(visibleText)
-			for i, tc := range detected {
-				idx := s.nextBlockIndex + i
+			s.emitBufferedText("[System-Reminder: " + s.recoveryContext + "]")
+		} else {
+			detected := evaluated.Calls
+			if len(detected) > 0 {
+				stopReason = "tool_use"
+				s.emitBufferedText(visibleText)
+				for i, tc := range detected {
+					idx := s.nextBlockIndex + i
+					s.send("content_block_start", map[string]any{
+						"type":  "content_block_start",
+						"index": idx,
+						"content_block": map[string]any{
+							"type":  "tool_use",
+							"id":    fmt.Sprintf("toolu_%d_%d", time.Now().Unix(), idx),
+							"name":  tc.Name,
+							"input": map[string]any{},
+						},
+					})
+
+					inputBytes, _ := json.Marshal(tc.Input)
+					s.send("content_block_delta", map[string]any{
+						"type":  "content_block_delta",
+						"index": idx,
+						"delta": map[string]any{
+							"type":         "input_json_delta",
+							"partial_json": string(inputBytes),
+						},
+					})
+
+					s.send("content_block_stop", map[string]any{
+						"type":  "content_block_stop",
+						"index": idx,
+					})
+				}
+				s.nextBlockIndex += len(detected)
+			} else if visibleText != "" {
+				s.emitBufferedText(visibleText)
+			}
+		}
+	} else {
+		// Lightweight harness evaluation for non-buffered mode.
+		// Text has already been emitted via streaming; we can only append warnings.
+		parsed, _ := claudecodeharness.DetectFinalToolCalls(claudecodeharness.FinalToolCallInput{
+			Text:      finalText,
+			Thinking:  finalThinking,
+			ToolNames: s.toolNames,
+		})
+		if len(parsed.Calls) == 0 {
+			missingDecision := claudecodeharness.DetectMissingToolCall(claudecodeharness.MissingToolCallInput{
+				Text:                finalText,
+				FinalPrompt:         s.finalPrompt,
+				ToolNames:           s.toolNames,
+				ToolSchemas:         s.toolSchemas,
+				AllowMetaAgentTools: s.allowMetaAgentTools,
+			})
+			if missingDecision.Blocked {
+				// Emit a warning-level text block appended after streaming content.
+				// This is NOT an error -- text has already been sent to the client.
+				idx := s.nextBlockIndex
+				s.nextBlockIndex++
 				s.send("content_block_start", map[string]any{
 					"type":  "content_block_start",
 					"index": idx,
 					"content_block": map[string]any{
-						"type":  "tool_use",
-						"id":    fmt.Sprintf("toolu_%d_%d", time.Now().Unix(), idx),
-						"name":  tc.Name,
-						"input": map[string]any{},
+						"type": "text",
+						"text": "",
 					},
 				})
-
-				inputBytes, _ := json.Marshal(tc.Input)
 				s.send("content_block_delta", map[string]any{
 					"type":  "content_block_delta",
 					"index": idx,
 					"delta": map[string]any{
-						"type":         "input_json_delta",
-						"partial_json": string(inputBytes),
+						"type": "text_delta",
+						"text": "\n\n[System Reminder: " + missingDecision.Message + "]",
 					},
 				})
-
 				s.send("content_block_stop", map[string]any{
 					"type":  "content_block_stop",
 					"index": idx,
 				})
 			}
-			s.nextBlockIndex += len(detected)
-		} else if visibleText != "" {
-			s.emitBufferedText(visibleText)
 		}
 	}
 
@@ -151,4 +206,8 @@ func (s *claudeStreamRuntime) onFinalize(reason streamengine.StopReason, scanner
 		return
 	}
 	s.finalize("end_turn")
+}
+
+func (s *claudeStreamRuntime) IsRecoveryNeeded() bool {
+	return s.recoveryNeeded
 }

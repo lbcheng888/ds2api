@@ -192,6 +192,42 @@ func TestHandleClaudeStreamRealtimeUpstreamErrorEvent(t *testing.T) {
 	}
 }
 
+func TestHandleClaudeStreamRealtimeErrorsOnMissingToolPromise(t *testing.T) {
+	h := &Handler{}
+	resp := makeClaudeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"三个文件冲突较多。我先逐个分析，然后处理。"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "请继续"}}, false, false, []string{"Read", "Bash"})
+
+	frames := parseClaudeFrames(t, rec.Body.String())
+	errFrames := findClaudeFrames(frames, "error")
+	if len(errFrames) != 0 {
+		t.Fatalf("unexpected error event frame (smart recovery should not error), body=%s", rec.Body.String())
+	}
+	if len(findClaudeFrames(frames, "message_stop")) == 0 {
+		t.Fatalf("missing-tool recovery must send message_stop, body=%s", rec.Body.String())
+	}
+	// Verify System-Reminder text is present in a content_block_delta.
+	foundReminder := false
+	for _, f := range frames {
+		if f.Event != "content_block_delta" {
+			continue
+		}
+		delta, _ := f.Payload["delta"].(map[string]any)
+		if deltaText, _ := delta["text"].(string); strings.Contains(deltaText, "System-Reminder") {
+			foundReminder = true
+			break
+		}
+	}
+	if !foundReminder {
+		t.Fatalf("expected System-Reminder text in content_block_delta, body=%s", rec.Body.String())
+	}
+}
+
 func TestHandleClaudeStreamRealtimePingEvent(t *testing.T) {
 	h := &Handler{}
 	oldPing := claudeStreamPingInterval

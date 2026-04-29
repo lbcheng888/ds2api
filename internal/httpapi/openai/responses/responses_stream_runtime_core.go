@@ -22,12 +22,14 @@ type responsesStreamRuntime struct {
 	model       string
 	finalPrompt string
 	toolNames   []string
+	toolSchemas toolcall.ParameterSchemas
 	traceID     string
 	toolChoice  promptcompat.ToolChoicePolicy
 
 	thinkingEnabled       bool
 	searchEnabled         bool
 	stripReferenceMarkers bool
+	allowMetaAgentTools   bool
 
 	bufferToolContent    bool
 	emitEarlyToolDeltas  bool
@@ -76,6 +78,8 @@ func newResponsesStreamRuntime(
 	searchEnabled bool,
 	stripReferenceMarkers bool,
 	toolNames []string,
+	toolSchemas toolcall.ParameterSchemas,
+	allowMetaAgentTools bool,
 	bufferToolContent bool,
 	emitEarlyToolDeltas bool,
 	toolChoice promptcompat.ToolChoicePolicy,
@@ -93,6 +97,8 @@ func newResponsesStreamRuntime(
 		searchEnabled:         searchEnabled,
 		stripReferenceMarkers: stripReferenceMarkers,
 		toolNames:             toolNames,
+		toolSchemas:           toolSchemas,
+		allowMetaAgentTools:   allowMetaAgentTools,
 		bufferToolContent:     bufferToolContent,
 		emitEarlyToolDeltas:   emitEarlyToolDeltas,
 		streamToolCallIDs:     map[int]string{},
@@ -162,11 +168,32 @@ func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput 
 	}
 
 	textParsed := detectAssistantToolCalls(finalText, finalThinking, finalToolDetectionThinking, s.toolNames)
+	textParsed.Calls = toolcall.NormalizeCallsForSchemasWithMeta(textParsed.Calls, s.toolSchemas, s.allowMetaAgentTools)
 	detected := textParsed.Calls
 	s.logToolPolicyRejections(textParsed)
 	if status, message, code, ok := invalidTaskOutputCallDetail(detected, s.finalPrompt); ok {
 		s.failResponse(status, message, code)
 		return true
+	}
+	if len(detected) == 0 {
+		if status, message, code, ok := missingToolCallDetail(finalText, s.finalPrompt, s.toolNames, s.toolSchemas, s.allowMetaAgentTools); ok {
+			if !s.bufferToolContent {
+				// Non-buffered mode: text has already been emitted to the client.
+				// We cannot fail the response. Log the detection and complete normally.
+				config.Logger.Warn("[responses] missing tool call in non-buffered mode",
+					"trace_id", strings.TrimSpace(s.traceID),
+					"message", message,
+				)
+			} else if deferEmptyOutput && !s.messageAdded {
+				s.finalErrorStatus = status
+				s.finalErrorMessage = message
+				s.finalErrorCode = code
+				return false
+			} else {
+				s.failResponse(status, message, code)
+				return true
+			}
+		}
 	}
 
 	if len(detected) > 0 {
@@ -176,6 +203,9 @@ func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput 
 		}
 	}
 
+	if len(detected) == 0 && strings.TrimSpace(finalText) != "" && !s.messageAdded {
+		s.emitTextDelta(finalText)
+	}
 	s.closeMessageItem()
 
 	if s.toolChoice.IsRequired() && len(detected) == 0 {
@@ -280,7 +310,7 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 			s.emitTextDelta(trimmed)
 			continue
 		}
-		s.processToolStreamEvents(toolstream.ProcessChunk(&s.sieve, trimmed, s.toolNames), true, true)
+		s.processToolStreamEvents(toolstream.ProcessChunk(&s.sieve, trimmed, s.toolNames), false, true)
 		if s.failed {
 			return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReasonHandlerRequested, ContentSeen: true}
 		}

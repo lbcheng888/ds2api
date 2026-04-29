@@ -1,4 +1,4 @@
-package admin
+package rawsamples
 
 import (
 	"encoding/json"

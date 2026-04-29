@@ -145,3 +145,7 @@ func invalidTaskOutputCallDetail(calls []toolcall.ParsedToolCall, finalPrompt st
 func invalidToolCallDetail(message string) (int, string, string) {
 	return shared.InvalidToolCallDetail(message)
 }
+
+func missingToolCallDetail(finalText, finalPrompt string, toolNames []string, toolSchemas toolcall.ParameterSchemas, allowMetaAgentTools bool) (int, string, string, bool) {
+	return shared.MissingToolCallDetail(finalText, finalPrompt, toolNames, toolSchemas, allowMetaAgentTools)
+}

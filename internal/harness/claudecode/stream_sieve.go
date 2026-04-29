@@ -8,6 +8,10 @@ import (
 	"ds2api/internal/toolcall"
 )
 
+// Patterns for extracting incremental deltas from XML tool call content.
+var streamToolNameExtractRE = regexp.MustCompile(`(?is)<tool_name\b[^>]*>(.*?)</tool_name>`)
+var streamParamExtractRE = regexp.MustCompile(`(?is)<parameter\s+name\s*=\s*"([^"]*)"\s*>(.*?)</parameter\s*>`)
+
 type StreamSieveState struct {
 	pending               strings.Builder
 	capture               strings.Builder
@@ -63,6 +67,268 @@ var streamXMLToolTagsToDetect = []string{"<tool_calls>", "<tool_calls\n", "tool_
 	"<parameter name=\"description\"", "<parameter name='description'", "<parameter name=description",
 	"<param name=\"description\"", "<argument name=\"description\""}
 
+// generateIncrementalDeltas examines the current capture buffer and emits
+// StreamToolCallDelta events for any newly detected tool name or arguments
+// content since the last call. The caller must have already written pending
+// content into state.capture before calling.
+func generateIncrementalDeltas(state *StreamSieveState) []StreamToolCallDelta {
+	if state == nil || state.disableDeltas {
+		return nil
+	}
+	captured := state.capture.String()
+	if captured == "" {
+		return nil
+	}
+
+	trimmed := strings.TrimSpace(captured)
+	if trimmed == "" {
+		return nil
+	}
+
+	// Detect format: JSON tool calls start with { or [, XML starts with <.
+	if trimmed[0] == '{' || trimmed[0] == '[' {
+		return jsonIncrementalDeltas(state, captured)
+	}
+	if trimmed[0] == '<' {
+		return xmlIncrementalDeltas(state, captured)
+	}
+	// Some XML variants may be preceded by whitespace only.
+	if strings.HasPrefix(trimmed, "<") {
+		return xmlIncrementalDeltas(state, captured)
+	}
+	return nil
+}
+
+// xmlIncrementalDeltas extracts tool name and parameters from the capture buffer
+// and emits incremental deltas as more XML content arrives.
+func xmlIncrementalDeltas(state *StreamSieveState, captured string) []StreamToolCallDelta {
+	var deltas []StreamToolCallDelta
+
+	// 1. Tool name detection
+	if !state.toolNameSent {
+		m := streamToolNameExtractRE.FindStringSubmatch(captured)
+		if len(m) >= 2 {
+			name := strings.TrimSpace(m[1])
+			if name != "" {
+				state.toolName = name
+				state.toolNameSent = true
+				deltas = append(deltas, StreamToolCallDelta{
+					Index: 0,
+					Name:  name,
+				})
+			}
+		}
+	}
+
+	// 2. Arguments from <parameter> tags
+	params := streamParamExtractRE.FindAllStringSubmatch(captured, -1)
+	if len(params) > 0 {
+		// Collect parameter names and values preserving order.
+		type paramKV struct {
+			key string
+			val string
+		}
+		kvs := make([]paramKV, 0, len(params))
+		for _, p := range params {
+			if len(p) < 3 {
+				continue
+			}
+			key := strings.TrimSpace(p[1])
+			val := strings.TrimSpace(html.UnescapeString(p[2]))
+			if key != "" {
+				kvs = append(kvs, paramKV{key: key, val: val})
+			}
+		}
+
+		// Build JSON object from parameters.
+		var buf strings.Builder
+		buf.WriteByte('{')
+		for i, kv := range kvs {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			buf.WriteString(`"`)
+			buf.WriteString(jsonEscape(kv.key))
+			buf.WriteString(`":"`)
+			buf.WriteString(jsonEscape(kv.val))
+			buf.WriteString(`"`)
+		}
+		buf.WriteByte('}')
+		argsJSON := buf.String()
+
+		if len(argsJSON) > state.toolArgsSent && state.toolArgsSent >= 0 {
+			newPortion := argsJSON[state.toolArgsSent:]
+			state.toolArgsSent = len(argsJSON)
+			deltas = append(deltas, StreamToolCallDelta{
+				Index:     0,
+				Arguments: newPortion,
+			})
+		} else if state.toolArgsSent == -1 && argsJSON != "{}" {
+			// First time we have arguments to send.
+			state.toolArgsSent = len(argsJSON)
+			deltas = append(deltas, StreamToolCallDelta{
+				Index:     0,
+				Arguments: argsJSON,
+			})
+		}
+	} else if state.toolNameSent && state.toolArgsSent < 0 && strings.Contains(captured, "<parameter") {
+		// Tool name is known and we see parameter tags starting, but no complete parameters yet.
+		// Emit opening brace for arguments.
+		state.toolArgsSent = 0
+		deltas = append(deltas, StreamToolCallDelta{
+			Index:     0,
+			Arguments: "{",
+		})
+	}
+
+	return deltas
+}
+
+// jsonIncrementalDeltas extracts tool name and arguments from partial JSON
+// content in the capture buffer and emits incremental deltas.
+func jsonIncrementalDeltas(state *StreamSieveState, captured string) []StreamToolCallDelta {
+	var deltas []StreamToolCallDelta
+
+	// Work with trimmed content, unwrapping array wrapper.
+	jsonPart := strings.TrimSpace(captured)
+	if strings.HasPrefix(jsonPart, "[") {
+		braceIdx := strings.Index(jsonPart, "{")
+		if braceIdx < 0 {
+			return nil
+		}
+		jsonPart = jsonPart[braceIdx:]
+	}
+	if !strings.HasPrefix(jsonPart, "{") {
+		return nil
+	}
+
+	// 1. Tool name extraction
+	if !state.toolNameSent {
+		name := extractJSONStringField(jsonPart, "tool")
+		if name == "" {
+			name = extractJSONStringField(jsonPart, "name")
+		}
+		if name == "" {
+			name = extractJSONStringField(jsonPart, "function")
+		}
+		if name != "" {
+			state.toolName = name
+			state.toolNameSent = true
+			deltas = append(deltas, StreamToolCallDelta{
+				Index: 0,
+				Name:  name,
+			})
+		}
+	}
+
+	// 2. Arguments extraction
+	argsOffset := findJSONFieldValueStart(jsonPart, "arguments")
+	if argsOffset < 0 {
+		argsOffset = findJSONFieldValueStart(jsonPart, "input")
+	}
+	if argsOffset >= 0 {
+		if state.toolArgsStart < 0 {
+			state.toolArgsStart = argsOffset
+		}
+		if argsOffset == state.toolArgsStart {
+			argsValue := jsonPart[argsOffset:]
+			// Track the length of the raw arguments value.
+			rawLen := len(argsValue)
+			if rawLen > state.toolArgsSent {
+				newPart := argsValue[state.toolArgsSent:]
+				state.toolArgsSent = rawLen
+				if newPart != "" {
+					deltas = append(deltas, StreamToolCallDelta{
+						Index:     0,
+						Arguments: newPart,
+					})
+				}
+			}
+		}
+	}
+
+	return deltas
+}
+
+// extractJSONStringField extracts the string value of a named field from JSON-like text.
+// E.g., extractJSONStringField(`{"tool":"Read","args":...}`, "tool") returns "Read".
+func extractJSONStringField(json string, field string) string {
+	quoted := `"` + field + `"`
+	idx := strings.Index(json, quoted)
+	if idx < 0 {
+		return ""
+	}
+	after := json[idx+len(quoted):]
+	// Skip colon and any whitespace.
+	colonIdx := -1
+	for i, ch := range after {
+		if ch == ':' {
+			colonIdx = i
+			break
+		}
+		if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n' {
+			return ""
+		}
+	}
+	if colonIdx < 0 {
+		return ""
+	}
+	afterColon := strings.TrimLeft(after[colonIdx+1:], " \t\r\n")
+	if !strings.HasPrefix(afterColon, `"`) {
+		return ""
+	}
+	// Find closing quote (not escaped).
+	for j := 1; j < len(afterColon); j++ {
+		if afterColon[j] == '\\' {
+			j++
+			continue
+		}
+		if afterColon[j] == '"' {
+			return afterColon[1:j]
+		}
+	}
+	// Partial value (closing quote not yet streamed).
+	return afterColon[1:]
+}
+
+// findJSONFieldValueStart finds the byte offset in json immediately after
+// `"fieldName":` (skipping whitespace). Returns -1 if not found.
+func findJSONFieldValueStart(json string, field string) int {
+	quoted := `"` + field + `"`
+	idx := strings.Index(json, quoted)
+	if idx < 0 {
+		return -1
+	}
+	after := json[idx+len(quoted):]
+	// Find colon.
+	colonIdx := -1
+	for i, ch := range after {
+		if ch == ':' {
+			colonIdx = i
+			break
+		}
+		if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n' {
+			return -1
+		}
+	}
+	if colonIdx < 0 {
+		return -1
+	}
+	afterColon := after[colonIdx+1:]
+	trimmed := strings.TrimLeft(afterColon, " \t\r\n")
+	return len(json) - len(trimmed)
+}
+
+// jsonEscape escapes a string for safe inclusion in a JSON string value.
+func jsonEscape(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
+	return s
+}
+
 func ProcessStreamSieveChunk(state *StreamSieveState, chunk string, toolNames []string) []StreamSieveEvent {
 	return ProcessStreamSieveChunkWithMeta(state, chunk, toolNames, false)
 }
@@ -86,6 +352,10 @@ func ProcessStreamSieveChunkWithMeta(state *StreamSieveState, chunk string, tool
 			if state.pending.Len() > 0 {
 				state.capture.WriteString(state.pending.String())
 				state.pending.Reset()
+			}
+			// Emit incremental deltas before checking completeness.
+			if deltas := generateIncrementalDeltas(state); len(deltas) > 0 {
+				events = append(events, StreamSieveEvent{ToolCallDeltas: deltas})
 			}
 			prefix, calls, suffix, ready := consumeStreamToolCapture(state, toolNames, allowMetaAgentTools, false)
 			if !ready {

@@ -46,6 +46,23 @@ func TestParseDeepSeekContentLineContentFilterStatus(t *testing.T) {
 	}
 }
 
+func TestParseDeepSeekContentLineInputExceedsLimitHint(t *testing.T) {
+	res := ParseDeepSeekContentLine(
+		[]byte(`data: {"type":"error","content":"内容超长，请删减后再试","clear_response":true,"finish_reason":"input_exceeds_limit"}`),
+		false,
+		"text",
+	)
+	if !res.Parsed || !res.Stop {
+		t.Fatalf("expected input limit hint to stop: %#v", res)
+	}
+	if res.ErrorCode != "input_exceeds_limit" {
+		t.Fatalf("unexpected error code: %#v", res)
+	}
+	if !strings.Contains(res.ErrorMessage, "内容超长") {
+		t.Fatalf("unexpected error message: %#v", res)
+	}
+}
+
 func TestParseDeepSeekContentLineIgnoresAccumulatedTokenUsage(t *testing.T) {
 	res := ParseDeepSeekContentLine([]byte(`data: {"p":"response","o":"BATCH","v":[{"p":"accumulated_token_usage","v":1383},{"p":"quasi_status","v":"FINISHED"}]}`), false, "text")
 	if !res.Parsed {

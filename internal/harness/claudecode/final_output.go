@@ -25,10 +25,11 @@ type FinalOutputInput struct {
 }
 
 type FinalOutputResult struct {
-	Text     string
-	Changed  bool
-	Reason   string
-	ToolCall bool
+	Text              string
+	PreservedThinking string
+	Changed           bool
+	Reason            string
+	ToolCall          bool
 }
 
 func RepairFinalOutput(in FinalOutputInput) FinalOutputResult {
@@ -59,11 +60,13 @@ func RepairFinalOutput(in FinalOutputInput) FinalOutputResult {
 			out.Reason = "task_notification_task_output"
 			out.ToolCall = true
 		} else if promoted := ExecutableToolCallTextFromThinking(in.Thinking, in.ToolNames, in.ToolSchemas, in.AllowMetaAgentTools); promoted != "" {
+			out.PreservedThinking = "[Note: the following tool calls were extracted from the model's thinking content]\n" + in.Thinking
 			out.Text = promoted
 			out.Changed = true
 			out.Reason = "thinking_tool_call"
 			out.ToolCall = true
 		} else if repaired := SynthesizeAgentToolCallTextFromLaunchPromise(in.FinalPrompt, in.Thinking, in.ToolNames, in.AllowMetaAgentTools); repaired != "" {
+			out.PreservedThinking = "[Note: the following tool calls were extracted from the model's thinking content]\n" + in.Thinking
 			out.Text = repaired
 			out.Changed = true
 			out.Reason = "thinking_agent_launch"
@@ -329,6 +332,36 @@ func SynthesizeAgentToolCallTextFromLaunchPromise(finalPrompt, finalText string,
 	return FormatParsedToolCallsAsPromptXML(calls)
 }
 
+func determineAgentLaunchCount(finalPrompt string) int {
+	latestUser := html.UnescapeString(LatestUserPromptBlock(finalPrompt))
+	latestUser = systemReminderBlockPattern.ReplaceAllString(latestUser, " ")
+
+	// Count distinct file references
+	fileMatches := promptFileReferencePattern.FindAllString(latestUser, -1)
+	fileSet := make(map[string]struct{}, len(fileMatches))
+	for _, m := range fileMatches {
+		fileSet[m] = struct{}{}
+	}
+	fileCount := len(fileSet)
+
+	// Check for complexity keywords
+	lower := strings.ToLower(latestUser)
+	hasImplement := strings.Contains(lower, "implement")
+	hasTest := strings.Contains(lower, "test")
+	hasRefactor := strings.Contains(lower, "refactor") || strings.Contains(lower, "restructure")
+
+	// Complex: 6+ files or includes refactor/restructure or has test requirement
+	if fileCount >= 6 || hasRefactor || hasTest {
+		return 4
+	}
+	// Moderate: 3-5 files or includes implement/fix
+	if fileCount >= 3 || hasImplement {
+		return 2
+	}
+	// Simple: 1-2 files, no complex keywords
+	return 1
+}
+
 func SynthesizeAgentToolCallsFromLaunchPromise(finalPrompt, finalText string, toolNames []string, allowMetaAgentTools bool) []toolcall.ParsedToolCall {
 	if !allowMetaAgentTools {
 		return nil
@@ -356,12 +389,17 @@ func SynthesizeAgentToolCallsFromLaunchPromise(finalPrompt, finalText string, to
 	if request == "" {
 		return nil
 	}
-	return []toolcall.ParsedToolCall{
+	allCalls := []toolcall.ParsedToolCall{
 		newAgentLaunchCall(toolName, "Map implementation route", "Explore", request, "Map the implementation route, current blockers, key files, and the smallest sequence of executable steps. Read-only analysis; do not edit files or commit."),
 		newAgentLaunchCall(toolName, "Review code risks", "code-reviewer", request, "Review likely correctness, compatibility, and tool-call protocol risks for this request. Read-only analysis; report concrete file/path references where possible."),
 		newAgentLaunchCall(toolName, "Design end-state", "design", request, "Design the target end-state and rollout strategy. Focus on architecture, operational stability, and verification. Read-only analysis; no file edits."),
 		newAgentLaunchCall(toolName, "Plan verification", "Explore", request, "Find the local verification commands, tests, and observability checks needed to prove the work. Read-only analysis; report commands and expected signals."),
 	}
+	count := determineAgentLaunchCount(finalPrompt)
+	if count > len(allCalls) {
+		count = len(allCalls)
+	}
+	return allCalls[:count]
 }
 
 func newAgentLaunchCall(toolName, description, subagentType, request, instruction string) toolcall.ParsedToolCall {
@@ -525,4 +563,32 @@ func taskOutputIDFromInput(input map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// CompleteToolCallsWithSchemaDefaults injects default values from schema for
+// missing optional parameters on Read tool calls (limit, offset, etc.).
+func CompleteToolCallsWithSchemaDefaults(calls []toolcall.ParsedToolCall, schemas toolcall.ParameterSchemas) []toolcall.ParsedToolCall {
+	if len(calls) == 0 || len(schemas) == 0 {
+		return calls
+	}
+	out := make([]toolcall.ParsedToolCall, len(calls))
+	copy(out, calls)
+	for i, call := range out {
+		if !isReadToolName(call.Name) {
+			continue
+		}
+		defaults := toolcall.SchemaPropertyDefaults(schemas, call.Name)
+		if len(defaults) == 0 {
+			continue
+		}
+		if out[i].Input == nil {
+			out[i].Input = make(map[string]any)
+		}
+		for key, defValue := range defaults {
+			if _, exists := out[i].Input[key]; !exists {
+				out[i].Input[key] = defValue
+			}
+		}
+	}
+	return out
 }

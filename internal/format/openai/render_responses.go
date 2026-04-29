@@ -16,6 +16,15 @@ func BuildResponseObject(responseID, model, finalPrompt, finalThinking, finalTex
 	return BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText, detected.Calls)
 }
 
+func BuildResponseObjectWithMeta(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string, allowMetaAgentTools bool) map[string]any {
+	detected := toolcall.ParseAssistantToolCallsDetailed(finalText, finalThinking, toolNames)
+	calls := detected.Calls
+	if !allowMetaAgentTools {
+		calls = toolcall.NormalizeCallsForSchemasWithMeta(calls, nil, false)
+	}
+	return BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText, calls)
+}
+
 func BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText string, detected []toolcall.ParsedToolCall) map[string]any {
 	exposedOutputText := finalText
 	usageThinking := finalThinking
@@ -64,15 +73,16 @@ func BuildResponseObjectFromItems(responseID, model, finalPrompt, finalThinking,
 		output = []any{}
 	}
 	return map[string]any{
-		"id":          responseID,
-		"type":        "response",
-		"object":      "response",
-		"created_at":  time.Now().Unix(),
-		"status":      "completed",
-		"model":       model,
-		"output":      output,
-		"output_text": outputText,
-		"usage":       BuildResponsesUsage(finalPrompt, finalThinking, finalText),
+		"id":                 responseID,
+		"type":               "response",
+		"object":             "response",
+		"created_at":         time.Now().Unix(),
+		"status":             "completed",
+		"model":              model,
+		"output":             output,
+		"output_text":        outputText,
+		"usage":              BuildResponsesUsage(finalPrompt, finalThinking, finalText),
+		"system_fingerprint": DeepSeekSystemFingerprint(),
 	}
 }
 

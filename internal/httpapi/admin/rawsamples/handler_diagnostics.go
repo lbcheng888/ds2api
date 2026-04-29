@@ -1,4 +1,4 @@
-package admin
+package rawsamples
 
 import (
 	"encoding/json"
@@ -191,6 +191,16 @@ func (h *Handler) runtimeDiagnosticsProfile() map[string]any {
 		"history_split_trigger_after_turns": h.Store.HistorySplitTriggerAfterTurns(),
 		"auto_delete_mode":                  h.Store.AutoDeleteMode(),
 	}
+}
+
+func defaultRuntimeRecommended(accountCount, maxPer int) int {
+	if maxPer <= 0 {
+		maxPer = 1
+	}
+	if accountCount <= 0 {
+		return maxPer
+	}
+	return accountCount * maxPer
 }
 
 type failureSampleItem struct {

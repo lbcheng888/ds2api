@@ -81,7 +81,7 @@ func TestFormatToolCallsForPromptDropsTaskTrackingCalls(t *testing.T) {
 	if contains(got, "TaskCreate") {
 		t.Fatalf("expected task tracking call to be dropped, got %q", got)
 	}
-	if !contains(got, "<tool_name>Read</tool_name>") {
+	if !contains(got, "<|DSML|invoke name=\"Read\">") {
 		t.Fatalf("expected Read call to remain, got %q", got)
 	}
 }

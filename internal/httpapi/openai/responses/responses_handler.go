@@ -115,10 +115,10 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 
 	responseID := "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	if stdReq.Stream {
-		h.handleResponsesStreamWithRetry(w, r, a, resp, payload, pow, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, traceID)
+		h.handleResponsesStreamWithRetry(w, r, a, resp, payload, pow, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
 		return
 	}
-	h.handleResponsesNonStreamWithRetry(w, r.Context(), a, resp, payload, pow, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, traceID)
+	h.handleResponsesNonStreamWithRetry(w, r.Context(), a, resp, payload, pow, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
 }
 
 func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
@@ -145,6 +145,12 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	if status, message, code, ok := invalidTaskOutputCallDetail(textParsed.Calls, finalPrompt); ok {
 		writeOpenAIErrorWithCode(w, status, message, code)
 		return
+	}
+	if len(textParsed.Calls) == 0 {
+		if status, message, code, ok := missingToolCallDetail(sanitizedText, finalPrompt, toolNames, nil, false); ok {
+			writeOpenAIErrorWithCode(w, status, message, code)
+			return
+		}
 	}
 	if len(textParsed.Calls) == 0 && writeUpstreamEmptyOutputError(w, sanitizedText, sanitizedThinking, result.ContentFilter) {
 		return
@@ -195,6 +201,8 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		searchEnabled,
 		stripReferenceMarkers,
 		toolNames,
+		nil,
+		false,
 		bufferToolContent,
 		emitEarlyToolDeltas,
 		toolChoice,

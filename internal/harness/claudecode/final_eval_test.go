@@ -13,8 +13,8 @@ func TestEvaluateFinalOutputConvertsAgentLaunchPromise(t *testing.T) {
 		ToolSchemas:         agentSchema,
 		AllowMetaAgentTools: true,
 	})
-	if len(got.Calls) != 4 {
-		t.Fatalf("expected four executable Agent calls, got %#v", got.Calls)
+	if len(got.Calls) != 1 {
+		t.Fatalf("expected one executable Agent call (simple request, adaptive launch), got %#v", got.Calls)
 	}
 	if got.MissingToolDecision.Blocked {
 		t.Fatalf("synthesized Agent calls should suppress missing-tool gate, got %#v", got.MissingToolDecision)

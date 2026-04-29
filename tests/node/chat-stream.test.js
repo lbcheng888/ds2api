@@ -292,6 +292,21 @@ test('vercel stream emits content_filter failure when upstream filters empty out
   assert.equal(frames[1], '[DONE]');
 });
 
+test('vercel stream emits input_exceeds_limit failure without empty retry', async () => {
+  const { frames, fetchURLs } = await runMockVercelStream([
+    'event: hint\n',
+    'data: {"type":"error","content":"内容超长，请删减后再试","clear_response":true,"finish_reason":"input_exceeds_limit"}\n\n',
+    'event: close\n',
+    'data: {"click_behavior":"none","auto_resume":false}\n\n',
+  ]);
+  assert.equal(frames.length, 2);
+  const failed = JSON.parse(frames[0]);
+  assert.equal(failed.status_code, 413);
+  assert.equal(failed.error.code, 'input_exceeds_limit');
+  assert.equal(frames[1], '[DONE]');
+  assert.equal(fetchURLs.filter((url) => !url.includes('__stream_')).length, 1);
+});
+
 test('vercel stream keeps stop finish when content_filter arrives after visible text', async () => {
   const { frames } = await runMockVercelStream([
     'data: {"p":"response/content","v":"hello"}\n\n',

@@ -22,34 +22,52 @@ type responsesNonStreamResult struct {
 	toolDetectionThinking string
 	text                  string
 	contentFilter         bool
+	errorStatus           int
 	errorMessage          string
 	errorCode             string
+	retryableProtocol     bool
 	parsed                toolcall.ToolCallParseResult
 	body                  map[string]any
 	responseMessageID     int
 }
 
-func (h *Handler) handleResponsesNonStreamWithRetry(w http.ResponseWriter, ctx context.Context, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
+func (h *Handler) handleResponsesNonStreamWithRetry(w http.ResponseWriter, ctx context.Context, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice promptcompat.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
 	attempts := 0
 	currentResp := resp
 	usagePrompt := finalPrompt
 	accumulatedThinking := ""
 	accumulatedToolDetectionThinking := ""
 	for {
-			result, ok := h.collectResponsesNonStreamAttempt(w, currentResp, responseID, model, usagePrompt, thinkingEnabled, searchEnabled, toolNames)
-			if !ok {
-				return
-			}
-			if result.errorMessage != "" {
-				h.finishResponsesNonStreamResult(w, result, attempts, owner, responseID, toolChoice, traceID)
-				return
-			}
-			accumulatedThinking += sse.TrimContinuationOverlap(accumulatedThinking, result.thinking)
-			accumulatedToolDetectionThinking += sse.TrimContinuationOverlap(accumulatedToolDetectionThinking, result.toolDetectionThinking)
+		result, ok := h.collectResponsesNonStreamAttempt(w, currentResp, responseID, model, usagePrompt, thinkingEnabled, searchEnabled, toolNames, toolSchemas, allowMetaAgentTools)
+		if !ok {
+			return
+		}
+		if result.errorMessage != "" {
+			h.finishResponsesNonStreamResult(w, result, attempts, owner, responseID, toolChoice, traceID)
+			return
+		}
+		accumulatedThinking += sse.TrimContinuationOverlap(accumulatedThinking, result.thinking)
+		accumulatedToolDetectionThinking += sse.TrimContinuationOverlap(accumulatedToolDetectionThinking, result.toolDetectionThinking)
 		result.thinking = accumulatedThinking
 		result.toolDetectionThinking = accumulatedToolDetectionThinking
 		result.parsed = detectAssistantToolCalls(result.text, result.thinking, result.toolDetectionThinking, toolNames)
+		result.parsed.Calls = toolcall.NormalizeCallsForSchemasWithMeta(result.parsed.Calls, toolSchemas, allowMetaAgentTools)
 		result.body = openaifmt.BuildResponseObjectWithToolCalls(responseID, model, usagePrompt, result.thinking, result.text, result.parsed.Calls)
+		if status, message, code, ok := invalidTaskOutputCallDetail(result.parsed.Calls, usagePrompt); ok {
+			result.errorStatus = status
+			result.errorMessage = message
+			result.errorCode = code
+			h.finishResponsesNonStreamResult(w, result, attempts, owner, responseID, toolChoice, traceID)
+			return
+		}
+		if len(result.parsed.Calls) == 0 {
+			if status, message, code, ok := missingToolCallDetail(result.text, usagePrompt, toolNames, toolSchemas, allowMetaAgentTools); ok {
+				result.errorStatus = status
+				result.errorMessage = message
+				result.errorCode = code
+				result.retryableProtocol = true
+			}
+		}
 
 		if !shouldRetryResponsesNonStream(result, attempts) {
 			h.finishResponsesNonStreamResult(w, result, attempts, owner, responseID, toolChoice, traceID)
@@ -74,7 +92,7 @@ func (h *Handler) handleResponsesNonStreamWithRetry(w http.ResponseWriter, ctx c
 	}
 }
 
-func (h *Handler) collectResponsesNonStreamAttempt(w http.ResponseWriter, resp *http.Response, responseID, model, usagePrompt string, thinkingEnabled, searchEnabled bool, toolNames []string) (responsesNonStreamResult, bool) {
+func (h *Handler) collectResponsesNonStreamAttempt(w http.ResponseWriter, resp *http.Response, responseID, model, usagePrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, allowMetaAgentTools bool) (responsesNonStreamResult, bool) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -90,23 +108,29 @@ func (h *Handler) collectResponsesNonStreamAttempt(w http.ResponseWriter, resp *
 		sanitizedText = replaceCitationMarkersWithLinks(sanitizedText, result.CitationLinks)
 	}
 	textParsed := detectAssistantToolCalls(sanitizedText, sanitizedThinking, toolDetectionThinking, toolNames)
+	textParsed.Calls = toolcall.NormalizeCallsForSchemasWithMeta(textParsed.Calls, toolSchemas, allowMetaAgentTools)
 	responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, model, usagePrompt, sanitizedThinking, sanitizedText, textParsed.Calls)
 	return responsesNonStreamResult{
 		thinking:              sanitizedThinking,
 		toolDetectionThinking: toolDetectionThinking,
-			text:                  sanitizedText,
-			contentFilter:         result.ContentFilter,
-			errorMessage:          result.ErrorMessage,
-			errorCode:             result.ErrorCode,
-			parsed:                textParsed,
-			body:                  responseObj,
-			responseMessageID:     result.ResponseMessageID,
+		text:                  sanitizedText,
+		contentFilter:         result.ContentFilter,
+		errorMessage:          result.ErrorMessage,
+		errorCode:             result.ErrorCode,
+		parsed:                textParsed,
+		body:                  responseObj,
+		responseMessageID:     result.ResponseMessageID,
 	}, true
 }
 
 func (h *Handler) finishResponsesNonStreamResult(w http.ResponseWriter, result responsesNonStreamResult, attempts int, owner, responseID string, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
 	if result.errorMessage != "" {
 		status, message, code := upstreamStreamErrorDetail(result.errorCode, result.errorMessage)
+		if result.errorStatus > 0 {
+			status = result.errorStatus
+			message = result.errorMessage
+			code = result.errorCode
+		}
 		writeOpenAIErrorWithCode(w, status, message, code)
 		config.Logger.Info("[openai_empty_retry] terminal upstream stream error", "surface", "responses", "stream", false, "retry_attempts", attempts, "error_code", code)
 		return
@@ -134,11 +158,11 @@ func shouldRetryResponsesNonStream(result responsesNonStreamResult, attempts int
 		attempts < emptyOutputRetryMaxAttempts() &&
 		!result.contentFilter &&
 		len(result.parsed.Calls) == 0 &&
-		strings.TrimSpace(result.text) == ""
+		(strings.TrimSpace(result.text) == "" || result.retryableProtocol)
 }
 
-func (h *Handler) handleResponsesStreamWithRetry(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
-	streamRuntime, initialType, ok := h.prepareResponsesStreamRuntime(w, resp, owner, responseID, model, finalPrompt, thinkingEnabled, searchEnabled, toolNames, toolChoice, traceID)
+func (h *Handler) handleResponsesStreamWithRetry(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice promptcompat.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
+	streamRuntime, initialType, ok := h.prepareResponsesStreamRuntime(w, resp, owner, responseID, model, finalPrompt, thinkingEnabled, searchEnabled, toolNames, toolSchemas, toolChoice, allowMetaAgentTools, traceID)
 	if !ok {
 		return
 	}
@@ -179,7 +203,7 @@ func (h *Handler) handleResponsesStreamWithRetry(w http.ResponseWriter, r *http.
 	}
 }
 
-func (h *Handler) prepareResponsesStreamRuntime(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice promptcompat.ToolChoicePolicy, traceID string) (*responsesStreamRuntime, string, bool) {
+func (h *Handler) prepareResponsesStreamRuntime(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice promptcompat.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) (*responsesStreamRuntime, string, bool) {
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(resp.Body)
@@ -198,7 +222,7 @@ func (h *Handler) prepareResponsesStreamRuntime(w http.ResponseWriter, resp *htt
 	}
 	streamRuntime := newResponsesStreamRuntime(
 		w, rc, canFlush, responseID, model, finalPrompt, thinkingEnabled, searchEnabled,
-		h.compatStripReferenceMarkers(), toolNames, len(toolNames) > 0,
+		h.compatStripReferenceMarkers(), toolNames, toolSchemas, allowMetaAgentTools, len(toolNames) > 0,
 		h.toolcallFeatureMatchEnabled() && h.toolcallEarlyEmitHighConfidence(),
 		toolChoice, traceID, func(obj map[string]any) {
 			h.getResponseStore().put(owner, responseID, obj)

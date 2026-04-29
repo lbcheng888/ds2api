@@ -83,6 +83,7 @@ function parseChunkForContent(chunk, thinkingEnabled, currentType, stripReferenc
       finished: false,
       contentFilter: false,
       errorMessage: '',
+      errorCode: '',
       outputTokens: 0,
       newType: currentType,
     };
@@ -99,6 +100,22 @@ function parseChunkForContent(chunk, thinkingEnabled, currentType, stripReferenc
       finished: true,
       contentFilter: false,
       errorMessage: formatErrorMessage(chunk.error),
+      errorCode: 'upstream_error',
+      promptTokens,
+      outputTokens,
+      newType: currentType,
+    };
+  }
+
+  const upstreamHintError = parseUpstreamHintError(chunk);
+  if (upstreamHintError) {
+    return {
+      parsed: true,
+      parts: [],
+      finished: true,
+      contentFilter: false,
+      errorMessage: upstreamHintError.message,
+      errorCode: upstreamHintError.code,
       promptTokens,
       outputTokens,
       newType: currentType,
@@ -114,6 +131,7 @@ function parseChunkForContent(chunk, thinkingEnabled, currentType, stripReferenc
       finished: true,
       contentFilter: true,
       errorMessage: '',
+      errorCode: '',
       promptTokens,
       outputTokens,
       newType: currentType,
@@ -488,8 +506,37 @@ function shouldDropCleanedLeakedChunk(cleaned) {
   return asString(cleaned).trim() === '';
 }
 
+function parseUpstreamHintError(chunk) {
+  const typeName = asString(chunk.type).trim().toLowerCase();
+  const finishReason = asString(chunk.finish_reason).trim().toLowerCase();
+  const message = firstStringField(chunk, ['content', 'message', 'msg']).trim();
+  if (finishReason === 'input_exceeds_limit' || message.includes('内容超长') || message.toLowerCase().includes('input exceeds')) {
+    return {
+      message: message || 'Upstream input exceeds the model context limit.',
+      code: 'input_exceeds_limit',
+    };
+  }
+  if (typeName === 'error') {
+    return {
+      message: message || JSON.stringify(chunk),
+      code: 'upstream_error',
+    };
+  }
+  return null;
+}
+
+function firstStringField(obj, keys) {
+  for (const key of keys) {
+    const value = asString(obj?.[key]);
+    if (value) {
+      return value;
+    }
+  }
+  return '';
+}
+
 function hasContentFilterStatus(chunk) {
-  if (!chunk || typeof chunk !== 'object') {
+	if (!chunk || typeof chunk !== 'object') {
     return false;
   }
   const code = asString(chunk.code);

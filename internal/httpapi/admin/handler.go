@@ -18,21 +18,22 @@ import (
 )
 
 type Handler struct {
-	Store       adminshared.ConfigStore
-	Pool        adminshared.PoolController
-	DS          adminshared.DeepSeekCaller
-	OpenAI      adminshared.OpenAIChatCaller
-	ChatHistory *chathistory.Store
+	Store         adminshared.ConfigStore
+	Pool          adminshared.PoolController
+	AccountHealth adminshared.AccountHealthReporter
+	DS            adminshared.DeepSeekCaller
+	OpenAI        adminshared.OpenAIChatCaller
+	ChatHistory   *chathistory.Store
 }
 
 func RegisterRoutes(r chi.Router, h *Handler) {
 	deps := adminsharedDeps(h)
 	authHandler := &adminauth.Handler{Store: deps.Store, Pool: deps.Pool, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
-	accountsHandler := &adminaccounts.Handler{Store: deps.Store, Pool: deps.Pool, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
+	accountsHandler := &adminaccounts.Handler{Store: deps.Store, Pool: deps.Pool, AccountHealth: deps.AccountHealth, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
 	configHandler := &adminconfig.Handler{Store: deps.Store, Pool: deps.Pool, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
 	settingsHandler := &adminsettings.Handler{Store: deps.Store, Pool: deps.Pool, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
 	proxiesHandler := &adminproxies.Handler{Store: deps.Store, Pool: deps.Pool, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
-	rawSamplesHandler := &adminrawsamples.Handler{Store: deps.Store, Pool: deps.Pool, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
+	rawSamplesHandler := &adminrawsamples.Handler{Store: deps.Store, Pool: deps.Pool, AccountHealth: deps.AccountHealth, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
 	vercelHandler := &adminvercel.Handler{Store: deps.Store, Pool: deps.Pool, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
 	historyHandler := &adminhistory.Handler{Store: deps.Store, Pool: deps.Pool, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
 	devCaptureHandler := &admindevcapture.Handler{Store: deps.Store, Pool: deps.Pool, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
@@ -58,13 +59,14 @@ func adminsharedDeps(h *Handler) adminsharedDepsValue {
 	if h == nil {
 		return adminsharedDepsValue{}
 	}
-	return adminsharedDepsValue{Store: h.Store, Pool: h.Pool, DS: h.DS, OpenAI: h.OpenAI, ChatHistory: h.ChatHistory}
+	return adminsharedDepsValue{Store: h.Store, Pool: h.Pool, AccountHealth: h.AccountHealth, DS: h.DS, OpenAI: h.OpenAI, ChatHistory: h.ChatHistory}
 }
 
 type adminsharedDepsValue struct {
-	Store       adminshared.ConfigStore
-	Pool        adminshared.PoolController
-	DS          adminshared.DeepSeekCaller
-	OpenAI      adminshared.OpenAIChatCaller
-	ChatHistory *chathistory.Store
+	Store         adminshared.ConfigStore
+	Pool          adminshared.PoolController
+	AccountHealth adminshared.AccountHealthReporter
+	DS            adminshared.DeepSeekCaller
+	OpenAI        adminshared.OpenAIChatCaller
+	ChatHistory   *chathistory.Store
 }

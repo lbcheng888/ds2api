@@ -298,20 +298,3 @@ func hasRootToolParameter(obj map[string]any) bool {
 	}
 	return false
 }
-
-func looksLikeVisibleJSONToolCallSyntax(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	if !strings.HasPrefix(trimmed, "[") && !strings.HasPrefix(trimmed, "{") {
-		return false
-	}
-	lower := strings.ToLower(trimmed)
-	hasName := strings.Contains(lower, `"tool"`) ||
-		strings.Contains(lower, `"name"`) ||
-		strings.Contains(lower, `"tool_name"`) ||
-		strings.Contains(lower, `"function"`)
-	hasArgs := strings.Contains(lower, `"arguments"`) ||
-		strings.Contains(lower, `"input"`) ||
-		strings.Contains(lower, `"params"`) ||
-		strings.Contains(lower, `"parameters"`)
-	return hasName && hasArgs && len(parseVisibleJSONToolCalls(trimmed)) > 0
-}

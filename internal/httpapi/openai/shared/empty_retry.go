@@ -2,7 +2,7 @@ package shared
 
 import "strings"
 
-const EmptyOutputRetrySuffix = "Previous reply had no visible output. Please regenerate the visible final answer or tool call now."
+const EmptyOutputRetrySuffix = "Previous reply had no visible output. Please regenerate the visible final answer or tool call now. If you promised to read, edit, run, inspect, launch agents, or verify, emit the required tool call now instead of describing the next step."
 
 func EmptyOutputRetryEnabled() bool {
 	return true

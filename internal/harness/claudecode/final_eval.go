@@ -19,6 +19,7 @@ type FinalEvaluationInput struct {
 type FinalEvaluationResult struct {
 	Text                 string
 	Thinking             string
+	PreservedThinking    string
 	Parsed               toolcall.ToolCallParseResult
 	Calls                []toolcall.ParsedToolCall
 	Repair               FinalOutputResult
@@ -33,6 +34,8 @@ func EvaluateFinalOutput(in FinalEvaluationInput) FinalEvaluationResult {
 		Thinking:  in.Thinking,
 		ToolNames: in.ToolNames,
 	})
+	// Fill in schema defaults for missing optional parameters (limit, offset)
+	parsed.Calls = CompleteToolCallsWithSchemaDefaults(parsed.Calls, in.ToolSchemas)
 	var dropped []string
 	parsed.Calls, dropped = FilterInvalidTaskOutputCallsWithReport(parsed.Calls, in.FinalPrompt)
 	if len(dropped) > 0 && len(parsed.Calls) == 0 && strings.TrimSpace(visibleText) == "" {
@@ -42,6 +45,7 @@ func EvaluateFinalOutput(in FinalEvaluationInput) FinalEvaluationResult {
 	result := FinalEvaluationResult{
 		Text:                 visibleText,
 		Thinking:             in.Thinking,
+		PreservedThinking:    repair.PreservedThinking,
 		Parsed:               parsed,
 		Calls:                calls,
 		Repair:               repair,

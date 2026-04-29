@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	openaifmt "ds2api/internal/format/openai"
+	"ds2api/internal/toolcall"
 	"ds2api/internal/toolstream"
 )
 
@@ -61,11 +62,15 @@ func (s *responsesStreamRuntime) processToolStreamEvents(events []toolstream.Eve
 			s.emitFunctionCallDeltaEvents(filtered)
 		}
 		if len(evt.ToolCalls) > 0 {
-			if status, message, code, ok := invalidTaskOutputCallDetail(evt.ToolCalls, s.finalPrompt); ok {
+			calls := toolcall.NormalizeCallsForSchemasWithMeta(evt.ToolCalls, s.toolSchemas, s.allowMetaAgentTools)
+			if len(calls) == 0 {
+				continue
+			}
+			if status, message, code, ok := invalidTaskOutputCallDetail(calls, s.finalPrompt); ok {
 				s.failResponse(status, message, code)
 				return
 			}
-			s.emitFunctionCallDoneEvents(evt.ToolCalls)
+			s.emitFunctionCallDoneEvents(calls)
 			if resetAfterToolCalls {
 				s.resetStreamToolCallState()
 			}

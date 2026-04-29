@@ -1,3 +1,5 @@
+//go:build legacy_openai_adapter
+
 package openai
 
 import (

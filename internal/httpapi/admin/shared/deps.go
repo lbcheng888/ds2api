@@ -32,6 +32,12 @@ type ConfigStore interface {
 	RuntimeAccountMaxQueue(defaultSize int) int
 	RuntimeGlobalMaxInflight(defaultSize int) int
 	RuntimeTokenRefreshIntervalHours() int
+	RuntimeAccountFailureCooldownSeconds() int
+	RuntimeStreamMaxDurationSeconds() int
+	RuntimeReasoningOnlyTimeoutSeconds() int
+	RuntimeBufferedToolContentMaxBytes() int
+	CompatAllowMetaAgentTools() bool
+	CompatDefaultReasoningEffort() string
 	AutoDeleteMode() string
 	HistorySplitEnabled() bool
 	HistorySplitTriggerAfterTurns() int
@@ -41,6 +47,10 @@ type ConfigStore interface {
 	ThinkingInjectionPrompt() string
 	CompatStripReferenceMarkers() bool
 	AutoDeleteSessions() bool
+}
+
+type AccountHealthReporter interface {
+	AccountHealthStatus() []auth.AccountHealth
 }
 
 type PoolController interface {

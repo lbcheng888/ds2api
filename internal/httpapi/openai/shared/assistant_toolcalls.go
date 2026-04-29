@@ -41,3 +41,17 @@ func InvalidToolCallDetail(message string) (int, string, string) {
 	}
 	return http.StatusBadGateway, message, claudecodeharness.InvalidToolCallCode
 }
+
+func MissingToolCallDetail(finalText, finalPrompt string, toolNames []string, schemas toolcall.ParameterSchemas, allowMetaAgentTools bool) (int, string, string, bool) {
+	decision := claudecodeharness.DetectMissingToolCall(claudecodeharness.MissingToolCallInput{
+		Text:                finalText,
+		FinalPrompt:         finalPrompt,
+		ToolNames:           toolNames,
+		ToolSchemas:         schemas,
+		AllowMetaAgentTools: allowMetaAgentTools,
+	})
+	if !decision.Blocked {
+		return 0, "", "", false
+	}
+	return http.StatusBadGateway, decision.Message, decision.Code, true
+}
