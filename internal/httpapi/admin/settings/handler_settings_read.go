@@ -27,6 +27,7 @@ func (h *Handler) getSettings(w http.ResponseWriter, _ *http.Request) {
 			"global_max_inflight":              h.Store.RuntimeGlobalMaxInflight(recommended),
 			"token_refresh_interval_hours":     h.Store.RuntimeTokenRefreshIntervalHours(),
 			"account_failure_cooldown_seconds": h.Store.RuntimeAccountFailureCooldownSeconds(),
+			"account_affinity_ttl_seconds":     h.Store.RuntimeAccountAffinityTTLSeconds(),
 			"stream_max_duration_seconds":      h.Store.RuntimeStreamMaxDurationSeconds(),
 			"reasoning_only_timeout_seconds":   h.Store.RuntimeReasoningOnlyTimeoutSeconds(),
 			"buffered_tool_content_max_bytes":  h.Store.RuntimeBufferedToolContentMaxBytes(),

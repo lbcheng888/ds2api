@@ -393,6 +393,9 @@ func ProcessStreamSieveChunkWithMeta(state *StreamSieveState, chunk string, tool
 		if start < 0 {
 			start = FindVisibleJSONToolSegmentStart(state, pending)
 		}
+		if start < 0 {
+			start = FindFencedJSONToolTextStart(state, pending)
+		}
 		if start >= 0 {
 			prefix := pending[:start]
 			if prefix != "" {
@@ -514,6 +517,12 @@ func SplitSafeContentForToolDetection(state *StreamSieveState, s string) (safe, 
 		}
 		return "", s
 	}
+	if fenceIdx := FindPartialFencedJSONToolTextStart(state, s); fenceIdx >= 0 {
+		if fenceIdx > 0 {
+			return s[:fenceIdx], s[fenceIdx:]
+		}
+		return "", s
+	}
 	return s, ""
 }
 
@@ -556,6 +565,9 @@ func consumeStreamToolCapture(state *StreamSieveState, toolNames []string, allow
 		return "", nil, "", false
 	}
 
+	if fencePrefix, fenceCalls, fenceSuffix, fenceReady := ConsumeFencedJSONToolTextCapture(captured, toolNames); fenceReady {
+		return fencePrefix, fenceCalls, fenceSuffix, true
+	}
 	if xmlPrefix, xmlCalls, xmlSuffix, xmlReady := ConsumeXMLToolCapture(captured, toolNames, allowMetaAgentTools); xmlReady {
 		return xmlPrefix, xmlCalls, xmlSuffix, true
 	}
@@ -598,6 +610,96 @@ func ConsumeOrphanAgentParameterCapture(captured string, toolNames []string, all
 		parsed[i].Name = toolName
 	}
 	return captured[:start], parsed, "", true
+}
+
+func FindFencedJSONToolTextStart(state *StreamSieveState, s string) int {
+	if s == "" {
+		return -1
+	}
+	offset := 0
+	for {
+		idx := strings.Index(s[offset:], "```")
+		if idx < 0 {
+			return -1
+		}
+		idx += offset
+		if isLineStart(s, idx) && !InsideCodeFenceWithState(state, s[:idx]) {
+			lineEnd := strings.IndexByte(s[idx:], '\n')
+			if lineEnd >= 0 {
+				header := strings.TrimSpace(s[idx+3 : idx+lineEnd])
+				if isJSONFenceHeader(header) {
+					return idx
+				}
+			}
+		}
+		offset = idx + 3
+	}
+}
+
+func FindPartialFencedJSONToolTextStart(state *StreamSieveState, s string) int {
+	if s == "" {
+		return -1
+	}
+	start := len(s) - 24
+	if start < 0 {
+		start = 0
+	}
+	idx := strings.LastIndex(s[start:], "```")
+	if idx < 0 {
+		return -1
+	}
+	idx += start
+	if !isLineStart(s, idx) || InsideCodeFenceWithState(state, s[:idx]) {
+		return -1
+	}
+	tail := s[idx+3:]
+	if strings.Contains(tail, "\n") {
+		return -1
+	}
+	header := strings.ToLower(strings.TrimSpace(tail))
+	for _, candidate := range []string{"", "json", "jsonc", "javascript", "js"} {
+		if strings.HasPrefix(candidate, header) {
+			return idx
+		}
+	}
+	return -1
+}
+
+func ConsumeFencedJSONToolTextCapture(captured string, toolNames []string) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
+	start := FindFencedJSONToolTextStart(nil, captured)
+	if start < 0 {
+		return "", nil, "", false
+	}
+	afterOpen := captured[start:]
+	openLineEnd := strings.IndexByte(afterOpen, '\n')
+	if openLineEnd < 0 {
+		return "", nil, "", false
+	}
+	bodyStart := start + openLineEnd + 1
+	closeRel := strings.Index(captured[bodyStart:], "\n```")
+	if closeRel < 0 {
+		return "", nil, "", false
+	}
+	closeStart := bodyStart + closeRel + 1
+	closeEnd := closeStart + 3
+	body := captured[bodyStart:closeStart]
+	if _, parsed, _, ok := toolcall.ExtractVisibleJSONToolCalls(body, toolNames); ok && len(parsed) > 0 {
+		return captured[:start], nil, captured[closeEnd:], true
+	}
+	return captured[:closeEnd], nil, captured[closeEnd:], true
+}
+
+func isLineStart(s string, idx int) bool {
+	return idx == 0 || s[idx-1] == '\n' || strings.TrimSpace(s[:idx]) == ""
+}
+
+func isJSONFenceHeader(header string) bool {
+	switch strings.ToLower(strings.TrimSpace(header)) {
+	case "json", "jsonc", "javascript", "js":
+		return true
+	default:
+		return false
+	}
 }
 
 var orphanAgentParameterGroupPattern = regexp.MustCompile(`(?is)<(?:parameter|param|argument)\b[^>]*\bname\s*=\s*["']description["'][^>]*>(.*?)</(?:parameter|param|argument)>\s*<(?:parameter|param|argument)\b[^>]*\bname\s*=\s*["']prompt["'][^>]*>(.*?)</(?:parameter|param|argument)>\s*([A-Za-z0-9_.-]+)?`)

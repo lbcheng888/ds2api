@@ -453,6 +453,53 @@ func TestNormalizeCallsForSchemasDropsDegenerateBashCommand(t *testing.T) {
 	}
 }
 
+func TestNormalizeCallsForSchemasCoalescesParallelBashCalls(t *testing.T) {
+	calls := []ParsedToolCall{
+		{Name: "Bash", Input: map[string]any{"command": "git status --short src/core/runtime/handle_table.cheng"}},
+		{Name: "Bash", Input: map[string]any{"command": "ls -la artifacts/tooling_cmd/cheng_tooling"}},
+	}
+	got := NormalizeCallsForSchemas(calls, nil)
+	if len(got) != 1 {
+		t.Fatalf("expected parallel Bash calls to be coalesced, got %#v", got)
+	}
+	if got[0].Name != "Bash" {
+		t.Fatalf("expected Bash call, got %#v", got[0])
+	}
+	command, _ := got[0].Input["command"].(string)
+	if !strings.Contains(command, "git status --short src/core/runtime/handle_table.cheng") ||
+		!strings.Contains(command, "ls -la artifacts/tooling_cmd/cheng_tooling") {
+		t.Fatalf("expected merged command to preserve both commands, got %q", command)
+	}
+	if !strings.Contains(command, "[ds2api] command 1/2") || !strings.Contains(command, "[ds2api] command 2/2") {
+		t.Fatalf("expected command boundary markers, got %q", command)
+	}
+	if !strings.Contains(command, "__DS2API_COMMAND_1__") || !strings.Contains(command, "[ds2api] output 1/2") {
+		t.Fatalf("expected merged command to print the command text before output, got %q", command)
+	}
+	if !strings.Contains(command, "exit \"$__ds2_status\"") {
+		t.Fatalf("expected merged command to report aggregate failure status, got %q", command)
+	}
+}
+
+func TestNormalizeCallsForSchemasTreatsUpdateAsEditShape(t *testing.T) {
+	calls := []ParsedToolCall{{
+		Name: "Update",
+		Input: map[string]any{
+			"file_path":  "internal/sse/stream.go",
+			"old_string": "scannerBufferSize    = 64 * 1024",
+			"new_string": "scannerBufferSize    = 256 * 1024",
+		},
+	}}
+	got := NormalizeCallsForSchemas(calls, nil)
+	if len(got) != 1 {
+		t.Fatalf("expected valid Update edit-shape call, got %#v", got)
+	}
+	delete(calls[0].Input, "old_string")
+	if got := NormalizeCallsForSchemas(calls, nil); len(got) != 0 {
+		t.Fatalf("expected Update without old_string to be dropped, got %#v", got)
+	}
+}
+
 func TestNormalizeCallsForSchemasStripsEmbeddedNamedParameterWrapper(t *testing.T) {
 	schemas := ParameterSchemas{
 		"Glob": {

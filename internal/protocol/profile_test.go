@@ -41,6 +41,9 @@ func TestClientProfilePromptInstruction(t *testing.T) {
 	if !strings.Contains(got, "hash-suffixed repository paths") || !strings.Contains(got, "verify absolute paths") {
 		t.Fatalf("expected ClaudeCode path verification instruction, got %q", got)
 	}
+	if !strings.Contains(got, "Do not claim files were updated") || !strings.Contains(got, "Edit/MultiEdit/Write/Bash") {
+		t.Fatalf("expected ClaudeCode no-fake-completion instruction, got %q", got)
+	}
 
 	codex := ClientProfilePromptInstruction(ClientProfile{Name: ProfileCodex})
 	if !strings.Contains(codex, "Codex search budget") || !strings.Contains(codex, "file:line") || !strings.Contains(codex, "hash-suffixed repository paths") {

@@ -55,6 +55,9 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 			if runtimeCfg.AccountFailureCooldownSeconds > 0 {
 				c.Runtime.AccountFailureCooldownSeconds = runtimeCfg.AccountFailureCooldownSeconds
 			}
+			if runtimeCfg.AccountAffinityTTLSeconds > 0 {
+				c.Runtime.AccountAffinityTTLSeconds = runtimeCfg.AccountAffinityTTLSeconds
+			}
 			if runtimeCfg.StreamMaxDurationSeconds > 0 {
 				c.Runtime.StreamMaxDurationSeconds = runtimeCfg.StreamMaxDurationSeconds
 			}

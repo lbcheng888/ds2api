@@ -50,6 +50,12 @@ func TestBuildToolCallInstructions_BashUsesCommandAndDescriptionExamples(t *test
 	if strings.Contains(out, `<|DSML|invoke name="Read">`) {
 		t.Fatalf("expected examples to avoid unavailable hard-coded Read tool, got: %s", out)
 	}
+	if !strings.Contains(out, "Do not emit multiple Bash / execute_command / exec_command calls in the same response") {
+		t.Fatalf("expected parallel shell warning, got: %s", out)
+	}
+	if !strings.Contains(out, "Wrong 5 — parallel shell calls") {
+		t.Fatalf("expected parallel shell negative example, got: %s", out)
+	}
 }
 
 func TestBuildToolCallInstructions_ExecuteCommandLongScriptUsesCommand(t *testing.T) {
@@ -109,6 +115,33 @@ func TestBuildToolCallInstructions_WriteUsesFilePathAndContent(t *testing.T) {
 	}
 }
 
+func TestBuildToolCallInstructions_EditWarnsToUseFreshExactOldString(t *testing.T) {
+	out := BuildToolCallInstructions([]string{"Edit"})
+	if !strings.Contains(out, "old_string must be copied exactly from a fresh Read result") {
+		t.Fatalf("expected edit reliability rule, got: %s", out)
+	}
+	blocks := findInvokeBlocks(out, "Edit")
+	if len(blocks) == 0 {
+		t.Fatalf("expected Edit examples, got: %s", out)
+	}
+	if !strings.Contains(blocks[0], `<|DSML|parameter name="old_string"><![CDATA[## Install`) ||
+		!strings.Contains(blocks[0], `<|DSML|parameter name="new_string"><![CDATA[## Install`) {
+		t.Fatalf("expected contextual old_string/new_string edit example, got: %s", blocks[0])
+	}
+}
+
+func TestBuildToolCallInstructions_UpdateUsesEditShape(t *testing.T) {
+	out := BuildToolCallInstructions([]string{"Update"})
+	blocks := findInvokeBlocks(out, "Update")
+	if len(blocks) == 0 {
+		t.Fatalf("expected Update examples, got: %s", out)
+	}
+	if !strings.Contains(blocks[0], `<|DSML|parameter name="old_string">`) ||
+		!strings.Contains(blocks[0], `<|DSML|parameter name="new_string">`) {
+		t.Fatalf("expected Update to use edit-style parameters, got: %s", blocks[0])
+	}
+}
+
 func TestBuildToolCallInstructions_AnchorsMissingOpeningWrapperFailureMode(t *testing.T) {
 	out := BuildToolCallInstructions([]string{"read_file"})
 	if !strings.Contains(out, "Never omit the opening <|DSML|tool_calls> tag") {
@@ -116,6 +149,9 @@ func TestBuildToolCallInstructions_AnchorsMissingOpeningWrapperFailureMode(t *te
 	}
 	if !strings.Contains(out, "Wrong 3 — missing opening wrapper") {
 		t.Fatalf("expected missing-opening-wrapper negative example, got: %s", out)
+	}
+	if !strings.Contains(out, "Wrong 4 — JSON text instead of a tool call") {
+		t.Fatalf("expected JSON-as-text negative example, got: %s", out)
 	}
 }
 

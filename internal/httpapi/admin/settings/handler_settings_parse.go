@@ -83,6 +83,13 @@ func parseSettingsUpdateRequest(req map[string]any) (*config.AdminConfig, *confi
 			}
 			cfg.AccountFailureCooldownSeconds = n
 		}
+		if v, exists := raw["account_affinity_ttl_seconds"]; exists {
+			n := intFrom(v)
+			if err := config.ValidateIntRange("runtime.account_affinity_ttl_seconds", n, 1, 86400, true); err != nil {
+				return nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			}
+			cfg.AccountAffinityTTLSeconds = n
+		}
 		if v, exists := raw["stream_max_duration_seconds"]; exists {
 			n := intFrom(v)
 			if err := config.ValidateIntRange("runtime.stream_max_duration_seconds", n, 30, 3600, true); err != nil {

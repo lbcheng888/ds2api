@@ -31,6 +31,7 @@ type RequestAuth struct {
 	AccountID      string
 	Account        config.Account
 	TriedAccounts  map[string]bool
+	AffinityKey    string
 	resolver       *Resolver
 }
 
@@ -65,29 +66,42 @@ type rankedAccount struct {
 	score int64
 }
 
+type accountAffinity struct {
+	AccountID string
+	Expires   time.Time
+}
+
 type Resolver struct {
 	Store *config.Store
 	Pool  *account.Pool
 	Login LoginFunc
 
-	mu               sync.Mutex
-	tokenRefreshedAt map[string]time.Time
-	accountCooldowns map[string]time.Time
-	accountStats     map[string]accountHealthStats
+	TokenTracker *TokenTracker
+	mu                sync.Mutex
+	tokenRefreshedAt  map[string]time.Time
+	accountCooldowns  map[string]time.Time
+	accountStats      map[string]accountHealthStats
+	accountAffinities map[string]accountAffinity
 }
 
 func NewResolver(store *config.Store, pool *account.Pool, login LoginFunc) *Resolver {
 	return &Resolver{
-		Store:            store,
-		Pool:             pool,
-		Login:            login,
-		tokenRefreshedAt: map[string]time.Time{},
-		accountCooldowns: map[string]time.Time{},
-		accountStats:     map[string]accountHealthStats{},
+		Store:             store,
+		Pool:              pool,
+		Login:             login,
+		TokenTracker:      NewTokenTrackerFromEnv(),
+		tokenRefreshedAt:  map[string]time.Time{},
+		accountCooldowns:  map[string]time.Time{},
+		accountStats:      map[string]accountHealthStats{},
+		accountAffinities: map[string]accountAffinity{},
 	}
 }
 
 func (r *Resolver) Determine(req *http.Request) (*RequestAuth, error) {
+	return r.DetermineWithAffinity(req, "")
+}
+
+func (r *Resolver) DetermineWithAffinity(req *http.Request, affinityKey string) (*RequestAuth, error) {
 	callerKey := r.selectCallerToken(req)
 	if callerKey == "" {
 		return nil, ErrUnauthorized
@@ -104,16 +118,17 @@ func (r *Resolver) Determine(req *http.Request) (*RequestAuth, error) {
 		}, nil
 	}
 	target := strings.TrimSpace(req.Header.Get("X-Ds2-Target-Account"))
-	a, err := r.acquireManagedRequestAuth(ctx, callerID, target)
+	a, err := r.acquireManagedRequestAuth(ctx, callerID, target, affinityKey)
 	if err != nil {
 		return nil, err
 	}
 	return a, nil
 }
 
-func (r *Resolver) acquireManagedRequestAuth(ctx context.Context, callerID, target string) (*RequestAuth, error) {
+func (r *Resolver) acquireManagedRequestAuth(ctx context.Context, callerID, target, affinityKey string) (*RequestAuth, error) {
 	tried := map[string]bool{}
 	var lastEnsureErr error
+	affinityKey = normalizeAffinityKey(callerID, affinityKey)
 	for {
 		r.applyAccountCooldowns(tried)
 		if target == "" && len(tried) >= len(r.Store.Accounts()) {
@@ -122,7 +137,11 @@ func (r *Resolver) acquireManagedRequestAuth(ctx context.Context, callerID, targ
 			}
 			return nil, ErrNoAccount
 		}
-		acc, ok := r.Pool.AcquireWaitPreferred(ctx, target, tried, r.preferredAccountOrder())
+		acquireTarget := target
+		if acquireTarget == "" {
+			acquireTarget = r.affinityAccountTarget(affinityKey, tried)
+		}
+		acc, ok := r.Pool.AcquireWaitPreferred(ctx, acquireTarget, tried, r.preferredAccountOrder())
 		if !ok {
 			if lastEnsureErr != nil {
 				return nil, lastEnsureErr
@@ -136,6 +155,7 @@ func (r *Resolver) acquireManagedRequestAuth(ctx context.Context, callerID, targ
 			AccountID:      acc.Identifier(),
 			Account:        acc,
 			TriedAccounts:  tried,
+			AffinityKey:    affinityKey,
 			resolver:       r,
 		}
 
@@ -149,6 +169,7 @@ func (r *Resolver) acquireManagedRequestAuth(ctx context.Context, callerID, targ
 			}
 			continue
 		}
+		r.rememberAffinity(affinityKey, a.AccountID)
 		return a, nil
 	}
 }
@@ -226,6 +247,7 @@ func (r *Resolver) SwitchAccount(ctx context.Context, a *RequestAuth) bool {
 	}
 	if a.AccountID != "" {
 		a.TriedAccounts[a.AccountID] = true
+		r.clearAffinityForAccount(a.AffinityKey, a.AccountID)
 		r.Pool.Release(a.AccountID)
 	}
 	for {
@@ -242,6 +264,7 @@ func (r *Resolver) SwitchAccount(ctx context.Context, a *RequestAuth) bool {
 			r.Pool.Release(a.AccountID)
 			continue
 		}
+		r.rememberAffinity(a.AffinityKey, a.AccountID)
 		return true
 	}
 }
@@ -281,6 +304,7 @@ func (r *Resolver) markAccountFailure(a *RequestAuth, reason string) {
 	if cooldown > 0 {
 		r.accountCooldowns[accountID] = until
 	}
+	r.clearAffinityForAccountLocked(a.AffinityKey, accountID)
 	stats := r.accountStats[accountID]
 	stats.failureCount++
 	stats.consecutiveFailures++
@@ -312,6 +336,7 @@ func (r *Resolver) MarkAccountSuccess(a *RequestAuth) {
 	stats.lastFailureReason = ""
 	stats.lastSuccess = time.Now()
 	r.accountStats[accountID] = stats
+	r.rememberAffinityLocked(a.AffinityKey, accountID, time.Now())
 	r.mu.Unlock()
 }
 
@@ -412,6 +437,84 @@ func (r *Resolver) preferredAccountOrder() []string {
 		out = append(out, item.id)
 	}
 	return out
+}
+
+func normalizeAffinityKey(callerID, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if callerID == "" || raw == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return callerID + "\x00" + hex.EncodeToString(sum[:8])
+}
+
+func (r *Resolver) affinityAccountTarget(key string, tried map[string]bool) string {
+	if r == nil || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	aff, ok := r.accountAffinities[key]
+	if !ok {
+		return ""
+	}
+	if now.After(aff.Expires) {
+		delete(r.accountAffinities, key)
+		return ""
+	}
+	accountID := strings.TrimSpace(aff.AccountID)
+	if accountID == "" || tried[accountID] {
+		return ""
+	}
+	if until := r.accountCooldowns[accountID]; now.Before(until) {
+		delete(r.accountAffinities, key)
+		return ""
+	}
+	return accountID
+}
+
+func (r *Resolver) rememberAffinity(key, accountID string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rememberAffinityLocked(key, accountID, time.Now())
+}
+
+func (r *Resolver) rememberAffinityLocked(key, accountID string, now time.Time) {
+	key = strings.TrimSpace(key)
+	accountID = strings.TrimSpace(accountID)
+	if key == "" || accountID == "" {
+		return
+	}
+	if r.accountAffinities == nil {
+		r.accountAffinities = map[string]accountAffinity{}
+	}
+	r.accountAffinities[key] = accountAffinity{
+		AccountID: accountID,
+		Expires:   now.Add(time.Duration(r.accountAffinityTTLSeconds()) * time.Second),
+	}
+}
+
+func (r *Resolver) clearAffinityForAccount(key, accountID string) {
+	if r == nil || strings.TrimSpace(key) == "" || strings.TrimSpace(accountID) == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clearAffinityForAccountLocked(key, accountID)
+}
+
+func (r *Resolver) clearAffinityForAccountLocked(key, accountID string) {
+	aff, ok := r.accountAffinities[strings.TrimSpace(key)]
+	if !ok {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(aff.AccountID), strings.TrimSpace(accountID)) {
+		delete(r.accountAffinities, strings.TrimSpace(key))
+	}
 }
 
 func allAccountScoresEqual(accounts []rankedAccount) bool {
@@ -574,4 +677,11 @@ func (r *Resolver) accountFailureCooldownSeconds() int {
 		return 120
 	}
 	return r.Store.RuntimeAccountFailureCooldownSeconds()
+}
+
+func (r *Resolver) accountAffinityTTLSeconds() int {
+	if r == nil || r.Store == nil {
+		return 3600
+	}
+	return r.Store.RuntimeAccountAffinityTTLSeconds()
 }

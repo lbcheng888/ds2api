@@ -24,6 +24,10 @@ type AuthResolver interface {
 	Release(a *auth.RequestAuth)
 }
 
+type AffinityAuthResolver interface {
+	DetermineWithAffinity(req *http.Request, affinityKey string) (*auth.RequestAuth, error)
+}
+
 type DeepSeekCaller interface {
 	CreateSession(ctx context.Context, a *auth.RequestAuth, maxAttempts int) (string, error)
 	GetPow(ctx context.Context, a *auth.RequestAuth, maxAttempts int) (string, error)
@@ -46,9 +50,11 @@ type ConfigReader interface {
 	AutoDeleteMode() string
 	AutoDeleteSessions() bool
 	RuntimeAccountFailureCooldownSeconds() int
+	RuntimeAccountAffinityTTLSeconds() int
 	RuntimeStreamMaxDurationSeconds() int
 	RuntimeReasoningOnlyTimeoutSeconds() int
 	RuntimeBufferedToolContentMaxBytes() int
+	RuntimeAccountTokenThreshold() int64
 	HistorySplitEnabled() bool
 	HistorySplitTriggerAfterTurns() int
 	CurrentInputFileEnabled() bool
@@ -72,6 +78,13 @@ func CompatStripReferenceMarkers(store ConfigReader) bool {
 }
 
 var WriteJSON = util.WriteJSON
+
+func DetermineWithAffinity(resolver AuthResolver, req *http.Request, payload map[string]any) (*auth.RequestAuth, error) {
+	if withAffinity, ok := resolver.(AffinityAuthResolver); ok {
+		return withAffinity.DetermineWithAffinity(req, RequestAffinityKey(req, payload))
+	}
+	return resolver.Determine(req)
+}
 
 var _ AuthResolver = (*auth.Resolver)(nil)
 var _ DeepSeekCaller = (*dsclient.Client)(nil)

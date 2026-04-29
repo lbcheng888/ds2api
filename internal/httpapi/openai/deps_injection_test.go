@@ -61,6 +61,9 @@ func (m mockOpenAIConfig) ThinkingInjectionPrompt() string { return m.thinkingPr
 func (m mockOpenAIConfig) RuntimeAccountFailureCooldownSeconds() int {
 	return 0
 }
+func (m mockOpenAIConfig) RuntimeAccountAffinityTTLSeconds() int {
+	return 3600
+}
 func (m mockOpenAIConfig) RuntimeStreamMaxDurationSeconds() int {
 	return 0
 }
@@ -68,6 +71,9 @@ func (m mockOpenAIConfig) RuntimeReasoningOnlyTimeoutSeconds() int {
 	return 0
 }
 func (m mockOpenAIConfig) RuntimeBufferedToolContentMaxBytes() int {
+	return 0
+}
+func (m mockOpenAIConfig) RuntimeAccountTokenThreshold() int64 {
 	return 0
 }
 

@@ -9,7 +9,7 @@ import (
 
 const (
 	parsedLineBufferSize = 128
-	scannerBufferSize    = 64 * 1024
+	scannerBufferSize    = 256 * 1024
 	maxScannerLineSize   = 2 * 1024 * 1024
 )
 

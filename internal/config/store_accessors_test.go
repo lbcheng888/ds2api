@@ -65,3 +65,14 @@ func TestStoreThinkingInjectionAccessors(t *testing.T) {
 		t.Fatalf("thinking injection prompt=%q want custom thinking prompt", got)
 	}
 }
+
+func TestStoreRuntimeAccountAffinityTTLSeconds(t *testing.T) {
+	store := &Store{cfg: Config{}}
+	if got := store.RuntimeAccountAffinityTTLSeconds(); got != 3600 {
+		t.Fatalf("default account affinity ttl=%d want=3600", got)
+	}
+	store.cfg.Runtime.AccountAffinityTTLSeconds = 120
+	if got := store.RuntimeAccountAffinityTTLSeconds(); got != 120 {
+		t.Fatalf("configured account affinity ttl=%d want=120", got)
+	}
+}

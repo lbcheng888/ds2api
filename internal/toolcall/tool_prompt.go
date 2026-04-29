@@ -31,6 +31,8 @@ RULES:
 11) Never omit the opening <|DSML|tool_calls> tag, even if you already plan to close with </|DSML|tool_calls>.
 12) Compatibility note: the runtime also accepts the legacy XML tags <tool_calls> / <invoke> / <parameter>, but prefer the DSML-prefixed form above.
 13) TaskCreate, TaskUpdate, TodoWrite, and TodoRead are bookkeeping only. Do not call them as the only tool in a response; if work remains, call Read, Bash, Edit, MultiEdit, Agent, or another real execution tool in the same response.
+14) For Edit, Update, and MultiEdit, old_string must be copied exactly from a fresh Read result and include enough surrounding unchanged lines to identify one occurrence. If an edit just failed or another edit touched the file, Read the file again before retrying.
+15) Do not emit multiple Bash / execute_command / exec_command calls in the same response. Combine related shell checks into one command. If a probe may fail (for example ls on an optional path), handle that inside the command so one failure does not cancel other work.
 
 PARAMETER SHAPES:
 - string => <|DSML|parameter name="x"><![CDATA[value]]></|DSML|parameter>
@@ -49,6 +51,10 @@ Wrong 2 — Markdown code fences:
 Wrong 3 — missing opening wrapper:
   <|DSML|invoke name="TOOL_NAME">...</|DSML|invoke>
   </|DSML|tool_calls>
+Wrong 4 — JSON text instead of a tool call:
+  fenced JSON object like {"tool":"Bash","arguments":{"command":"pwd"}}
+Wrong 5 — parallel shell calls:
+  two Bash calls in one response; combine them into one Bash command instead
 
 Remember: The ONLY valid way to use tools is the <|DSML|tool_calls>...</|DSML|tool_calls> block at the end of your response.
 
@@ -216,10 +222,10 @@ func exampleBasicParams(name string) (string, bool) {
 		return wrapParameter("file_path", promptCDATA("notes.txt")) + "\n" + wrapParameter("content", promptCDATA("Hello world")), true
 	case "write_to_file":
 		return wrapParameter("path", promptCDATA("notes.txt")) + "\n" + wrapParameter("content", promptCDATA("Hello world")), true
-	case "Edit":
-		return wrapParameter("file_path", promptCDATA("README.md")) + "\n" + wrapParameter("old_string", promptCDATA("foo")) + "\n" + wrapParameter("new_string", promptCDATA("bar")), true
+	case "Edit", "Update":
+		return wrapParameter("file_path", promptCDATA("README.md")) + "\n" + wrapParameter("old_string", promptCDATA("## Install\n\nRun `make test` before submitting.\n")) + "\n" + wrapParameter("new_string", promptCDATA("## Install\n\nRun `make test && make lint` before submitting.\n")), true
 	case "MultiEdit":
-		return wrapParameter("file_path", promptCDATA("README.md")) + "\n" + `<|DSML|parameter name="edits"><item><old_string>` + promptCDATA("foo") + `</old_string><new_string>` + promptCDATA("bar") + `</new_string></item></|DSML|parameter>`, true
+		return wrapParameter("file_path", promptCDATA("README.md")) + "\n" + `<|DSML|parameter name="edits"><item><old_string>` + promptCDATA("## Install\n\nRun `make test` before submitting.\n") + `</old_string><new_string>` + promptCDATA("## Install\n\nRun `make test && make lint` before submitting.\n") + `</new_string></item></|DSML|parameter>`, true
 	}
 	return "", false
 }
@@ -227,7 +233,7 @@ func exampleBasicParams(name string) (string, bool) {
 func exampleNestedParams(name string) (string, bool) {
 	switch strings.TrimSpace(name) {
 	case "MultiEdit":
-		return wrapParameter("file_path", promptCDATA("README.md")) + "\n" + `<|DSML|parameter name="edits"><item><old_string>` + promptCDATA("foo") + `</old_string><new_string>` + promptCDATA("bar") + `</new_string></item></|DSML|parameter>`, true
+		return wrapParameter("file_path", promptCDATA("README.md")) + "\n" + `<|DSML|parameter name="edits"><item><old_string>` + promptCDATA("## Install\n\nRun `make test` before submitting.\n") + `</old_string><new_string>` + promptCDATA("## Install\n\nRun `make test && make lint` before submitting.\n") + `</new_string></item></|DSML|parameter>`, true
 	case "Task":
 		return wrapParameter("description", promptCDATA("Investigate flaky tests")) + "\n" + wrapParameter("prompt", promptCDATA("Run targeted tests and summarize failures")), true
 	case "ask_followup_question":

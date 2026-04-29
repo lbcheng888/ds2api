@@ -15,6 +15,7 @@ type Config struct {
 	ModelAliases      map[string]string       `json:"model_aliases,omitempty"`
 	Admin             AdminConfig             `json:"admin,omitempty"`
 	Runtime           RuntimeConfig           `json:"runtime,omitempty"`
+	AccountTokenThreshold int64              `json:"account_token_threshold,omitempty"`
 	Compat            CompatConfig            `json:"compat,omitempty"`
 	Responses         ResponsesConfig         `json:"responses,omitempty"`
 	Embeddings        EmbeddingsConfig        `json:"embeddings,omitempty"`
@@ -185,6 +186,7 @@ type RuntimeConfig struct {
 	GlobalMaxInflight             int `json:"global_max_inflight,omitempty"`
 	TokenRefreshIntervalHours     int `json:"token_refresh_interval_hours,omitempty"`
 	AccountFailureCooldownSeconds int `json:"account_failure_cooldown_seconds,omitempty"`
+	AccountAffinityTTLSeconds     int `json:"account_affinity_ttl_seconds,omitempty"`
 	StreamMaxDurationSeconds      int `json:"stream_max_duration_seconds,omitempty"`
 	ReasoningOnlyTimeoutSeconds   int `json:"reasoning_only_timeout_seconds,omitempty"`
 	BufferedToolContentMaxBytes   int `json:"buffered_tool_content_max_bytes,omitempty"`

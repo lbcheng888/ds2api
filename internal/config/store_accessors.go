@@ -188,6 +188,20 @@ func (s *Store) RuntimeAccountFailureCooldownSeconds() int {
 	return 120
 }
 
+func (s *Store) RuntimeAccountAffinityTTLSeconds() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cfg.Runtime.AccountAffinityTTLSeconds > 0 {
+		return s.cfg.Runtime.AccountAffinityTTLSeconds
+	}
+	if raw := strings.TrimSpace(os.Getenv("DS2API_ACCOUNT_AFFINITY_TTL_SECONDS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 3600
+}
+
 func (s *Store) RuntimeStreamMaxDurationSeconds() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -228,6 +242,15 @@ func (s *Store) RuntimeBufferedToolContentMaxBytes() int {
 		}
 	}
 	return 262144
+}
+
+func (s *Store) RuntimeAccountTokenThreshold() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cfg.AccountTokenThreshold > 0 {
+		return s.cfg.AccountTokenThreshold
+	}
+	return 950000
 }
 
 func (s *Store) AutoDeleteSessions() bool {

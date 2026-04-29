@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"regexp"
 	"strings"
 
 	"ds2api/internal/toolcall"
@@ -41,6 +42,9 @@ func DetectMissingToolCall(in MissingToolCallInput) MissingToolCallDecision {
 	if len(parsed.Calls) > 0 && toolcall.AllCallsAreTaskTrackingTools(parsed.Calls) {
 		return missingToolDecision()
 	}
+	if looksLikeFencedJSONToolCall(finalText, in.ToolNames) {
+		return missingToolDecision()
+	}
 	if parsed.SawToolCallSyntax {
 		return invalidToolSyntaxDecision()
 	}
@@ -59,6 +63,9 @@ func DetectMissingToolCall(in MissingToolCallInput) MissingToolCallDecision {
 	if looksLikeUnexecutedCodingAction(finalText, in.FinalPrompt) {
 		return missingToolDecision()
 	}
+	if looksLikeUnsupportedCompletionClaim(finalText, in.FinalPrompt) {
+		return missingToolDecision()
+	}
 	if !looksLikeFutureToolAction(finalText) {
 		return MissingToolCallDecision{}
 	}
@@ -73,6 +80,32 @@ func looksLikeInvalidLegacyToolCallSyntax(text string) bool {
 func HasCallableTools(toolNames []string) bool {
 	for _, name := range toolNames {
 		if strings.TrimSpace(name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+var fencedCodeBlockPattern = regexp.MustCompile("(?is)```\\s*([a-zA-Z0-9_-]*)\\s*\\n(.*?)```")
+
+func looksLikeFencedJSONToolCall(text string, toolNames []string) bool {
+	for _, match := range fencedCodeBlockPattern.FindAllStringSubmatch(text, -1) {
+		if len(match) < 3 {
+			continue
+		}
+		lang := strings.ToLower(strings.TrimSpace(match[1]))
+		body := strings.TrimSpace(match[2])
+		if body == "" {
+			continue
+		}
+		if lang != "" && lang != "json" && lang != "jsonc" && lang != "javascript" && lang != "js" {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(body), `"tool"`) && !strings.Contains(strings.ToLower(body), `"function"`) {
+			continue
+		}
+		_, calls, _, ok := toolcall.ExtractVisibleJSONToolCalls(body, toolNames)
+		if ok && len(calls) > 0 {
 			return true
 		}
 	}
@@ -177,6 +210,108 @@ func looksLikeUnexecutedCodingAction(finalText, finalPrompt string) bool {
 	})
 }
 
+func looksLikeUnsupportedCompletionClaim(finalText, finalPrompt string) bool {
+	if !latestUserRequestedExecution(finalPrompt) {
+		return false
+	}
+	trimmed := strings.TrimSpace(finalText)
+	if trimmed == "" || len([]rune(trimmed)) > 1200 || strings.Count(trimmed, "\n") > 16 {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if !mentionsCodeArtifact(lower) || !containsAny(lower, completionClaimPhrases()) {
+		return false
+	}
+	return !recentPromptHasExecutionToolEvidence(finalPrompt)
+}
+
+func mentionsCodeArtifact(lower string) bool {
+	return containsAny(lower, []string{
+		".go",
+		".js",
+		".jsx",
+		".ts",
+		".tsx",
+		".py",
+		".json",
+		".md",
+		".yaml",
+		".yml",
+		".toml",
+		"handler_",
+		"文件",
+		"测试",
+		"代码",
+		"路径",
+	})
+}
+
+func completionClaimPhrases() []string {
+	return []string{
+		"已集成",
+		"已接入",
+		"已修复",
+		"已更新",
+		"已完成",
+		"已实现",
+		"已添加",
+		"已新增",
+		"已经集成",
+		"已经接入",
+		"已经修复",
+		"已经更新",
+		"已经完成",
+		"已经实现",
+		"修复完成",
+		"改动完成",
+		"测试通过",
+		"implemented",
+		"integrated",
+		"wired",
+		"fixed",
+		"updated",
+		"completed",
+		"added",
+		"tests pass",
+	}
+}
+
+func recentPromptHasExecutionToolEvidence(finalPrompt string) bool {
+	turn := strings.ToLower(latestConversationTurnBlock(finalPrompt))
+	if strings.TrimSpace(turn) == "" {
+		return false
+	}
+	for _, marker := range []string{
+		`invoke name="edit"`,
+		`invoke name="multiedit"`,
+		`invoke name="multi_edit"`,
+		`invoke name="write"`,
+		`invoke name="bash"`,
+		`invoke name="shell"`,
+		`invoke name="update"`,
+		`invoke name="applypatch"`,
+		`invoke name="apply_patch"`,
+		`"name":"edit"`,
+		`"name":"multiedit"`,
+		`"name":"write"`,
+		`"name":"bash"`,
+		`"name":"update"`,
+		`"name":"applypatch"`,
+		`"name":"apply_patch"`,
+		"<tool>edit",
+		"<tool>multiedit",
+		"<tool>write",
+		"<tool>bash",
+		"<tool>update",
+		"<tool>applypatch",
+	} {
+		if strings.Contains(turn, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func looksLikeExplicitUnexecutedFileToolPlan(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" || len([]rune(trimmed)) > 2400 || strings.Count(trimmed, "\n") > 40 {
@@ -231,6 +366,7 @@ func latestUserRequestedExecution(finalPrompt string) bool {
 		"继续",
 		"请优化",
 		"优化",
+		"完善",
 		"按建议",
 		"推进",
 		"一口气",
@@ -258,6 +394,8 @@ func looksLikeFutureToolAction(text string) bool {
 	lower := strings.ToLower(trimmed)
 	for _, phrase := range []string{
 		"继续推进剩余",
+		"正在并行处理",
+		"并行处理",
 		"先并行读取",
 		"并行读取需修改",
 		"先读",
@@ -265,8 +403,19 @@ func looksLikeFutureToolAction(text string) bool {
 		"逐个分析",
 		"然后处理",
 		"继续读取",
+		"现在运行",
+		"现在执行",
+		"运行测试",
+		"测试验证",
+		"跑测试",
 		"reading the rest",
 		"now reading",
+		"now running",
+		"now run",
+		"now executing",
+		"run tests",
+		"running tests",
+		"test verification",
 		"start examining",
 		"start reading",
 		"continue reading",
@@ -274,6 +423,9 @@ func looksLikeFutureToolAction(text string) bool {
 		"i'll launch parallel",
 		"i will launch parallel",
 		"let me launch parallel",
+		"currently working on",
+		"i'm working on",
+		"i am working on",
 	} {
 		if strings.Contains(lower, phrase) {
 			return true
@@ -296,8 +448,11 @@ func futureActionPrefixes() []string {
 		"now i will ",
 		"我将",
 		"我会",
+		"我正",
+		"我正在",
 		"我先",
 		"让我",
+		"正在",
 		"先",
 		"接下来",
 		"继续",

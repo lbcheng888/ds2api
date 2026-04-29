@@ -33,6 +33,7 @@ type ConfigStore interface {
 	RuntimeGlobalMaxInflight(defaultSize int) int
 	RuntimeTokenRefreshIntervalHours() int
 	RuntimeAccountFailureCooldownSeconds() int
+	RuntimeAccountAffinityTTLSeconds() int
 	RuntimeStreamMaxDurationSeconds() int
 	RuntimeReasoningOnlyTimeoutSeconds() int
 	RuntimeBufferedToolContentMaxBytes() int

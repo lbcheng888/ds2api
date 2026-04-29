@@ -20,6 +20,9 @@ func validateMergedRuntimeSettings(current config.RuntimeConfig, incoming *confi
 		if incoming.AccountFailureCooldownSeconds > 0 {
 			merged.AccountFailureCooldownSeconds = incoming.AccountFailureCooldownSeconds
 		}
+		if incoming.AccountAffinityTTLSeconds > 0 {
+			merged.AccountAffinityTTLSeconds = incoming.AccountAffinityTTLSeconds
+		}
 		if incoming.StreamMaxDurationSeconds > 0 {
 			merged.StreamMaxDurationSeconds = incoming.StreamMaxDurationSeconds
 		}

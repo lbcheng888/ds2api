@@ -102,6 +102,9 @@ func ValidateRuntimeConfig(runtime RuntimeConfig) error {
 	if err := ValidateIntRange("runtime.account_failure_cooldown_seconds", runtime.AccountFailureCooldownSeconds, 1, 3600, false); err != nil {
 		return err
 	}
+	if err := ValidateIntRange("runtime.account_affinity_ttl_seconds", runtime.AccountAffinityTTLSeconds, 1, 86400, false); err != nil {
+		return err
+	}
 	if err := ValidateIntRange("runtime.stream_max_duration_seconds", runtime.StreamMaxDurationSeconds, 30, 3600, false); err != nil {
 		return err
 	}
