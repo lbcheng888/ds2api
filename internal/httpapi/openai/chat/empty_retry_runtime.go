@@ -247,12 +247,13 @@ func (h *Handler) consumeChatStreamAttempt(r *http.Request, resp *http.Response,
 			}
 		},
 		OnContextDone: func() {
+			streamRuntime.markContextCancelled()
 			if historySession != nil {
 				historySession.stopped(streamRuntime.thinking.String(), streamRuntime.text.String(), string(streamengine.StopReasonContextCancelled))
 			}
 		},
 	})
-	if r.Context().Err() != nil {
+	if streamRuntime.finalErrorCode == string(streamengine.StopReasonContextCancelled) {
 		return true, false
 	}
 	terminalWritten := streamRuntime.finalize(finalReason, allowDeferEmpty && finalReason != "content_filter")
@@ -285,6 +286,10 @@ func logChatStreamTerminal(streamRuntime *chatStreamRuntime, attempts int) {
 	source := "first_attempt"
 	if attempts > 0 {
 		source = "synthetic_retry"
+	}
+	if streamRuntime.finalErrorCode == string(streamengine.StopReasonContextCancelled) {
+		config.Logger.Info("[openai_empty_retry] terminal cancelled", "surface", "chat.completions", "stream", true, "retry_attempts", attempts, "error_code", streamRuntime.finalErrorCode)
+		return
 	}
 	if streamRuntime.finalErrorMessage != "" {
 		config.Logger.Info("[openai_empty_retry] terminal empty output", "surface", "chat.completions", "stream", true, "retry_attempts", attempts, "success_source", "none", "error_code", streamRuntime.finalErrorCode)

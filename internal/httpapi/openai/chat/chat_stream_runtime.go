@@ -173,6 +173,15 @@ func (s *chatStreamRuntime) sendFailedChunk(status int, message, code string) {
 	s.sendDone()
 }
 
+func (s *chatStreamRuntime) markContextCancelled() {
+	s.finalErrorStatus = 499
+	s.finalErrorMessage = "request context cancelled"
+	s.finalErrorCode = string(streamengine.StopReasonContextCancelled)
+	s.finalThinking = s.thinking.String()
+	s.finalText = cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
+	s.finalFinishReason = string(streamengine.StopReasonContextCancelled)
+}
+
 func (s *chatStreamRuntime) resetStreamToolCallState() {
 	s.streamToolCallIDs = map[int]string{}
 	s.streamToolNames = map[int]string{}

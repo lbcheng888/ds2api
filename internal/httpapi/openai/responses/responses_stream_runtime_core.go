@@ -139,6 +139,13 @@ func (s *responsesStreamRuntime) failResponse(status int, message, code string) 
 	s.sendDone()
 }
 
+func (s *responsesStreamRuntime) markContextCancelled() {
+	s.failed = true
+	s.finalErrorStatus = 499
+	s.finalErrorMessage = "request context cancelled"
+	s.finalErrorCode = string(streamengine.StopReasonContextCancelled)
+}
+
 func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput bool) bool {
 	s.failed = false
 	s.finalErrorStatus = 0
