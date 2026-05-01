@@ -114,3 +114,104 @@ func TestDetectMissingToolCallAllowsTraceTextWithoutTools(t *testing.T) {
 		t.Fatalf("expected no block without callable tools, got %#v", got)
 	}
 }
+func TestDetectMissingBlockNoToolReadVerb(t *testing.T) {
+	got := DetectMissingToolCall(MissingToolCallInput{
+		Text:      "先阅读现有代码，理解当前实现，然后扩展。",
+		ToolNames: []string{"Read", "Edit", "Bash"},
+	})
+	if !got.Blocked || got.Code != MissingToolCallCode {
+		t.Fatalf("expected block for '阅读' future action, got %#v", got)
+	}
+}
+
+func TestDetectMissingBlockNoToolUnderstandVerb(t *testing.T) {
+	got := DetectMissingToolCall(MissingToolCallInput{
+		Text:      "先理解当前CFG lowering实现情况。",
+		ToolNames: []string{"Read", "Edit", "Bash"},
+	})
+	if !got.Blocked || got.Code != MissingToolCallCode {
+		t.Fatalf("expected block for '理解' future action, got %#v", got)
+	}
+}
+
+func TestDetectMissingBlockNoToolEvaluateVerb(t *testing.T) {
+	got := DetectMissingToolCall(MissingToolCallInput{
+		Text:      "先评估当前的实现状态和进度。",
+		ToolNames: []string{"Read", "Edit", "Bash"},
+	})
+	if !got.Blocked || got.Code != MissingToolCallCode {
+		t.Fatalf("expected block for '评估' future action, got %#v", got)
+	}
+}
+
+func TestDetectMissingBlockNoToolLearnAboutVerb(t *testing.T) {
+	got := DetectMissingToolCall(MissingToolCallInput{
+		Text:      "先了解项目的整体结构。",
+		ToolNames: []string{"Read", "Edit", "Bash"},
+	})
+	if !got.Blocked || got.Code != MissingToolCallCode {
+		t.Fatalf("expected block for '了解' future action, got %#v", got)
+	}
+}
+
+func TestDetectMissingBlockNoToolINeedToPrefix(t *testing.T) {
+	got := DetectMissingToolCall(MissingToolCallInput{
+		Text:      "I need to read the file and understand the structure.",
+		ToolNames: []string{"Read", "Edit", "Bash"},
+	})
+	if !got.Blocked || got.Code != MissingToolCallCode {
+		t.Fatalf("expected block for 'i need to' future action, got %#v", got)
+	}
+}
+
+func TestDetectMissingBlockNoToolNextStepPrefix(t *testing.T) {
+	got := DetectMissingToolCall(MissingToolCallInput{
+		Text:      "下一步开始推进剩余的修复工作。",
+		ToolNames: []string{"Read", "Edit", "Bash"},
+	})
+	if !got.Blocked || got.Code != MissingToolCallCode {
+		t.Fatalf("expected block for '下一步' prefix, got %#v", got)
+	}
+}
+
+func TestDetectMissingBlockNoToolNeedCreateCodingAction(t *testing.T) {
+	got := DetectMissingToolCall(MissingToolCallInput{
+		Text:        "需要创建一个新的文件来处理配置。",
+		FinalPrompt: "<user>请继续</user>",
+		ToolNames:   []string{"Read", "Edit", "Bash"},
+	})
+	if !got.Blocked || got.Code != MissingToolCallCode {
+		t.Fatalf("expected block for '需要创建' coding action, got %#v", got)
+	}
+}
+
+func TestDetectMissingBlockNoToolCreateFilePlan(t *testing.T) {
+	got := DetectMissingToolCall(MissingToolCallInput{
+		Text:      "创建文件 /tmp/test_config.json 来保存配置。",
+		ToolNames: []string{"Read", "Edit", "Bash"},
+	})
+	if !got.Blocked || got.Code != MissingToolCallCode {
+		t.Fatalf("expected block for '创建文件' file plan, got %#v", got)
+	}
+}
+
+func TestDetectMissingBlockNoToolWriteToFilePlan(t *testing.T) {
+	got := DetectMissingToolCall(MissingToolCallInput{
+		Text:      "write to the config file at /tmp/settings.json",
+		ToolNames: []string{"Read", "Edit", "Bash"},
+	})
+	if !got.Blocked || got.Code != MissingToolCallCode {
+		t.Fatalf("expected block for 'write to ' file plan, got %#v", got)
+	}
+}
+
+func TestDetectMissingToolCallAllowsSimpleChatResponse(t *testing.T) {
+	got := DetectMissingToolCall(MissingToolCallInput{
+		Text:      "好的，我已经完成了所有的修改，测试也通过了。",
+		ToolNames: []string{"Read", "Edit", "Bash"},
+	})
+	if got.Blocked {
+		t.Fatalf("expected simple completion message to be allowed, got %#v", got)
+	}
+}
+

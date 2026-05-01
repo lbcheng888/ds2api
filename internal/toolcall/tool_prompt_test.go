@@ -50,11 +50,14 @@ func TestBuildToolCallInstructions_BashUsesCommandAndDescriptionExamples(t *test
 	if strings.Contains(out, `<|DSML|invoke name="Read">`) {
 		t.Fatalf("expected examples to avoid unavailable hard-coded Read tool, got: %s", out)
 	}
-	if !strings.Contains(out, "Do not emit multiple Bash / execute_command / exec_command calls in the same response") {
-		t.Fatalf("expected parallel shell warning, got: %s", out)
+	if strings.Contains(out, "Do not emit multiple Bash / execute_command / exec_command calls in the same response") {
+		t.Fatalf("unexpected parallel shell prohibition in prompt, got: %s", out)
 	}
-	if !strings.Contains(out, "Wrong 5 — parallel shell calls") {
-		t.Fatalf("expected parallel shell negative example, got: %s", out)
+	if strings.Contains(out, "Wrong 5 — parallel shell calls") {
+		t.Fatalf("unexpected parallel shell negative example, got: %s", out)
+	}
+	if !strings.Contains(out, "You can issue multiple Bash calls in parallel") {
+		t.Fatalf("expected parallel shell encouragement in prompt, got: %s", out)
 	}
 }
 

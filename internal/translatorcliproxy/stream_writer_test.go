@@ -1,6 +1,7 @@
 package translatorcliproxy
 
 import (
+	"bytes"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -165,6 +166,41 @@ func TestInjectStreamUsageMetadataPreservesSSEFrameTerminator(t *testing.T) {
 	}
 	if !strings.Contains(string(got), `"usageMetadata"`) {
 		t.Fatalf("expected usageMetadata injected, got %q", string(got))
+	}
+}
+
+func TestStripDSMLFromTranslatedChunkStripsContentBlockDeltaText(t *testing.T) {
+	// Simulates a Claude SSE content_block_delta with DSML in text_delta
+	chunk := []byte(`event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"visible text\n<|DSML|tool_calls>\n<|DSML|invoke name=\"Bash\">\n<|DSML|parameter name=\"command\" string=\"true\">echo hi</|DSML|parameter>\n</|DSML|invoke>\n</|DSML|tool_calls>"}}
+
+`)
+	got := stripDSMLFromTranslatedChunk(chunk)
+	if bytes.Contains(got, []byte("DSML")) || bytes.Contains(got, []byte("tool_calls")) || bytes.Contains(got, []byte("invoke")) {
+		t.Fatalf("DSML not stripped from text_delta: %s", string(got))
+	}
+	if !bytes.Contains(got, []byte("visible text")) {
+		t.Fatalf("visible text lost: %s", string(got))
+	}
+}
+
+func TestStripDSMLFromTranslatedChunkPreservesToolUse(t *testing.T) {
+	// tool_use chunks should NOT be modified
+	chunk := []byte(`event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Read","input":{}}}
+
+`)
+	got := stripDSMLFromTranslatedChunk(chunk)
+	if !bytes.Equal(chunk, got) {
+		t.Fatalf("tool_use chunk was modified: %s", string(got))
+	}
+}
+
+func TestStripDSMLFromTranslatedChunkNoDSMLPassthrough(t *testing.T) {
+	chunk := []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"normal text\"}}\n\n")
+	got := stripDSMLFromTranslatedChunk(chunk)
+	if !bytes.Equal(chunk, got) {
+		t.Fatalf("normal chunk was modified: %s", string(got))
 	}
 }
 

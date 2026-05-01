@@ -139,7 +139,6 @@ func (h *Handler) finishResponsesNonStreamResult(w http.ResponseWriter, result r
 		config.Logger.Info("[openai_empty_retry] terminal empty output", "surface", "responses", "stream", false, "retry_attempts", attempts, "success_source", "none", "content_filter", result.contentFilter)
 		return
 	}
-	logResponsesToolPolicyRejection(traceID, toolChoice, result.parsed, "text")
 	if toolChoice.IsRequired() && len(result.parsed.Calls) == 0 {
 		writeOpenAIErrorWithCode(w, http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation")
 		return

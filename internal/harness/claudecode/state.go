@@ -207,6 +207,18 @@ func LooksLikeUnexecutedAgentLaunch(finalText, finalPrompt string, allowMetaAgen
 	if !containsAny(lower, []string{"agent", "代理"}) && !containsAny(latest, []string{"team agents", "agent", "代理"}) {
 		return false
 	}
+	if containAnyAgentLaunchPatterns(lower) {
+		return true
+	}
+	return false
+}
+
+var agentLaunchNumPattern = regexp.MustCompile(`(?i)(?:launch|start|create|run|spawn)\s+\d+\s*(?:agent|sub-agent|subagent)s?`)
+
+func containAnyAgentLaunchPatterns(lower string) bool {
+	if agentLaunchNumPattern.MatchString(lower) {
+		return true
+	}
 	return containsAny(lower, []string{
 		"launch agent",
 		"launch agents",
@@ -270,7 +282,9 @@ func agentLaunchEvidenceText(text string) string {
 		"launch implementation agents",
 		"launch parallel agents",
 		"launch agents",
+		"launch ",
 		"start agents",
+		"start ",
 		"parallel agents",
 		"background agents",
 		"启动 4 个实现子代理",

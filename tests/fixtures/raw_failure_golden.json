@@ -1,6 +1,130 @@
 [
   {
+    "sample_id": "failure-20260425t212311z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260425t221441z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260425t221936z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260425t232241z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260425t232701z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260425t234230z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260425t235108z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260425t235614z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260426t000106z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260426t002534z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260426t011535z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260426t020334z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260426t021619z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260426t023821z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260426t035354z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260426t042151z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260426t042502z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260426t055752z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260426t055936z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260426t060252z",
+    "expect": "tool_call"
+  },
+  {
     "sample_id": "failure-20260426t064137z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260426t081418z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260426t152741z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t020653z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260427t123432z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t123936z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t124606z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t124614z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t125033z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t125659z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t135733z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260427t135743z",
     "expect": "missing_tool"
   },
   {
@@ -12,6 +136,98 @@
     "expect": "invalid_tool"
   },
   {
+    "sample_id": "failure-20260427t211939z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260427t212347z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t212606z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t212607z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t212609z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t212732z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t212734z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t212739z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t212845z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t212847z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t213003z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t213018z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t213024z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t213120z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t213121z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t213122z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t213123z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t214135z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t214135z-2",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t222437z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t232736z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t232738z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260427t232952z",
+    "expect": "missing_tool"
+  },
+  {
     "sample_id": "failure-20260428t000256z",
     "expect": "tool_call"
   },
@@ -20,12 +236,60 @@
     "expect": "tool_call"
   },
   {
+    "sample_id": "failure-20260428t011229z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260428t011311z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260428t011325z",
+    "expect": "missing_tool"
+  },
+  {
     "sample_id": "failure-20260428t011341z",
     "expect": "invalid_tool"
   },
   {
+    "sample_id": "failure-20260428t015342z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260428t024252z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260428t024413z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260428t024442z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260428t024512z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260428t024544z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260428t024557z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260428t024607z",
+    "expect": "missing_tool"
+  },
+  {
     "sample_id": "failure-20260428t024629z",
     "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260428t024641z",
+    "expect": "missing_tool"
   },
   {
     "sample_id": "failure-20260428t035729z",
@@ -38,5 +302,29 @@
   {
     "sample_id": "failure-20260428t050100z",
     "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-20260428t062813z",
+    "expect": "missing_tool"
+  },
+  {
+    "sample_id": "failure-20260428t065642z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260428t083720z",
+    "expect": "invalid_tool"
+  },
+  {
+    "sample_id": "failure-20260428t085354z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-upstream_invalid_tool_call-20260426t034655z",
+    "expect": "tool_call"
+  },
+  {
+    "sample_id": "failure-upstream_invalid_tool_call-20260426t034733z",
+    "expect": "invalid_tool"
   }
 ]

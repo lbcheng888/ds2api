@@ -8,20 +8,20 @@ type StreamToolBlockResult struct {
 	Parsed bool
 }
 
-func ParseStreamToolBlock(block string, toolNames []string, allowMetaAgentTools bool) StreamToolBlockResult {
+func ParseStreamToolBlock(block string, toolNames []string, allowMetaAgentTools bool, profile string) StreamToolBlockResult {
 	repaired := toolcall.RepairMalformedToolCallXML(block)
 	calls := toolcall.ParseToolCalls(repaired, toolNames)
 	if len(calls) == 0 {
 		return StreamToolBlockResult{Text: block}
 	}
 	if !allowMetaAgentTools && toolcall.AllCallsAreMetaAgentTools(calls) {
-		recordStreamOutcome("meta_agent_blocked")
+		recordStreamOutcome(profile, "meta_agent_blocked")
 		return StreamToolBlockResult{
 			Text:   toolcall.MetaAgentToolBlockedMessage(),
 			Parsed: true,
 		}
 	}
-	recordStreamOutcome("tool_call")
+	recordStreamOutcome(profile, "tool_call")
 	return StreamToolBlockResult{
 		Calls:  calls,
 		Parsed: true,

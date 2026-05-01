@@ -113,6 +113,14 @@ func NormalizeContent(v any) string {
 					parts = append(parts, txt)
 				}
 			}
+			if typeStr == "thinking" || typeStr == "reasoning" {
+				for _, key := range []string{"thinking", "text", "content"} {
+					if txt, ok := m[key].(string); ok && strings.TrimSpace(txt) != "" {
+						parts = append(parts, txt)
+						break
+					}
+				}
+			}
 		}
 		return strings.Join(parts, "\n")
 	default:

@@ -16,6 +16,7 @@ type MissingToolCallInput struct {
 	ToolNames           []string
 	ToolSchemas         toolcall.ParameterSchemas
 	AllowMetaAgentTools bool
+	Profile             string
 }
 
 type MissingToolCallDecision struct {
@@ -40,36 +41,36 @@ func DetectMissingToolCall(in MissingToolCallInput) MissingToolCallDecision {
 		return MissingToolCallDecision{}
 	}
 	if len(parsed.Calls) > 0 && toolcall.AllCallsAreTaskTrackingTools(parsed.Calls) {
-		return missingToolDecision()
+		return missingToolDecision(in.Profile)
 	}
 	if looksLikeFencedJSONToolCall(finalText, in.ToolNames) {
-		return missingToolDecision()
+		return missingToolDecision(in.Profile)
 	}
 	if parsed.SawToolCallSyntax {
-		return invalidToolSyntaxDecision()
+		return invalidToolSyntaxDecision(in.Profile)
 	}
 	if looksLikeInvalidLegacyToolCallSyntax(finalText) {
-		return invalidToolSyntaxDecision()
+		return invalidToolSyntaxDecision(in.Profile)
 	}
 	if LooksLikeUnexecutedAgentLaunch(finalText, in.FinalPrompt, in.AllowMetaAgentTools) {
-		return missingToolDecision()
+		return missingToolDecision(in.Profile)
 	}
 	if !HasCallableTools(in.ToolNames) {
 		return MissingToolCallDecision{}
 	}
 	if looksLikeExplicitUnexecutedFileToolPlan(finalText) {
-		return missingToolDecision()
+		return missingToolDecision(in.Profile)
 	}
 	if looksLikeUnexecutedCodingAction(finalText, in.FinalPrompt) {
-		return missingToolDecision()
+		return missingToolDecision(in.Profile)
 	}
 	if looksLikeUnsupportedCompletionClaim(finalText, in.FinalPrompt) {
-		return missingToolDecision()
+		return missingToolDecision(in.Profile)
 	}
 	if !looksLikeFutureToolAction(finalText) {
 		return MissingToolCallDecision{}
 	}
-	return missingToolDecision()
+	return missingToolDecision(in.Profile)
 }
 
 func looksLikeInvalidLegacyToolCallSyntax(text string) bool {
@@ -148,8 +149,8 @@ func IsBackgroundAgentAcknowledgement(finalPrompt, finalText string, allowMetaAg
 	return false
 }
 
-func missingToolDecision() MissingToolCallDecision {
-	recordFailureDecision(MissingToolCallCode)
+func missingToolDecision(profile string) MissingToolCallDecision {
+	recordFailureDecision(profile, MissingToolCallCode)
 	return MissingToolCallDecision{
 		Blocked: true,
 		Message: "Upstream model promised tool work but emitted no tool call.",
@@ -157,8 +158,8 @@ func missingToolDecision() MissingToolCallDecision {
 	}
 }
 
-func invalidToolSyntaxDecision() MissingToolCallDecision {
-	recordFailureDecision(InvalidToolCallCode)
+func invalidToolSyntaxDecision(profile string) MissingToolCallDecision {
+	recordFailureDecision(profile, InvalidToolCallCode)
 	return MissingToolCallDecision{
 		Blocked: true,
 		Message: "Upstream model emitted invalid tool call syntax.",
@@ -189,6 +190,20 @@ func looksLikeUnexecutedCodingAction(finalText, finalPrompt string) bool {
 		"加一个",
 		"新增一个",
 		"实现一个",
+		"需要创建",
+		"需要修改",
+		"需要修复",
+		"需要编写",
+		"需要更新",
+		"要改",
+		"要加",
+		"要补",
+		"要新增",
+		"要修复",
+		"要修改",
+		"要创建",
+		"要实现",
+		"要写",
 	}) {
 		return false
 	}
@@ -353,6 +368,13 @@ func looksLikeExplicitUnexecutedFileToolPlan(text string) bool {
 		"write the file",
 		"create the file",
 		"overwrite",
+		"建一个文件",
+		"写一个文件",
+		"创建文件",
+		"写文件",
+		"写入文件",
+		"保存到",
+		"write to ",
 	})
 }
 
@@ -408,6 +430,19 @@ func looksLikeFutureToolAction(text string) bool {
 		"运行测试",
 		"测试验证",
 		"跑测试",
+		"先检查",
+		"先查询",
+		"先确认",
+		"先看",
+		"先分析",
+		"先搜索",
+		"先组织",
+		"先规划",
+		"需要读取",
+		"需要理解",
+		"需要检查",
+		"需要评估",
+		"需要了解",
 		"reading the rest",
 		"now reading",
 		"now running",
@@ -459,6 +494,15 @@ func futureActionPrefixes() []string {
 		"现在开始",
 		"开始",
 		"马上",
+		"下一步",
+		"我打算",
+		"我准备",
+		"我要",
+		"i need to ",
+		"i should ",
+		"i want to ",
+		"i'm about to ",
+		"i am about to ",
 	}
 }
 
@@ -519,5 +563,23 @@ func futureActionVerbs() []string {
 		"补齐",
 		"补全",
 		"完成",
+		"阅读",
+		"理解",
+		"评估",
+		"了解",
+		"查询",
+		"确认",
+		"提交",
+		" wait",
+		" plan",
+		" gather",
+		" organize",
+		" assess",
+		" evaluate",
+		" understand",
+		" determine",
+		" identify",
+		" commit",
+		" bookkeep",
 	}
 }

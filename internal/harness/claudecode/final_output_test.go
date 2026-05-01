@@ -30,6 +30,30 @@ var readSchema = toolcall.ParameterSchemas{
 	},
 }
 
+var readSchemaWithLimitOffset = toolcall.ParameterSchemas{
+	"Read": {
+		"type": "object",
+		"properties": map[string]any{
+			"file_path": map[string]any{"type": "string"},
+			"limit":     map[string]any{"type": "integer"},
+			"offset":    map[string]any{"type": "integer"},
+		},
+		"required": []any{"file_path"},
+	},
+}
+
+var bashSchema = toolcall.ParameterSchemas{
+	"Bash": {
+		"type": "object",
+		"properties": map[string]any{
+			"command":                   map[string]any{"type": "string"},
+			"description":               map[string]any{"type": "string"},
+			"dangerouslyDisableSandbox": map[string]any{"type": "boolean"},
+		},
+		"required": []any{"command"},
+	},
+}
+
 var taskOutputSchema = toolcall.ParameterSchemas{
 	"TaskOutput": {
 		"type": "object",
@@ -75,316 +99,349 @@ func TestRepairFinalOutputConvertsChineseMultipleSubagentLaunchPromise(t *testin
 	}
 }
 
-func TestRepairFinalOutputStripsEmptyToolCallNoiseBeforeAgentRepair(t *testing.T) {
-	got := RepairFinalOutput(FinalOutputInput{
-		FinalPrompt:         "<｜User｜>请用子代理一口气实现<｜Assistant｜>",
-		Text:                "评估实现状态并启动子代理实现</tool_calls>",
-		ToolNames:           []string{"Agent", "Read"},
-		ToolSchemas:         agentSchema,
-		AllowMetaAgentTools: true,
-	})
-	if !got.Changed || got.Reason != "agent_launch_promise" || !got.ToolCall {
-		t.Fatalf("expected agent repair after stripping empty wrapper, got %#v", got)
+func TestCompleteToolCallsSchemaDefaultsReadFillsLimitOffset(t *testing.T) {
+	schemas := readSchemaWithLimitOffset
+	calls := []toolcall.ParsedToolCall{
+		{Name: "Read", Input: map[string]any{"file_path": "/tmp/a.txt"}},
 	}
-	if !strings.Contains(got.Text, "<tool_name>Agent</tool_name>") {
-		t.Fatalf("expected Agent tool call XML, got %s", got.Text)
+	got := CompleteToolCallsWithSchemaDefaults(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(got))
+	}
+	if got[0].Input["file_path"] != "/tmp/a.txt" {
+		t.Fatalf("expected file_path preserved, got %v", got[0].Input["file_path"])
+	}
+	limit, ok := got[0].Input["limit"]
+	if !ok {
+		t.Fatal("expected limit default to be injected")
+	}
+	if limit != int64(2000) {
+		t.Fatalf("expected limit=2000, got %v (type %T)", limit, limit)
+	}
+	offset, ok := got[0].Input["offset"]
+	if !ok {
+		t.Fatal("expected offset default to be injected")
+	}
+	if offset != int64(0) {
+		t.Fatalf("expected offset=0, got %v", offset)
 	}
 }
 
-func TestRepairFinalOutputConvertsLongChineseImplementationAgentLaunch(t *testing.T) {
-	text := strings.Join([]string{
-		"结论：核心架构约 30% 落地，大量工作集中在 tooling 治理和 no-alias 基础。",
-		"第一项：后端驱动仍有缺口。",
-		"第二项：验证矩阵需要补齐。",
-		"第三项：风险集中在子任务编排。",
-		"第四项：需要并行推进。",
-		"第五项：先处理最高优先级。",
-		"第六项：保持主线收敛。",
-		"第七项：不要再停在计划。",
-		"现在启动 4 个实现代理，并行推进最高优先级缺口。",
-	}, "\n")
+func TestCompleteToolCallsSchemaDefaultsReadDoesNotOverrideExistingLimit(t *testing.T) {
+	schemas := readSchemaWithLimitOffset
+	calls := []toolcall.ParsedToolCall{
+		{Name: "Read", Input: map[string]any{"file_path": "/tmp/a.txt", "limit": int64(100)}},
+	}
+	got := CompleteToolCallsWithSchemaDefaults(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(got))
+	}
+	if got[0].Input["limit"] != int64(100) {
+		t.Fatalf("expected existing limit=100 preserved, got %v", got[0].Input["limit"])
+	}
+	offset, ok := got[0].Input["offset"]
+	if !ok {
+		t.Fatal("expected offset default to be injected")
+	}
+	if offset != int64(0) {
+		t.Fatalf("expected offset=0, got %v", offset)
+	}
+}
+
+func TestCompleteToolCallsSchemaDefaultsBashAddsSandboxDefault(t *testing.T) {
+	schemas := bashSchema
+	calls := []toolcall.ParsedToolCall{
+		{Name: "Bash", Input: map[string]any{"command": "echo hello"}},
+	}
+	got := CompleteToolCallsWithSchemaDefaults(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(got))
+	}
+	sandbox, ok := got[0].Input["dangerouslyDisableSandbox"]
+	if !ok {
+		t.Fatal("expected dangerouslyDisableSandbox default to be injected")
+	}
+	if sandbox != false {
+		t.Fatalf("expected dangerouslyDisableSandbox=false, got %v", sandbox)
+	}
+}
+
+func TestCompleteToolCallsSchemaDefaultsBashDoesNotOverrideExistingSandbox(t *testing.T) {
+	schemas := bashSchema
+	calls := []toolcall.ParsedToolCall{
+		{Name: "Bash", Input: map[string]any{"command": "echo hello", "dangerouslyDisableSandbox": true}},
+	}
+	got := CompleteToolCallsWithSchemaDefaults(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(got))
+	}
+	sandbox, ok := got[0].Input["dangerouslyDisableSandbox"]
+	if !ok {
+		t.Fatal("expected dangerouslyDisableSandbox to be present")
+	}
+	if sandbox != true {
+		t.Fatalf("expected existing dangerouslyDisableSandbox=true preserved, got %v", sandbox)
+	}
+}
+
+func TestCompleteToolCallsSchemaDefaultsAgentAddsSubagentTypeAndBackground(t *testing.T) {
+	schemas := agentSchema
+	calls := []toolcall.ParsedToolCall{
+		{Name: "Agent", Input: map[string]any{"description": "test", "prompt": "do it"}},
+	}
+	got := CompleteToolCallsWithSchemaDefaults(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(got))
+	}
+	if got[0].Input["subagent_type"] != "Explore" {
+		t.Fatalf("expected subagent_type=Explore, got %v", got[0].Input["subagent_type"])
+	}
+	if got[0].Input["run_in_background"] != true {
+		t.Fatalf("expected run_in_background=true, got %v", got[0].Input["run_in_background"])
+	}
+}
+
+func TestCompleteToolCallsSchemaDefaultsAgentDoesNotOverrideExistingValues(t *testing.T) {
+	schemas := agentSchema
+	calls := []toolcall.ParsedToolCall{
+		{Name: "Agent", Input: map[string]any{
+			"description":       "test",
+			"prompt":            "do it",
+			"subagent_type":     "code-reviewer",
+			"run_in_background": false,
+		}},
+	}
+	got := CompleteToolCallsWithSchemaDefaults(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(got))
+	}
+	if got[0].Input["subagent_type"] != "code-reviewer" {
+		t.Fatalf("expected existing subagent_type preserved, got %v", got[0].Input["subagent_type"])
+	}
+	if got[0].Input["run_in_background"] != false {
+		t.Fatalf("expected existing run_in_background preserved, got %v", got[0].Input["run_in_background"])
+	}
+}
+
+func TestCompleteToolCallsSchemaDefaultsUnknownToolGetsNoDefaults(t *testing.T) {
+	schemas := readSchemaWithLimitOffset
+	calls := []toolcall.ParsedToolCall{
+		{Name: "UnknownTool", Input: map[string]any{"foo": "bar"}},
+	}
+	got := CompleteToolCallsWithSchemaDefaults(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(got))
+	}
+	if _, ok := got[0].Input["limit"]; ok {
+		t.Fatal("expected no limit default for unknown tool")
+	}
+	if _, ok := got[0].Input["offset"]; ok {
+		t.Fatal("expected no offset default for unknown tool")
+	}
+}
+
+func TestCompleteToolCallsSchemaDefaultsNilInput(t *testing.T) {
+	schemas := readSchemaWithLimitOffset
+	calls := []toolcall.ParsedToolCall{
+		{Name: "Read", Input: nil},
+	}
+	got := CompleteToolCallsWithSchemaDefaults(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(got))
+	}
+	if got[0].Input == nil {
+		t.Fatal("expected Input to be initialized, got nil")
+	}
+	limit, ok := got[0].Input["limit"]
+	if !ok {
+		t.Fatal("expected limit default on nil input")
+	}
+	if limit != int64(2000) {
+		t.Fatalf("expected limit=2000, got %v", limit)
+	}
+}
+
+func TestCompleteToolCallsSchemaDefaultsEmptyCalls(t *testing.T) {
+	schemas := readSchemaWithLimitOffset
+	got := CompleteToolCallsWithSchemaDefaults(nil, schemas)
+	if got != nil {
+		t.Fatal("expected nil for nil input calls")
+	}
+	got = CompleteToolCallsWithSchemaDefaults([]toolcall.ParsedToolCall{}, schemas)
+	if len(got) != 0 {
+		t.Fatalf("expected empty result for empty input calls, got %d", len(got))
+	}
+}
+
+func TestCompleteToolCallsSchemaDefaultsEmptySchemas(t *testing.T) {
+	calls := []toolcall.ParsedToolCall{
+		{Name: "Read", Input: map[string]any{"file_path": "/tmp/a.txt"}},
+	}
+	got := CompleteToolCallsWithSchemaDefaults(calls, nil)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(got))
+	}
+	if _, ok := got[0].Input["limit"]; ok {
+		t.Fatal("expected no defaults injected with nil schemas")
+	}
+	got2 := CompleteToolCallsWithSchemaDefaults(calls, toolcall.ParameterSchemas{})
+	if len(got2) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(got2))
+	}
+}
+
+func TestCompleteToolCallsSchemaDefaultsMixedTools(t *testing.T) {
+	schemas := toolcall.ParameterSchemas{}
+	for k, v := range readSchemaWithLimitOffset {
+		schemas[k] = v
+	}
+	for k, v := range bashSchema {
+		schemas[k] = v
+	}
+	for k, v := range agentSchema {
+		schemas[k] = v
+	}
+	calls := []toolcall.ParsedToolCall{
+		{Name: "Read", Input: map[string]any{"file_path": "/tmp/a.txt"}},
+		{Name: "Bash", Input: map[string]any{"command": "echo hi"}},
+		{Name: "Agent", Input: map[string]any{"description": "d", "prompt": "p"}},
+		{Name: "Unknown", Input: map[string]any{"x": "y"}},
+	}
+	got := CompleteToolCallsWithSchemaDefaults(calls, schemas)
+	if len(got) != 4 {
+		t.Fatalf("expected 4 calls, got %d", len(got))
+	}
+	if got[0].Input["limit"] != int64(2000) {
+		t.Fatalf("expected limit=2000 for Read, got %v", got[0].Input["limit"])
+	}
+	if got[1].Input["dangerouslyDisableSandbox"] != false {
+		t.Fatalf("expected dangerouslyDisableSandbox=false for Bash, got %v", got[1].Input["dangerouslyDisableSandbox"])
+	}
+	if got[2].Input["subagent_type"] != "Explore" {
+		t.Fatalf("expected subagent_type=Explore for Agent, got %v", got[2].Input["subagent_type"])
+	}
+	if got[2].Input["run_in_background"] != true {
+		t.Fatalf("expected run_in_background=true for Agent, got %v", got[2].Input["run_in_background"])
+	}
+	if _, ok := got[3].Input["limit"]; ok {
+		t.Fatal("expected no limit for unknown tool")
+	}
+}
+
+func TestCompleteToolCallsSchemaDefaultsReadAliases(t *testing.T) {
+	schemas := readSchemaWithLimitOffset
+	aliases := []string{"read_file", "Read", "readfile"}
+	for _, alias := range aliases {
+		calls := []toolcall.ParsedToolCall{
+			{Name: alias, Input: map[string]any{"file_path": "/tmp/a.txt"}},
+		}
+		got := CompleteToolCallsWithSchemaDefaults(calls, schemas)
+		if len(got) != 1 {
+			t.Fatalf("alias %q: expected 1 call, got %d", alias, len(got))
+		}
+		if _, ok := got[0].Input["limit"]; !ok {
+			t.Fatalf("alias %q: expected limit default", alias)
+		}
+	}
+}
+
+func TestCompleteToolCallsSchemaDefaultsBashAliases(t *testing.T) {
+	schemas := bashSchema
+	calls := []toolcall.ParsedToolCall{
+		{Name: "execute_command", Input: map[string]any{"command": "echo hi"}},
+	}
+	got := CompleteToolCallsWithSchemaDefaults(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(got))
+	}
+	if got[0].Input["dangerouslyDisableSandbox"] != false {
+		t.Fatalf("expected sandbox=false for execute_command alias")
+	}
+}
+
+func TestCompleteToolCallsSchemaDefaultsAgentAliasTask(t *testing.T) {
+	schemas := agentSchema
+	calls := []toolcall.ParsedToolCall{
+		{Name: "Task", Input: map[string]any{"description": "test", "prompt": "do it"}},
+	}
+	got := CompleteToolCallsWithSchemaDefaults(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(got))
+	}
+	if got[0].Input["subagent_type"] != "Explore" {
+		t.Fatalf("expected subagent_type=Explore for Task alias, got %v", got[0].Input["subagent_type"])
+	}
+}
+
+func TestRepairFinalOutputAgentLaunchExplicit3English(t *testing.T) {
 	got := RepairFinalOutput(FinalOutputInput{
-		FinalPrompt:         "<｜User｜>请使用 Team Agents 一口气完成多实落地路线和终局愿景<｜Assistant｜>",
-		Text:                text,
+		FinalPrompt:         "<｜User｜>请使用 Team Agents 一口气完成<｜Assistant｜>",
+		Text:                "Review the results and start 3 agents to implement the changes.",
 		ToolNames:           []string{"Agent", "Read"},
 		ToolSchemas:         agentSchema,
 		AllowMetaAgentTools: true,
 	})
 	if !got.Changed || got.Reason != "agent_launch_promise" || !got.ToolCall {
-		t.Fatalf("expected long Chinese implementation agent launch repair, got %#v", got)
+		t.Fatalf("expected agent launch repair, got %#v", got)
 	}
-	const expectAgents = 1 // adaptive launch: simple Chinese request, no file refs, no "implement"/"refactor" keywords
+	const expectAgents = 3
 	if count := strings.Count(got.Text, "<tool_name>Agent</tool_name>"); count != expectAgents {
 		t.Fatalf("expected %d Agent tool calls, got %d in %s", expectAgents, count, got.Text)
 	}
-	parsed, visible := DetectFinalToolCalls(FinalToolCallInput{
-		Text:      got.Text,
-		ToolNames: []string{"Agent"},
-	})
-	if len(parsed.Calls) != expectAgents {
-		t.Fatalf("expected synthesized XML to parse into %d calls, got %#v", expectAgents, parsed)
-	}
-	if visible != "" {
-		t.Fatalf("expected synthesized Agent XML not to leak as visible text, got %q", visible)
+	if !strings.Contains(got.Text, "implementation route") &&
+		!strings.Contains(got.Text, "code risks") &&
+		!strings.Contains(got.Text, "end-state") {
+		t.Fatalf("expected diverse agent descriptions, got %s", got.Text)
 	}
 }
 
-func TestRepairFinalOutputDoesNotDuplicateExistingBackgroundAgents(t *testing.T) {
-	prompt := `<｜User｜>请启动 4 个实现代理并行推进缺口<｜Assistant｜><tool_calls><tool_call><tool_name>Agent</tool_name><parameters><description>Map implementation route</description><prompt>x</prompt></parameters></tool_call></tool_calls><｜Tool｜>4 background agents launched
-Async agent launched successfully.
-The agent is working in the background.<｜Assistant｜>`
+func TestRepairFinalOutputAgentLaunchExplicit5Subagents(t *testing.T) {
 	got := RepairFinalOutput(FinalOutputInput{
-		FinalPrompt:         prompt,
-		Text:                "4 个实现代理并行启动中。",
+		FinalPrompt:         "<｜User｜>请使用 Team Agents 一口气完成<｜Assistant｜>",
+		Text:                "启动5个子代理并行实现",
 		ToolNames:           []string{"Agent", "Read"},
 		ToolSchemas:         agentSchema,
 		AllowMetaAgentTools: true,
 	})
-	if got.ToolCall || strings.Contains(got.Text, "<tool_name>Agent</tool_name>") {
-		t.Fatalf("expected no duplicate Agent repair, got %#v", got)
+	if !got.Changed || got.Reason != "agent_launch_promise" || !got.ToolCall {
+		t.Fatalf("expected agent launch repair, got %#v", got)
+	}
+	const expectAgents = 5
+	if count := strings.Count(got.Text, "<tool_name>Agent</tool_name>"); count != expectAgents {
+		t.Fatalf("expected %d Agent tool calls, got %d in %s", expectAgents, count, got.Text)
 	}
 }
 
-func TestRepairFinalOutputAllowsExplicitAdditionalAgentLaunch(t *testing.T) {
-	prompt := `<｜User｜>请再启动 4 个实现代理<｜Assistant｜><｜Tool｜>4 background agents launched
-Async agent launched successfully.
-The agent is working in the background.<｜Assistant｜>`
+func TestRepairFinalOutputAgentLaunchChineseMultipleWithImplement(t *testing.T) {
 	got := RepairFinalOutput(FinalOutputInput{
-		FinalPrompt:         prompt,
-		Text:                "现在启动 4 个实现代理。",
+		FinalPrompt:         "<｜User｜>请实现以下功能\n\n需要修改的文件有:\ndocs/cheng-plan-full.md\ndocs/cheng-syntax.md\ndocs/cheng-types.md\ndocs/cheng-standard-lib.md\ndocs/cheng-tool.md\ndocs/cheng-evolution.md\ndocs/cheng-runtime.md\n\n每个文件都有具体的实现步骤<｜Assistant｜>",
+		Text:                "我将启动子代理并行实现这些功能。",
 		ToolNames:           []string{"Agent", "Read"},
 		ToolSchemas:         agentSchema,
 		AllowMetaAgentTools: true,
 	})
-	if !got.ToolCall || !strings.Contains(got.Text, "<tool_name>Agent</tool_name>") {
-		t.Fatalf("expected explicit additional Agent repair, got %#v", got)
+	if !got.Changed || got.Reason != "agent_launch_promise" || !got.ToolCall {
+		t.Fatalf("expected agent launch repair for complex task, got %#v", got)
+	}
+	const expectAgents = 4 // adaptive launch: has implement keyword + >=6 files
+	if count := strings.Count(got.Text, "<tool_name>Agent</tool_name>"); count != expectAgents {
+		t.Fatalf("expected %d Agent tool calls for complex adaptive task, got %d in %s", expectAgents, count, got.Text)
 	}
 }
 
-func TestStripEmptyToolCallContainerNoiseKeepsPayloadSyntax(t *testing.T) {
-	text := `<tool_calls><parameter name="file_path">/tmp/a.txt</parameter></tool_calls>`
-	if got, changed := StripEmptyToolCallContainerNoise(text); changed || got != text {
-		t.Fatalf("expected payload-like malformed syntax to stay visible, got changed=%v text=%q", changed, got)
-	}
-}
-
-func TestDetectFinalToolCallsIgnoresRepeatedEmptyToolContainers(t *testing.T) {
-	text := strings.Repeat("<tool_calls>", 12)
-	got, visible := DetectFinalToolCalls(FinalToolCallInput{
-		Text:      text,
-		ToolNames: []string{"Read"},
-	})
-	if len(got.Calls) != 0 || got.SawToolCallSyntax {
-		t.Fatalf("expected empty wrapper noise to be ignored, got %#v", got)
-	}
-	if visible != "" {
-		t.Fatalf("expected empty visible text, got %q", visible)
-	}
-}
-
-func TestDetectFinalToolCallsPromotesThinkingVisibleJSONWhenTextExists(t *testing.T) {
-	text := "4 个实现代理并行启动中。"
-	thinking := `{
-  "tool": "Agent",
-  "arguments": {
-    "description": "Implement ELF writer backend",
-    "prompt": "Read direct_object_emit.cheng and report the design.",
-    "subagent_type": "Explore"
-  }
-}`
-	got, visible := DetectFinalToolCalls(FinalToolCallInput{
-		Text:      text,
-		Thinking:  thinking,
-		ToolNames: []string{"Agent"},
-	})
-	if len(got.Calls) != 1 || got.Calls[0].Name != "Agent" {
-		t.Fatalf("expected Agent call from thinking JSON, got %#v", got)
-	}
-	if visible != text {
-		t.Fatalf("expected visible text preserved, got %q", visible)
-	}
-}
-
-func TestRepairFinalOutputPromotesThinkingToolCall(t *testing.T) {
+func TestRepairFinalOutputAgentLaunchBoundedToMax8(t *testing.T) {
 	got := RepairFinalOutput(FinalOutputInput{
-		FinalPrompt: "<｜User｜>继续<｜Assistant｜>",
-		Thinking:    `<tool_calls><tool_call><tool_name>Read</tool_name><parameters><file_path>/tmp/a.txt</file_path></parameters></tool_call></tool_calls>`,
-		ToolNames:   []string{"Read"},
-		ToolSchemas: readSchema,
-	})
-	if !got.Changed || got.Reason != "thinking_tool_call" || !got.ToolCall {
-		t.Fatalf("expected thinking tool repair, got %#v", got)
-	}
-	if !strings.Contains(got.Text, "<tool_name>Read</tool_name>") {
-		t.Fatalf("expected Read tool call XML, got %s", got.Text)
-	}
-}
-
-func TestRepairFinalOutputConvertsIncompleteReadIntentToRequestedFile(t *testing.T) {
-	prompt := "<｜User｜>Environment\n - Primary working directory: /Users/lbcheng/cheng-lang\n\n评估 cheng 语言目前实现了多少 docs/cheng-plan-full.md 并用于代理一口气实现<｜Assistant｜>"
-	text := "The user wants me to evaluate `docs/cheng-plan-full.md`.\nLet me first read the plan document.\n\n<tool_calls>\n<tool_calls>\n<tool_call name=\"Read\">\n<tool_call_id>agent-0</tool_call_id>\n<tool_args>{}</tool_args>\n</tool_call>\n</tool_calls>"
-	got := RepairFinalOutput(FinalOutputInput{
-		FinalPrompt: prompt,
-		Text:        text,
-		ToolNames:   []string{"Read", "Agent"},
-		ToolSchemas: readSchema,
-	})
-	if !got.Changed || got.Reason != "read_intent_from_incomplete_call" || !got.ToolCall {
-		t.Fatalf("expected incomplete Read repair, got %#v", got)
-	}
-	parsed, visible := DetectFinalToolCalls(FinalToolCallInput{
-		Text:      got.Text,
-		ToolNames: []string{"Read"},
-	})
-	if len(parsed.Calls) != 1 || visible != "" {
-		t.Fatalf("expected one executable Read call, got calls=%#v visible=%q text=%s", parsed.Calls, visible, got.Text)
-	}
-	if parsed.Calls[0].Name != "Read" ||
-		parsed.Calls[0].Input["file_path"] != "/Users/lbcheng/cheng-lang/docs/cheng-plan-full.md" ||
-		(parsed.Calls[0].Input["limit"] != "200" && parsed.Calls[0].Input["limit"] != float64(200)) {
-		t.Fatalf("expected synthesized bounded Read call, got %#v", parsed.Calls[0])
-	}
-}
-
-func TestRepairFinalOutputConvertsTaskNotificationToTaskOutput(t *testing.T) {
-	got := RepairFinalOutput(FinalOutputInput{
-		FinalPrompt:         "<｜User｜><task-notification><task_id>task_done</task_id><status>completed</status></task-notification><｜Assistant｜>",
-		Thinking:            "The agent completed; retrieve the result.",
-		ToolNames:           []string{"TaskOutput"},
-		ToolSchemas:         taskOutputSchema,
+		FinalPrompt:         "<｜User｜>请使用 Team Agents 一口气完成<｜Assistant｜>",
+		Text:                "Let's launch 15 agents to handle all tasks in parallel.",
+		ToolNames:           []string{"Agent", "Read"},
+		ToolSchemas:         agentSchema,
 		AllowMetaAgentTools: true,
 	})
-	if !got.Changed || got.Reason != "task_notification_task_output" || !got.ToolCall {
-		t.Fatalf("expected task notification repair, got %#v", got)
+	if !got.Changed || got.Reason != "agent_launch_promise" || !got.ToolCall {
+		t.Fatalf("expected agent launch repair, got %#v", got)
 	}
-	if !strings.Contains(got.Text, "<tool_name>TaskOutput</tool_name>") || !strings.Contains(got.Text, "task_done") {
-		t.Fatalf("expected TaskOutput XML, got %s", got.Text)
-	}
-}
-
-func TestInvalidTaskOutputIDsRejectsUnknown(t *testing.T) {
-	calls := []toolcall.ParsedToolCall{{
-		Name:  "TaskOutput",
-		Input: map[string]any{"task_id": "missing"},
-	}}
-	if got := InvalidTaskOutputIDs(calls, "Task Output known\nTask is still running."); len(got) != 1 || got[0] != "missing" {
-		t.Fatalf("expected missing task id, got %#v", got)
-	}
-}
-
-func TestInvalidTaskOutputIDsReadsToolIDAlias(t *testing.T) {
-	calls := []toolcall.ParsedToolCall{{
-		Name:  "TaskOutput",
-		Input: map[string]any{"tool_id": "missing"},
-	}}
-	if got := InvalidTaskOutputIDs(calls, "Task Output known\nTask is still running."); len(got) != 1 || got[0] != "missing" {
-		t.Fatalf("expected missing aliased task id, got %#v", got)
-	}
-}
-
-func TestDetectFinalToolCallsExtractsVisibleJSONAndKeepsText(t *testing.T) {
-	text := `我先读文件。
-{"tool":"Read","arguments":{"file_path":"/tmp/a.txt"}}
-等结果。`
-	got, visible := DetectFinalToolCalls(FinalToolCallInput{
-		Text:      text,
-		ToolNames: []string{"Read"},
-	})
-	if len(got.Calls) != 1 || got.Calls[0].Name != "Read" {
-		t.Fatalf("expected Read call, got %#v", got.Calls)
-	}
-	if !got.SawToolCallSyntax {
-		t.Fatalf("expected tool syntax signal")
-	}
-	if strings.Contains(visible, `"tool"`) || !strings.Contains(visible, "我先读文件") || !strings.Contains(visible, "等结果") {
-		t.Fatalf("unexpected visible text %q", visible)
-	}
-}
-
-func TestDetectFinalToolCallsInfersVisibleBashJSONObjects(t *testing.T) {
-	text := `I'll evaluate the plan document against the codebase.
-{
-  "command": "cd /Users/lbcheng/cheng-lang && git log --oneline -20",
-  "description": "Check recent commits for related work"
-}
-{
-  "command": "cd /Users/lbcheng/cheng-lang && rg -n 'function_task|Schedule' src/core -l | head -40",
-  "description": "Check function-level parallelism status"
-}`
-	got, visible := DetectFinalToolCalls(FinalToolCallInput{
-		Text:      text,
-		ToolNames: []string{"Bash", "Read"},
-	})
-	if len(got.Calls) != 2 {
-		t.Fatalf("expected two Bash calls, got %#v", got.Calls)
-	}
-	if got.Calls[0].Name != "Bash" || got.Calls[0].Input["command"] != "cd /Users/lbcheng/cheng-lang && git log --oneline -20" {
-		t.Fatalf("expected first inferred Bash call, got %#v", got.Calls[0])
-	}
-	if strings.Contains(visible, `"command"`) || !strings.Contains(visible, "I'll evaluate") {
-		t.Fatalf("unexpected visible text %q", visible)
-	}
-}
-
-func TestDetectFinalToolCallsPromotesOrphanAgentParametersWithoutLeak(t *testing.T) {
-	text := `先并行探查各维度。
-
-<parameter name="description">Assess Linkerless + DOD implementation</parameter>
-<parameter name="prompt">Search the codebase and report paths.</parameter>
-Explore
-
-<parameter name="description">Assess function-level parallelism</parameter>
-<parameter name="prompt">Check worker scheduling.</parameter>
-code-reviewer`
-	got, visible := DetectFinalToolCalls(FinalToolCallInput{
-		Text:      text,
-		ToolNames: []string{"Agent"},
-	})
-	if len(got.Calls) != 2 {
-		t.Fatalf("expected two Agent calls, got %#v", got)
-	}
-	if strings.Contains(visible, "<parameter") {
-		t.Fatalf("expected orphan parameter block not to leak, got %q", visible)
-	}
-	if !strings.Contains(visible, "先并行探查") {
-		t.Fatalf("expected leading prose preserved, got %q", visible)
-	}
-}
-
-func TestDetectFinalToolCallsPromotesThinkingWhenTextEmpty(t *testing.T) {
-	got, visible := DetectFinalToolCalls(FinalToolCallInput{
-		Text:      "",
-		Thinking:  `<tool_calls><tool_call><tool_name>Read</tool_name><parameters><file_path>/tmp/a.txt</file_path></parameters></tool_call></tool_calls>`,
-		ToolNames: []string{"Read"},
-	})
-	if len(got.Calls) != 1 || got.Calls[0].Name != "Read" {
-		t.Fatalf("expected thinking Read call, got %#v", got.Calls)
-	}
-	if visible != "" {
-		t.Fatalf("expected empty visible text, got %q", visible)
-	}
-}
-
-func TestParseStreamToolBlockRepairsMalformedXML(t *testing.T) {
-	got := ParseStreamToolBlock(`tool_calls><tool_call><tool_name>Read</tool_name><parameters><file_path>/tmp/a.txt</file_path></parameters></tool_call></tool_calls>`, []string{"Read"}, true)
-	if !got.Parsed || len(got.Calls) != 1 || got.Calls[0].Name != "Read" {
-		t.Fatalf("expected repaired Read call, got %#v", got)
-	}
-}
-
-func TestParseStreamToolBlockBlocksMetaAgentsWhenDisabled(t *testing.T) {
-	got := ParseStreamToolBlock(`<tool_calls><tool_call><tool_name>Agent</tool_name><parameters><description>x</description><prompt>p</prompt></parameters></tool_call></tool_calls>`, []string{"Agent"}, false)
-	if !got.Parsed || len(got.Calls) != 0 || !strings.Contains(got.Text, "Agent/subagent tools are disabled") {
-		t.Fatalf("expected blocked meta agent text, got %#v", got)
-	}
-}
-
-func TestParseStreamToolBlockSupportsNestedFunctionBodyToolCall(t *testing.T) {
-	got := ParseStreamToolBlock(`<tool_calls><tool_calls><tool_call id="agent_linkerless">Agent({"description":"Linkerless","subagent_type":"Explore","prompt":"Search evidence."})</tool_call></tool_calls></tool_calls>`, []string{"Agent"}, true)
-	if !got.Parsed || len(got.Calls) != 1 {
-		t.Fatalf("expected parsed Agent call, got %#v", got)
-	}
-	if got.Calls[0].Name != "Agent" || got.Calls[0].Input["prompt"] != "Search evidence." {
-		t.Fatalf("unexpected call: %#v", got.Calls[0])
+	const expectAgents = 8 // clamped to max
+	if count := strings.Count(got.Text, "<tool_name>Agent</tool_name>"); count != expectAgents {
+		t.Fatalf("expected %d Agent tool calls (clamped), got %d in %s", expectAgents, count, got.Text)
 	}
 }

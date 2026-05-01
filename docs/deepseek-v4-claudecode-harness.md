@@ -87,7 +87,8 @@ ClaudeCode
 - 工具提示已针对截图中这类 `Error editing file` 做收敛：`Edit` / `Update` / `MultiEdit` 必须使用从最新 `Read` 精确复制的 `old_string`，并在编辑失败或文件刚被改动后先重新读取再重试。
 - “我正在并行处理三项改动”这类进行中状态文本如果没有真实工具调用，会按 missing-tool 处理，避免 ClaudeCode 前台停在一句状态说明上。
 - “编译通过，现在运行测试验证”这类命令执行承诺如果没有真实 Bash / execution tool，会按 missing-tool 处理，避免模型说要跑命令但前台空等。
-- 同一轮多个 `Bash` / `execute_command` / `exec_command` 会被规整为单个顺序 shell 调用，避免 ClaudeCode 的并行工具批次里一个 `ls` / 探测命令失败后取消其它命令。
+- DeepSeek V4 Pro 原生支持并行工具调用，harness 不再合并多个 Bash / execute_command / exec_command。ClaudeCode 客户端会收到多个独立的 tool_use 事件，客户端负责并行分发执行。
+- DeepSeek 返回“有消息正在生成，请稍后再试”时，client 层会先做短退避重试，并保留正常 SSE 首行回放，避免把临时会话忙碌直接暴露成 ClaudeCode 的 `API Error: 502`。
 - fenced JSON 中的 `{"tool":"..."}` 不再被当作普通文本放行；它不是 Claude Code 可执行 tool_use，会按 missing-tool 触发补偿重试。
 - “已集成到 handler_chat.go / 已更新 / 测试通过”这类完成声明如果最近上下文里没有 Edit / MultiEdit / Write / Bash / Update 等真实执行工具证据，也会按 missing-tool 处理，避免模型凭空宣布已改代码。
 - OpenAI Chat / Responses 主路径已接入 managed-account completion failover：无账号侧文件引用时，session / PoW / completion 状态失败会切到下一个账号并重建 session/payload；有 `ref_file_ids` 时不跨账号切换，避免文件上下文错绑。

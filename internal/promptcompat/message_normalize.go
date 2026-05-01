@@ -6,7 +6,6 @@ import (
 	"ds2api/internal/prompt"
 )
 
-const assistantReasoningLabel = "reasoning_content"
 
 func NormalizeOpenAIMessagesForPrompt(raw []any, traceID string) []map[string]any {
 	_ = traceID
@@ -67,8 +66,8 @@ func buildAssistantContentForPrompt(msg map[string]any) string {
 	}
 	toolHistory := prompt.FormatToolCallsForPrompt(msg["tool_calls"])
 	parts := make([]string, 0, 3)
-	if reasoning != "" && shouldReplayAssistantReasoning(msg, content) {
-		parts = append(parts, formatPromptLabeledBlock(assistantReasoningLabel, reasoning))
+	if reasoning != "" {
+		parts = append(parts, "<think>"+reasoning+"</think>")
 	}
 	if content != "" {
 		parts = append(parts, content)
@@ -83,27 +82,6 @@ func buildAssistantContentForPrompt(msg map[string]any) string {
 		return parts[0]
 	default:
 		return strings.Join(parts, "\n\n")
-	}
-}
-
-func shouldReplayAssistantReasoning(msg map[string]any, visibleContent string) bool {
-	if strings.TrimSpace(visibleContent) == "" {
-		return true
-	}
-	return assistantMessageHasToolCalls(msg)
-}
-
-func assistantMessageHasToolCalls(msg map[string]any) bool {
-	if msg == nil {
-		return false
-	}
-	switch calls := msg["tool_calls"].(type) {
-	case []any:
-		return len(calls) > 0
-	case []map[string]any:
-		return len(calls) > 0
-	default:
-		return false
 	}
 }
 
@@ -162,15 +140,6 @@ func extractOpenAIReasoningTextFromItem(m map[string]any) string {
 		}
 	}
 	return ""
-}
-
-func formatPromptLabeledBlock(label, text string) string {
-	label = strings.TrimSpace(label)
-	text = strings.TrimSpace(text)
-	if label == "" {
-		return text
-	}
-	return "[" + label + "]\n" + text + "\n[/" + label + "]"
 }
 
 func buildToolContentForPrompt(msg map[string]any) string {

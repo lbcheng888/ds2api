@@ -19,7 +19,7 @@ func findPartialVisibleJSONToolSegmentStart(state *toolStreamSieveState, s strin
 
 //nolint:unused // package tests keep legacy helper names while implementation lives in claudecode harness.
 func consumeVisibleJSONToolCapture(captured string, toolNames []string, allowMetaAgentTools bool) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
-	return claudecodeharness.ConsumeVisibleJSONToolCapture(captured, toolNames, allowMetaAgentTools)
+	return claudecodeharness.ConsumeVisibleJSONToolCapture(captured, toolNames, allowMetaAgentTools, "")
 }
 
 //nolint:unused // package tests keep legacy helper names while implementation lives in claudecode harness.

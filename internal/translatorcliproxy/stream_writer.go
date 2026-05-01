@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"ds2api/internal/textclean"
 	"ds2api/internal/util"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
@@ -132,13 +133,18 @@ func (w *OpenAIStreamTranslatorWriter) Write(p []byte) (int, error) {
 			if len(chunks[i]) == 0 {
 				continue
 			}
-			if w.target == sdktranslator.FormatClaude && bytes.Contains(chunks[i], []byte("event: message_start")) {
+			chunk := chunks[i]
+			if w.target == sdktranslator.FormatClaude && bytes.Contains(chunk, []byte("event: message_start")) {
 				w.claudeMessageStarted = true
 			}
-			if _, err := w.dst.Write(chunks[i]); err != nil {
+			chunk = stripDSMLFromTranslatedChunk(chunk)
+			if len(chunk) == 0 {
+				continue
+			}
+			if _, err := w.dst.Write(chunk); err != nil {
 				return len(p), err
 			}
-			if !bytes.HasSuffix(chunks[i], []byte("\n")) {
+			if !bytes.HasSuffix(chunk, []byte("\n")) {
 				if _, err := w.dst.Write([]byte("\n")); err != nil {
 					return len(p), err
 				}
@@ -725,6 +731,129 @@ func mutateClaudeStreamData(chunk []byte, mutate func(map[string]any) bool) []by
 		out += suffix
 	}
 	return []byte(out)
+}
+
+// stripDSMLFromTranslatedChunk strips DSML-format tool call markup from
+// translated Claude SSE chunks. This is the last line of defense — DSML should
+// already be handled by the sieve and final evaluation, but if it leaks through
+// any code path, this prevents it from reaching the client.
+//
+// JSON field values may contain literal \n escapes, so plain regex is not
+// enough. We unmarshal, recursively walk all strings, strip DSML, and
+// re-marshal.
+func stripDSMLFromTranslatedChunk(chunk []byte) []byte {
+	if !bytes.Contains(chunk, []byte("DSML")) && !bytes.Contains(chunk, []byte("dsml")) {
+		return chunk
+	}
+	if bytes.Contains(chunk, []byte("tool_use")) || bytes.Contains(chunk, []byte("input_json_delta")) {
+		return chunk
+	}
+	suffix := ""
+	switch {
+	case bytes.HasSuffix(chunk, []byte("\n\n")):
+		suffix = "\n\n"
+	case bytes.HasSuffix(chunk, []byte("\n")):
+		suffix = "\n"
+	}
+	text := strings.TrimSpace(string(chunk))
+	if text == "" {
+		return chunk
+	}
+	lines := strings.Split(text, "\n")
+	dataIdx := -1
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "data:") {
+			dataIdx = i
+			break
+		}
+	}
+	if dataIdx < 0 {
+		return chunk
+	}
+	jsonText := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[dataIdx]), "data:"))
+	if jsonText == "" || jsonText == "[DONE]" {
+		return chunk
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(jsonText), &payload); err != nil {
+		// Fallback: JSON parse failed (possibly unescaped content).
+		// Use regex on the raw JSON text as a best-effort safety net.
+		cleaned := textclean.StripDSMLContent(jsonText)
+		if cleaned == jsonText {
+			return chunk
+		}
+		lines[dataIdx] = "data: " + cleaned
+		out := strings.Join(lines, "\n")
+		if suffix != "" {
+			out += suffix
+		}
+		return []byte(out)
+	}
+	if !stripDSMLFromJSONValue(payload) {
+		return chunk
+	}
+	cleaned, err := json.Marshal(payload)
+	if err != nil {
+		// Marshal failed; fall back to regex on original.
+		cleaned := textclean.StripDSMLContent(jsonText)
+		if cleaned == jsonText {
+			return chunk
+		}
+		lines[dataIdx] = "data: " + cleaned
+		out := strings.Join(lines, "\n")
+		if suffix != "" {
+			out += suffix
+		}
+		return []byte(out)
+	}
+	lines[dataIdx] = "data: " + string(cleaned)
+	out := strings.Join(lines, "\n")
+	if suffix != "" {
+		out += suffix
+	}
+	return []byte(out)
+}
+
+// stripDSMLFromJSONValue recursively walks a JSON value and strips DSML
+// content from all string fields. Returns true if any changes were made.
+func stripDSMLFromJSONValue(v any) bool {
+	changed := false
+	switch val := v.(type) {
+	case map[string]any:
+		for k, elem := range val {
+			if s, ok := elem.(string); ok {
+				cleaned := textclean.StripDSMLContent(s)
+				if cleaned != s {
+					val[k] = cleaned
+					changed = true
+				}
+			} else {
+				if stripDSMLFromJSONValue(elem) {
+					changed = true
+				}
+			}
+		}
+	case []any:
+		for i, elem := range val {
+			if s, ok := elem.(string); ok {
+				cleaned := textclean.StripDSMLContent(s)
+				if cleaned != s {
+					val[i] = cleaned
+					changed = true
+				}
+			} else {
+				if stripDSMLFromJSONValue(elem) {
+					changed = true
+				}
+			}
+		}
+	case string:
+		cleaned := textclean.StripDSMLContent(val)
+		if cleaned != val {
+			changed = true
+		}
+	}
+	return changed
 }
 
 func toInt(v any) int {

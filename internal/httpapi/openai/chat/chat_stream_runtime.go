@@ -8,6 +8,7 @@ import (
 	openaifmt "ds2api/internal/format/openai"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
+	"ds2api/internal/textclean"
 	"ds2api/internal/toolcall"
 	"ds2api/internal/toolstream"
 )
@@ -272,6 +273,7 @@ func (s *chatStreamRuntime) resetRetryableVisibleAttempt() {
 
 func (s *chatStreamRuntime) emitFinalContent(text string) {
 	cleaned := cleanVisibleOutput(text, s.stripReferenceMarkers)
+	cleaned = textclean.StripDSMLContent(cleaned)
 	if strings.TrimSpace(cleaned) == "" {
 		return
 	}
@@ -349,13 +351,17 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 			if trimmed == "" {
 				continue
 			}
-			s.text.WriteString(trimmed)
+			cleanForText := textclean.StripDSMLContent(trimmed)
+			s.text.WriteString(cleanForText)
 			if !s.bufferToolContent {
+				if cleanForText == "" {
+					continue
+				}
 				if !s.firstChunkSent {
 					delta["role"] = "assistant"
 					s.firstChunkSent = true
 				}
-				delta["content"] = trimmed
+				delta["content"] = cleanForText
 			} else {
 				events := toolstream.ProcessChunk(&s.toolSieve, trimmed, s.toolNames)
 				for _, evt := range events {

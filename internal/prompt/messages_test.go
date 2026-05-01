@@ -45,7 +45,7 @@ func TestMessagesPrepareUsesTurnSuffixes(t *testing.T) {
 		t.Fatalf("expected assistant sentence suffix, got %q", got)
 	}
 	if strings.Contains(got, "<think>") || strings.Contains(got, "</think>") {
-		t.Fatalf("did not expect think tags in prompt, got %q", got)
+		t.Fatalf("did not expect think tags in prompt without reasoning content, got %q", got)
 	}
 }
 

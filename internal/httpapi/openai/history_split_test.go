@@ -73,7 +73,7 @@ func TestBuildOpenAICurrentInputContextTranscriptUsesInjectedFileWrapper(t *test
 	if !strings.Contains(transcript, "first user turn") || !strings.Contains(transcript, "tool result") {
 		t.Fatalf("expected historical turns preserved, got %q", transcript)
 	}
-	if !strings.Contains(transcript, "[reasoning_content]") || !strings.Contains(transcript, "hidden reasoning") {
+	if !strings.Contains(transcript, "<think>hidden reasoning</think>") {
 		t.Fatalf("expected reasoning block preserved, got %q", transcript)
 	}
 	if !strings.Contains(transcript, "<|DSML|tool_calls>") {

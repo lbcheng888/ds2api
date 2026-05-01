@@ -170,7 +170,6 @@ func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput 
 	textParsed := detectAssistantToolCalls(finalText, finalThinking, finalToolDetectionThinking, s.toolNames)
 	textParsed.Calls = toolcall.NormalizeCallsForSchemasWithMeta(textParsed.Calls, s.toolSchemas, s.allowMetaAgentTools)
 	detected := textParsed.Calls
-	s.logToolPolicyRejections(textParsed)
 	if status, message, code, ok := invalidTaskOutputCallDetail(detected, s.finalPrompt); ok {
 		s.failResponse(status, message, code)
 		return true
@@ -235,22 +234,6 @@ func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput 
 	return true
 }
 
-func (s *responsesStreamRuntime) logToolPolicyRejections(textParsed toolcall.ToolCallParseResult) {
-	logRejected := func(parsed toolcall.ToolCallParseResult, channel string) {
-		rejected := filteredRejectedToolNamesForLog(parsed.RejectedToolNames)
-		if !parsed.RejectedByPolicy || len(rejected) == 0 {
-			return
-		}
-		config.Logger.Warn(
-			"[responses] rejected tool calls by policy",
-			"trace_id", strings.TrimSpace(s.traceID),
-			"channel", channel,
-			"tool_choice_mode", s.toolChoice.Mode,
-			"rejected_tool_names", strings.Join(rejected, ","),
-		)
-	}
-	logRejected(textParsed, "text")
-}
 
 func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedDecision {
 	if !parsed.Parsed {

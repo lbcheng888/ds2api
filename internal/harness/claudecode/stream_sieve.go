@@ -44,8 +44,17 @@ type StreamToolCallDelta struct {
 	Arguments string
 }
 
-var streamXMLToolCallOpeningTags = []string{"<tool_calls", "<tool_call", "<invoke", "<function_call", "<function_calls", "<tool_use",
-	"<attempt_completion", "<ask_followup_question", "<new_task>", "<result", "<parameter"}
+var streamXMLToolCallOpeningTags = []string{
+	"<tool_calls", "<tool_call", "<invoke", "<function_call", "<function_calls", "<tool_use",
+	"<attempt_completion", "<ask_followup_question", "<new_task>", "<result", "<parameter",
+	"<|DSML|tool_calls", "<|DSML|invoke", "<|DSML|parameter",
+	"<|dsml|tool_calls", "<|dsml|invoke", "<|dsml|parameter",
+	"<dsml|tool_calls", "<dsml|invoke", "<dsml|parameter",
+	"<dsml tool_calls", "<dsml invoke", "<dsml parameter",
+	"<|dsml tool_calls", "<|dsml invoke", "<|dsml parameter",
+	"<dsmltool_calls", "<dsmlinvoke", "<dsmlparameter",
+	"<|dsmltool_calls", "<|dsmlinvoke", "<|dsmlparameter",
+}
 
 var streamXMLToolCallTagPairs = []struct{ open, close string }{
 	{"<tool_calls", "</tool_calls>"},
@@ -57,6 +66,15 @@ var streamXMLToolCallTagPairs = []struct{ open, close string }{
 	{"<attempt_completion", "</attempt_completion>"},
 	{"<ask_followup_question", "</ask_followup_question>"},
 	{"<new_task", "</new_task>"},
+	{"<|DSML|tool_calls", "</|DSML|tool_calls>"},
+	{"<|dsml|tool_calls", "</|dsml|tool_calls>"},
+	{"<dsml|tool_calls", "</dsml|tool_calls>"},
+	{"<dsml tool_calls", "</dsml tool_calls>"},
+	{"<|dsml tool_calls", "</|dsml tool_calls>"},
+	{"<dsmltool_calls", "</dsmltool_calls>"},
+	{"<|dsmltool_calls", "</|dsmltool_calls>"},
+	{"<|DSML|invoke", "</|DSML|invoke>"},
+	{"<|dsml|invoke", "</|dsml|invoke>"},
 }
 
 var streamXMLToolCallBlockPattern = regexp.MustCompile(`(?is)(<tool_calls>\s*(?:.*?)\s*</tool_calls>|<tool_call>\s*(?:.*?)\s*</tool_call>|<invoke\b[^>]*>(?:.*?)</invoke>|<function_calls?\b[^>]*>(?:.*?)</function_calls?>|<tool_use>(?:.*?)</tool_use>|<attempt_completion>(?:.*?)</attempt_completion>|<ask_followup_question>(?:.*?)</ask_followup_question>|<new_task>(?:.*?)</new_task>)`)
@@ -65,7 +83,18 @@ var streamXMLToolTagsToDetect = []string{"<tool_calls>", "<tool_calls\n", "tool_
 	"<invoke ", "<invoke>", "<function_call", "<function_calls", "<tool_use>",
 	"<attempt_completion>", "<ask_followup_question>", "<new_task>",
 	"<parameter name=\"description\"", "<parameter name='description'", "<parameter name=description",
-	"<param name=\"description\"", "<argument name=\"description\""}
+	"<param name=\"description\"", "<argument name=\"description\"",
+	"<|DSML|tool_calls>", "<|DSML|tool_calls\n", "<|DSML|tool_calls ",
+	"<|dsml|tool_calls>", "<|dsml|tool_calls\n", "<|dsml|tool_calls ",
+	"<dsml|tool_calls>", "<dsml|tool_calls\n", "<dsml|tool_calls ",
+	"<dsml tool_calls>", "<dsml tool_calls\n", "<dsml tool_calls ",
+	"<|dsml tool_calls>", "<|dsml tool_calls\n", "<|dsml tool_calls ",
+	"<dsmltool_calls>", "<dsmltool_calls\n", "<dsmltool_calls ",
+	"<|dsmltool_calls>", "<|dsmltool_calls\n", "<|dsmltool_calls ",
+	"<|DSML|invoke ", "<|dsml|invoke ", "<dsml|invoke ", "<dsml invoke ",
+	"<|dsml invoke ", "<dsmlinvoke ", "<|dsmlinvoke ",
+	"<|DSML|parameter ", "<|dsml|parameter ", "<dsml|parameter ", "<dsml parameter ",
+}
 
 // generateIncrementalDeltas examines the current capture buffer and emits
 // StreamToolCallDelta events for any newly detected tool name or arguments
@@ -234,6 +263,9 @@ func jsonIncrementalDeltas(state *StreamSieveState, captured string) []StreamToo
 			argsValue := jsonPart[argsOffset:]
 			// Track the length of the raw arguments value.
 			rawLen := len(argsValue)
+			if state.toolArgsSent < 0 {
+				state.toolArgsSent = 0
+			}
 			if rawLen > state.toolArgsSent {
 				newPart := argsValue[state.toolArgsSent:]
 				state.toolArgsSent = rawLen
@@ -330,10 +362,10 @@ func jsonEscape(s string) string {
 }
 
 func ProcessStreamSieveChunk(state *StreamSieveState, chunk string, toolNames []string) []StreamSieveEvent {
-	return ProcessStreamSieveChunkWithMeta(state, chunk, toolNames, false)
+	return ProcessStreamSieveChunkWithMeta(state, chunk, toolNames, false, "")
 }
 
-func ProcessStreamSieveChunkWithMeta(state *StreamSieveState, chunk string, toolNames []string, allowMetaAgentTools bool) []StreamSieveEvent {
+func ProcessStreamSieveChunkWithMeta(state *StreamSieveState, chunk string, toolNames []string, allowMetaAgentTools bool, profile string) []StreamSieveEvent {
 	if state == nil {
 		return nil
 	}
@@ -357,7 +389,7 @@ func ProcessStreamSieveChunkWithMeta(state *StreamSieveState, chunk string, tool
 			if deltas := generateIncrementalDeltas(state); len(deltas) > 0 {
 				events = append(events, StreamSieveEvent{ToolCallDeltas: deltas})
 			}
-			prefix, calls, suffix, ready := consumeStreamToolCapture(state, toolNames, allowMetaAgentTools, false)
+			prefix, calls, suffix, ready := consumeStreamToolCapture(state, toolNames, allowMetaAgentTools, false, profile)
 			if !ready {
 				break
 			}
@@ -423,21 +455,21 @@ func ProcessStreamSieveChunkWithMeta(state *StreamSieveState, chunk string, tool
 }
 
 func FlushStreamSieve(state *StreamSieveState, toolNames []string) []StreamSieveEvent {
-	return FlushStreamSieveWithMeta(state, toolNames, false)
+	return FlushStreamSieveWithMeta(state, toolNames, false, "")
 }
 
-func FlushStreamSieveWithMeta(state *StreamSieveState, toolNames []string, allowMetaAgentTools bool) []StreamSieveEvent {
+func FlushStreamSieveWithMeta(state *StreamSieveState, toolNames []string, allowMetaAgentTools bool, profile string) []StreamSieveEvent {
 	if state == nil {
 		return nil
 	}
-	events := ProcessStreamSieveChunkWithMeta(state, "", toolNames, allowMetaAgentTools)
+	events := ProcessStreamSieveChunkWithMeta(state, "", toolNames, allowMetaAgentTools, profile)
 	if len(state.pendingToolCalls) > 0 {
 		events = append(events, StreamSieveEvent{ToolCalls: state.pendingToolCalls})
 		state.pendingToolRaw = ""
 		state.pendingToolCalls = nil
 	}
 	if state.capturing {
-		consumedPrefix, consumedCalls, consumedSuffix, ready := consumeStreamToolCapture(state, toolNames, allowMetaAgentTools, true)
+		consumedPrefix, consumedCalls, consumedSuffix, ready := consumeStreamToolCapture(state, toolNames, allowMetaAgentTools, true, profile)
 		if ready {
 			if consumedPrefix != "" {
 				state.noteText(consumedPrefix)
@@ -453,7 +485,7 @@ func FlushStreamSieveWithMeta(state *StreamSieveState, toolNames []string, allow
 		} else {
 			content := state.capture.String()
 			if code, message, ok := incompleteStreamToolTransactionError(content); ok {
-				recordFailureDecision(code)
+				recordFailureDecision(profile, code)
 				events = append(events, StreamSieveEvent{ErrorCode: code, ErrorMessage: message})
 			} else if content != "" {
 				state.noteText(content)
@@ -489,6 +521,12 @@ func incompleteStreamToolTransactionError(captured string) (string, string, bool
 		"<attempt_completion",
 		"<ask_followup_question",
 		"<new_task",
+		"<|dsml|",
+		"<dsml|",
+		"<dsml ",
+		"<|dsml ",
+		"<dsmltool_calls",
+		"<|dsmltool_calls",
 	}) {
 		return InvalidToolCallCode, "Upstream model emitted invalid tool call syntax.", true
 	}
@@ -555,11 +593,11 @@ func FindStreamToolSegmentStart(state *StreamSieveState, s string) int {
 	}
 }
 
-func ConsumeStreamToolCapture(state *StreamSieveState, toolNames []string, allowMetaAgentTools bool) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
-	return consumeStreamToolCapture(state, toolNames, allowMetaAgentTools, false)
+func ConsumeStreamToolCapture(state *StreamSieveState, toolNames []string, allowMetaAgentTools bool, profile string) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
+	return consumeStreamToolCapture(state, toolNames, allowMetaAgentTools, false, profile)
 }
 
-func consumeStreamToolCapture(state *StreamSieveState, toolNames []string, allowMetaAgentTools bool, final bool) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
+func consumeStreamToolCapture(state *StreamSieveState, toolNames []string, allowMetaAgentTools bool, final bool, profile string) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
 	captured := state.capture.String()
 	if captured == "" {
 		return "", nil, "", false
@@ -568,7 +606,7 @@ func consumeStreamToolCapture(state *StreamSieveState, toolNames []string, allow
 	if fencePrefix, fenceCalls, fenceSuffix, fenceReady := ConsumeFencedJSONToolTextCapture(captured, toolNames); fenceReady {
 		return fencePrefix, fenceCalls, fenceSuffix, true
 	}
-	if xmlPrefix, xmlCalls, xmlSuffix, xmlReady := ConsumeXMLToolCapture(captured, toolNames, allowMetaAgentTools); xmlReady {
+	if xmlPrefix, xmlCalls, xmlSuffix, xmlReady := ConsumeXMLToolCapture(captured, toolNames, allowMetaAgentTools, profile); xmlReady {
 		return xmlPrefix, xmlCalls, xmlSuffix, true
 	}
 	if HasOpenXMLToolTag(captured) {
@@ -577,7 +615,7 @@ func consumeStreamToolCapture(state *StreamSieveState, toolNames []string, allow
 	if prefix, calls, suffix, ready := ConsumeOrphanAgentParameterCapture(captured, toolNames, allowMetaAgentTools, final); ready {
 		return prefix, calls, suffix, true
 	}
-	if jsonPrefix, jsonCalls, jsonSuffix, jsonReady := ConsumeVisibleJSONToolCapture(captured, toolNames, allowMetaAgentTools); jsonReady {
+	if jsonPrefix, jsonCalls, jsonSuffix, jsonReady := ConsumeVisibleJSONToolCapture(captured, toolNames, allowMetaAgentTools, profile); jsonReady {
 		return jsonPrefix, jsonCalls, jsonSuffix, true
 	}
 	if VisibleJSONToolCaptureMayContinue(captured) {
@@ -776,7 +814,7 @@ func FindPartialVisibleJSONToolSegmentStart(state *StreamSieveState, s string) i
 	}
 }
 
-func ConsumeVisibleJSONToolCapture(captured string, toolNames []string, allowMetaAgentTools bool) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
+func ConsumeVisibleJSONToolCapture(captured string, toolNames []string, allowMetaAgentTools bool, profile string) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
 	trimmed := strings.TrimLeft(captured, " \t\r\n")
 	end := JSONLikeStandaloneToolJSONEnd(trimmed)
 	if end < 0 {
@@ -786,7 +824,7 @@ func ConsumeVisibleJSONToolCapture(captured string, toolNames []string, allowMet
 	end += leadingLen
 	block := captured[leadingLen:end]
 	suffix = captured[end:]
-	parsed := ParseStreamToolBlock(block, toolNames, allowMetaAgentTools)
+	parsed := ParseStreamToolBlock(block, toolNames, allowMetaAgentTools, profile)
 	if len(parsed.Calls) == 0 {
 		if parsed.Parsed {
 			return parsed.Text, nil, suffix, true
@@ -817,7 +855,7 @@ func JSONLikeStandaloneToolJSONEnd(s string) int {
 	return -1
 }
 
-func ConsumeXMLToolCapture(captured string, toolNames []string, allowMetaAgentTools bool) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
+func ConsumeXMLToolCapture(captured string, toolNames []string, allowMetaAgentTools bool, profile string) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
 	captured = toolcall.RepairMalformedToolCallXML(captured)
 	lower := strings.ToLower(captured)
 	for _, pair := range streamXMLToolCallTagPairs {
@@ -834,7 +872,7 @@ func ConsumeXMLToolCapture(captured string, toolNames []string, allowMetaAgentTo
 		xmlBlock := captured[openIdx:closeEnd]
 		prefixPart := captured[:openIdx]
 		suffixPart := captured[closeEnd:]
-		parsed := ParseStreamToolBlock(xmlBlock, toolNames, allowMetaAgentTools)
+		parsed := ParseStreamToolBlock(xmlBlock, toolNames, allowMetaAgentTools, profile)
 		if len(parsed.Calls) > 0 {
 			prefixPart, suffixPart = TrimWrappingJSONFence(prefixPart, suffixPart)
 			return prefixPart, parsed.Calls, suffixPart, true

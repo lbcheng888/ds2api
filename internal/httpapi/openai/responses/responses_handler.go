@@ -11,14 +11,12 @@ import (
 	"github.com/google/uuid"
 
 	"ds2api/internal/auth"
-	"ds2api/internal/config"
 	dsprotocol "ds2api/internal/deepseek/protocol"
 	openaifmt "ds2api/internal/format/openai"
 	"ds2api/internal/httpapi/openai/shared"
 	"ds2api/internal/promptcompat"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
-	"ds2api/internal/toolcall"
 )
 
 func (h *Handler) GetResponseByID(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +140,6 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	if len(textParsed.Calls) == 0 && writeUpstreamEmptyOutputError(w, sanitizedText, sanitizedThinking, result.ContentFilter) {
 		return
 	}
-	logResponsesToolPolicyRejection(traceID, toolChoice, textParsed, "text")
 
 	callCount := len(textParsed.Calls)
 	if toolChoice.IsRequired() && callCount == 0 {
@@ -220,33 +217,3 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	})
 }
 
-func logResponsesToolPolicyRejection(traceID string, policy promptcompat.ToolChoicePolicy, parsed toolcall.ToolCallParseResult, channel string) {
-	rejected := filteredRejectedToolNamesForLog(parsed.RejectedToolNames)
-	if !parsed.RejectedByPolicy || len(rejected) == 0 {
-		return
-	}
-	config.Logger.Warn(
-		"[responses] rejected tool calls by policy",
-		"trace_id", strings.TrimSpace(traceID),
-		"channel", channel,
-		"tool_choice_mode", policy.Mode,
-		"rejected_tool_names", strings.Join(rejected, ","),
-	)
-}
-
-func filteredRejectedToolNamesForLog(names []string) []string {
-	if len(names) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(names))
-	for _, name := range names {
-		trimmed := strings.TrimSpace(name)
-		switch strings.ToLower(trimmed) {
-		case "", "tool_name":
-			continue
-		default:
-			out = append(out, trimmed)
-		}
-	}
-	return out
-}

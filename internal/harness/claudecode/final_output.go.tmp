@@ -333,47 +333,7 @@ func SynthesizeAgentToolCallTextFromLaunchPromise(finalPrompt, finalText string,
 	return FormatParsedToolCallsAsPromptXML(calls)
 }
 
-var (
-	explicitEnglishAgentCountPattern = regexp.MustCompile(`(?i)(?:launch|start|create|run|spawn)\s+(\d+)\s*(?:agent|sub-agent|subagent)s?`)
-	explicitChineseAgentCountPattern = regexp.MustCompile(`(?:启动|创建|运行|生成)\s*(\d+)\s*个\s*(?:子代理|代理|实现子代理|实现代理)`)
-)
-
-// extractExplicitAgentCount attempts to extract a positive integer count from
-// explicit agent launch phrases in the text. Returns 0 if none found.
-func extractExplicitAgentCount(text string) int {
-	if text == "" {
-		return 0
-	}
-	if matches := explicitEnglishAgentCountPattern.FindStringSubmatch(text); len(matches) >= 2 {
-		if count, err := strconv.Atoi(matches[1]); err == nil && count >= 1 {
-			return count
-		}
-	}
-	if matches := explicitChineseAgentCountPattern.FindStringSubmatch(text); len(matches) >= 2 {
-		if count, err := strconv.Atoi(matches[1]); err == nil && count >= 1 {
-			return count
-		}
-	}
-	return 0
-}
-
-func clampAgentCount(count, min, max int) int {
-	if count < min {
-		return min
-	}
-	if count > max {
-		return max
-	}
-	return count
-}
-
-func determineAgentLaunchCount(finalPrompt, finalText string) int {
-	// First, try to extract explicit count from the agent launch text
-	if explicit := extractExplicitAgentCount(finalText); explicit > 0 {
-		return clampAgentCount(explicit, 1, 8)
-	}
-
-	// Fall back to adaptive logic based on prompt content
+func determineAgentLaunchCount(finalPrompt string) int {
 	latestUser := html.UnescapeString(LatestUserPromptBlock(finalPrompt))
 	latestUser = systemReminderBlockPattern.ReplaceAllString(latestUser, " ")
 
@@ -430,78 +390,17 @@ func SynthesizeAgentToolCallsFromLaunchPromise(finalPrompt, finalText string, to
 	if request == "" {
 		return nil
 	}
-		count := determineAgentLaunchCount(finalPrompt, finalText)
-		return generateAgentCalls(toolName, request, count)
+	allCalls := []toolcall.ParsedToolCall{
+		newAgentLaunchCall(toolName, "Map implementation route", "Explore", request, "Map the implementation route, current blockers, key files, and the smallest sequence of executable steps. Read-only analysis; do not edit files or commit."),
+		newAgentLaunchCall(toolName, "Review code risks", "code-reviewer", request, "Review likely correctness, compatibility, and tool-call protocol risks for this request. Read-only analysis; report concrete file/path references where possible."),
+		newAgentLaunchCall(toolName, "Design end-state", "design", request, "Design the target end-state and rollout strategy. Focus on architecture, operational stability, and verification. Read-only analysis; no file edits."),
+		newAgentLaunchCall(toolName, "Plan verification", "Explore", request, "Find the local verification commands, tests, and observability checks needed to prove the work. Read-only analysis; report commands and expected signals."),
 	}
-
-
-// agentRole defines a single entry in the agent launch pool.
-type agentRole struct {
-	Description   string
-	SubagentType  string
-	Instruction   string
-}
-
-// agentLaunchRoles is a pool of role definitions used when synthesizing
-// agent tool calls from a launch promise. The first 4 entries are the
-// standard set; the remainder are used for higher requested counts.
-var agentLaunchRoles = []agentRole{
-	{
-		"Map implementation route",
-		"Explore",
-		"Map the implementation route, current blockers, key files, and the smallest sequence of executable steps. Read-only analysis; do not edit files or commit.",
-	},
-	{
-		"Review code risks",
-		"code-reviewer",
-		"Review likely correctness, compatibility, and tool-call protocol risks for this request. Read-only analysis; report concrete file/path references where possible.",
-	},
-	{
-		"Design end-state",
-		"design",
-		"Design the target end-state and rollout strategy. Focus on architecture, operational stability, and verification. Read-only analysis; no file edits.",
-	},
-	{
-		"Plan verification",
-		"Explore",
-		"Find the local verification commands, tests, and observability checks needed to prove the work. Read-only analysis; report commands and expected signals.",
-	},
-	{
-		"Analyze dependencies",
-		"Explore",
-		"Analyze the codebase dependencies, imports, and interfaces affected by this request. Read-only analysis; report dependency graphs or affected packages.",
-	},
-	{
-		"Estimate effort",
-		"code-reviewer",
-		"Estimate the effort, risk, and rollout steps for each change. Identify any breaking changes or migration needs. Read-only analysis; no file edits.",
-	},
-	{
-		"Check conventions",
-		"code-reviewer",
-		"Check that the proposed changes follow project conventions, coding standards, and best practices. Read-only analysis; report any concerns.",
-	},
-	{
-		"Document changes",
-		"Explore",
-		"Identify what documentation needs to be updated (README, API docs, comments). Read-only analysis; report documentation gaps.",
-	},
-}
-
-// generateAgentCalls creates up to n agent launch calls with diverse roles.
-func generateAgentCalls(toolName, request string, n int) []toolcall.ParsedToolCall {
-	if n < 1 {
-		n = 1
+	count := determineAgentLaunchCount(finalPrompt)
+	if count > len(allCalls) {
+		count = len(allCalls)
 	}
-	if n > len(agentLaunchRoles) {
-		n = len(agentLaunchRoles)
-	}
-	calls := make([]toolcall.ParsedToolCall, n)
-	for i := 0; i < n; i++ {
-		role := agentLaunchRoles[i]
-		calls[i] = newAgentLaunchCall(toolName, role.Description, role.SubagentType, request, role.Instruction)
-	}
-	return calls
+	return allCalls[:count]
 }
 
 func newAgentLaunchCall(toolName, description, subagentType, request, instruction string) toolcall.ParsedToolCall {

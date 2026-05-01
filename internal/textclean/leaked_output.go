@@ -37,6 +37,31 @@ var leakedAgentXMLBlockPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?is)<new_task\b[^>]*>(.*?)</new_task>`),
 }
 
+// StripDSMLContent removes DSML-format tool call markup from streaming
+// visible content. It is called only in streaming output paths (emitFinalContent
+// and the no-tool-buffer passthrough), never in tool detection or non-stream
+// paths where the markup needs to survive for ParseStandaloneToolCallsDetailed.
+//
+// Strategy (order matters):
+//  1. Complete wrapper blocks: <|DSML|tool_calls> ... </|DSML|tool_calls>
+//  2. Complete inner blocks: <|DSML|invoke> ... </|DSML|invoke>
+//     and <|DSML|parameter> ... </|DSML|parameter> — these include the
+//     parameter text values that would otherwise leak.
+//  3. Standalone tag lines as a last resort.
+func StripDSMLContent(text string) string {
+	if text == "" {
+		return text
+	}
+	out := leakedDSMLWrapperPattern.ReplaceAllString(text, "")
+	out = leakedDSMLInnerPairPattern.ReplaceAllString(out, "")
+	out = leakedDSMLTagLinePattern.ReplaceAllString(out, "")
+	return strings.TrimSpace(out)
+}
+
+var leakedDSMLWrapperPattern = regexp.MustCompile(`(?is)<\s*(?:\||｜)?\s*(?:DSML|dsml)\s*(?:\||｜)?\s*\s*tool_calls\b[^>]*>.*?</\s*(?:\||｜)?\s*(?:DSML|dsml)\s*(?:\||｜)?\s*\s*tool_calls\s*>`)
+var leakedDSMLInnerPairPattern = regexp.MustCompile(`(?is)<\s*(?:\||｜)?\s*(?:DSML|dsml)\s*(?:\||｜)?\s*\s*(?:invoke|parameter)\b[^>]*>.*?</\s*(?:\||｜)?\s*(?:DSML|dsml)\s*(?:\||｜)?\s*\s*(?:invoke|parameter)\s*>`)
+var leakedDSMLTagLinePattern = regexp.MustCompile(`(?im)^\s*</?\s*(?:\||｜)?\s*(?:DSML|dsml)\s*(?:\||｜)?\s*(?:|\s)(?:tool_calls|invoke|parameter)\b[^>]*>\s*$\n?`)
+
 var leakedAgentWrapperTagPattern = regexp.MustCompile(`(?is)</?(?:attempt_completion|ask_followup_question|new_task)\b[^>]*>`)
 var leakedAgentWrapperPlusResultOpenPattern = regexp.MustCompile(`(?is)<(?:attempt_completion|ask_followup_question|new_task)\b[^>]*>\s*<result>`)
 var leakedAgentResultPlusWrapperClosePattern = regexp.MustCompile(`(?is)</result>\s*</(?:attempt_completion|ask_followup_question|new_task)\b[^>]*>`)

@@ -89,7 +89,7 @@ func NormalizeCallsForSchemasWithMeta(calls []ParsedToolCall, schemas ParameterS
 			out = append(out, ParsedToolCall{Name: name, Input: expandedInput})
 		}
 	}
-	return coalesceParallelShellCalls(out)
+	return out
 }
 
 func normalizeKnownToolInputAliases(name string, input map[string]any) map[string]any {

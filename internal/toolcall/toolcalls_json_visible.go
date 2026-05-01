@@ -55,7 +55,7 @@ func parseVisibleJSONToolCallsStrict(trimmed string) []ParsedToolCall {
 }
 
 func ExtractVisibleJSONToolCalls(text string, availableToolNames []string) (prefix string, calls []ParsedToolCall, suffix string, ok bool) {
-	for start := findVisibleJSONToolStart(text, 0); start >= 0; start = findVisibleJSONToolStart(text, start+1) {
+	for start := FindVisibleJSONToolStart(text, 0); start >= 0; start = FindVisibleJSONToolStart(text, start+1) {
 		if isInsideMarkdownFence(text[:start]) {
 			continue
 		}
@@ -131,7 +131,7 @@ func firstAvailableToolName(available []string, candidates ...string) string {
 	return ""
 }
 
-func findVisibleJSONToolStart(text string, from int) int {
+func FindVisibleJSONToolStart(text string, from int) int {
 	if from < 0 {
 		from = 0
 	}

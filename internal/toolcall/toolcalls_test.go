@@ -527,6 +527,16 @@ func TestRepairLooseJSONWithNestedObjects(t *testing.T) {
 			input:    `"tasks": {"id":1}, {"id":2}, {"id":3}, {"id":4}, {"id":5}`,
 			expected: `"tasks": [{"id":1}, {"id":2}, {"id":3}, {"id":4}, {"id":5}]`,
 		},
+		{
+			name:     "二层嵌套对象",
+			input:    `"items": {"a": {"b": {"c": 1}}}, {"d": {"e": {"f": 2}}}`,
+			expected: `"items": [{"a": {"b": {"c": 1}}}, {"d": {"e": {"f": 2}}}]`,
+		},
+		{
+			name:     "三层嵌套对象",
+			input:    `"deep": {"a": {"b": {"c": {"d": 1}}}}, {"e": {"f": {"g": {"h": 2}}}}`,
+			expected: `"deep": [{"a": {"b": {"c": {"d": 1}}}}, {"e": {"f": {"g": {"h": 2}}}}]`,
+		},
 	}
 
 	for _, tt := range tests {

@@ -320,7 +320,7 @@ func TestNormalizeOpenAIMessagesForPrompt_AssistantArrayContentFallbackWhenTextE
 	}
 }
 
-func TestNormalizeOpenAIMessagesForPrompt_AssistantReasoningContentSkippedWithoutToolCalls(t *testing.T) {
+func TestNormalizeOpenAIMessagesForPrompt_AssistantReasoningContentPreservedWithoutToolCalls(t *testing.T) {
 	raw := []any{
 		map[string]any{
 			"role":              "assistant",
@@ -334,8 +334,8 @@ func TestNormalizeOpenAIMessagesForPrompt_AssistantReasoningContentSkippedWithou
 		t.Fatalf("expected one normalized assistant message, got %#v", normalized)
 	}
 	content, _ := normalized[0]["content"].(string)
-	if strings.Contains(content, "[reasoning_content]") || strings.Contains(content, "internal reasoning") {
-		t.Fatalf("did not expect reasoning replay without tool calls, got %q", content)
+	if !strings.Contains(content, "<think>internal reasoning</think>") {
+		t.Fatalf("expected think-wrapped reasoning in assistant content, got %q", content)
 	}
 	if !strings.Contains(content, "visible answer") {
 		t.Fatalf("expected visible answer in assistant content, got %q", content)
@@ -359,13 +359,13 @@ func TestNormalizeOpenAIMessagesForPrompt_AssistantReasoningContentPreservedWith
 		t.Fatalf("expected one normalized assistant message, got %#v", normalized)
 	}
 	content, _ := normalized[0]["content"].(string)
-	if !strings.Contains(content, "[reasoning_content]") {
-		t.Fatalf("expected labeled reasoning block in assistant content, got %q", content)
+	if !strings.Contains(content, "<think>internal reasoning</think>") {
+		t.Fatalf("expected think-wrapped reasoning block in assistant content, got %q", content)
 	}
-	if !strings.Contains(content, "internal reasoning") {
-		t.Fatalf("expected reasoning text in assistant content, got %q", content)
+	if !strings.Contains(content, "visible answer") {
+		t.Fatalf("expected visible answer in assistant content, got %q", content)
 	}
-	if reasoningIdx := strings.Index(content, "[reasoning_content]"); reasoningIdx < 0 || reasoningIdx > strings.Index(content, "visible answer") {
+	if thinkIdx := strings.Index(content, "<think>"); thinkIdx < 0 || thinkIdx > strings.Index(content, "visible answer") {
 		t.Fatalf("expected reasoning block before visible answer, got %q", content)
 	}
 }

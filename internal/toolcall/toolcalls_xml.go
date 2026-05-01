@@ -52,6 +52,7 @@ func parseStructuredToolCallInput(raw string) map[string]any {
 	return map[string]any{"_raw": html.UnescapeString(trimmed)}
 }
 
+
 func parseXMLFragmentValue(raw string) (any, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

@@ -14,6 +14,7 @@ type FinalEvaluationInput struct {
 	ToolSchemas         toolcall.ParameterSchemas
 	AllowMetaAgentTools bool
 	ContentFilter       bool
+	Profile             string
 }
 
 type FinalEvaluationResult struct {
@@ -28,7 +29,16 @@ type FinalEvaluationResult struct {
 }
 
 func EvaluateFinalOutput(in FinalEvaluationInput) FinalEvaluationResult {
-	repair := RepairFinalOutput(FinalOutputInput(in))
+	repair := RepairFinalOutput(FinalOutputInput{
+		FinalPrompt:         in.FinalPrompt,
+		Text:                in.Text,
+		Thinking:            in.Thinking,
+		ToolNames:           in.ToolNames,
+		ToolSchemas:         in.ToolSchemas,
+		AllowMetaAgentTools: in.AllowMetaAgentTools,
+		ContentFilter:       in.ContentFilter,
+		Profile:             in.Profile,
+	})
 	parsed, visibleText := DetectFinalToolCalls(FinalToolCallInput{
 		Text:      repair.Text,
 		Thinking:  in.Thinking,
