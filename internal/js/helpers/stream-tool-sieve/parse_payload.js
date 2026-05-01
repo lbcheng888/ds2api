@@ -248,6 +248,9 @@ function replaceDSMLToolMarkupOutsideIgnored(text) {
     if (tag) {
       if (tag.dsmlLike) {
         out += `<${tag.closing ? '/' : ''}${tag.name}${raw.slice(tag.nameEnd, tag.end + 1)}`;
+        if (raw[tag.end] !== '>') {
+          out += '>';
+        }
       } else {
         out += raw.slice(tag.start, tag.end + 1);
       }
@@ -424,31 +427,42 @@ function scanToolMarkupTagAt(text, start) {
   }
   const lower = raw.toLowerCase();
   let i = start + 1;
+  while (i < raw.length && raw[i] === '<') {
+    i += 1;
+  }
   const closing = raw[i] === '/';
   if (closing) {
     i += 1;
   }
-  let dsmlLike = false;
-  if (i < raw.length && isToolMarkupPipe(raw[i])) {
-    dsmlLike = true;
-    i += 1;
-  }
-  if (lower.startsWith('dsml', i)) {
-    dsmlLike = true;
-    i += 'dsml'.length;
-    while (i < raw.length && isToolMarkupSeparator(raw[i])) {
-      i += 1;
-    }
-  }
+  const prefix = consumeToolMarkupNamePrefix(raw, lower, i);
+  i = prefix.next;
+  const dsmlLike = prefix.dsmlLike;
   const { name, len } = matchToolMarkupName(lower, i);
   if (!name) {
     return null;
   }
-  const nameEnd = i + len;
+  const originalNameEnd = i + len;
+  let nameEnd = originalNameEnd;
+  while (nameEnd < raw.length && isToolMarkupPipe(raw[nameEnd])) {
+    nameEnd += 1;
+  }
+  const hasTrailingPipe = nameEnd > originalNameEnd;
   if (!hasXmlTagBoundary(raw, nameEnd)) {
     return null;
   }
-  const end = findXmlTagEnd(raw, nameEnd);
+  let end = findXmlTagEnd(raw, nameEnd);
+  if (end < 0) {
+    if (!hasTrailingPipe) {
+      return null;
+    }
+    end = nameEnd - 1;
+  }
+  if (hasTrailingPipe) {
+    const nextLT = raw.indexOf('<', nameEnd);
+    if (nextLT >= 0 && end >= nextLT) {
+      end = nameEnd - 1;
+    }
+  }
   if (end < 0) {
     return null;
   }
@@ -520,37 +534,94 @@ function findPartialToolMarkupStart(text) {
   if (lastLT < 0) {
     return -1;
   }
-  const tail = raw.slice(lastLT);
+  const start = includeDuplicateLeadingLessThan(raw, lastLT);
+  const tail = raw.slice(start);
   if (tail.includes('>')) {
     return -1;
   }
-  const lowerTail = tail.toLowerCase();
-  const candidates = [
-    '<tool_calls', '<invoke', '<parameter',
-    '<|tool_calls', '<|invoke', '<|parameter',
-    '<｜tool_calls', '<｜invoke', '<｜parameter',
-    '<|dsml|tool_calls', '<|dsml|invoke', '<|dsml|parameter',
-    '<｜dsml|tool_calls', '<｜dsml|invoke', '<｜dsml|parameter',
-    '<dsmltool_calls', '<dsmlinvoke', '<dsmlparameter',
-    '<dsml tool_calls', '<dsml invoke', '<dsml parameter',
-    '<dsml|tool_calls', '<dsml|invoke', '<dsml|parameter',
-    '<|dsmltool_calls', '<|dsmlinvoke', '<|dsmlparameter',
-    '<|dsml tool_calls', '<|dsml invoke', '<|dsml parameter',
-  ];
-  for (const candidate of candidates) {
-    if (candidate.startsWith(lowerTail)) {
-      return lastLT;
-    }
+  return isPartialToolMarkupTagPrefix(tail) ? start : -1;
+}
+
+function includeDuplicateLeadingLessThan(text, idx) {
+  let out = idx;
+  while (out > 0 && text[out - 1] === '<') {
+    out -= 1;
   }
-  return -1;
+  return out;
 }
 
 function isToolMarkupPipe(ch) {
   return ch === '|' || ch === '｜';
 }
 
-function isToolMarkupSeparator(ch) {
-  return ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n' || isToolMarkupPipe(ch);
+function isPartialToolMarkupTagPrefix(text) {
+  const raw = toStringSafe(text);
+  if (!raw || raw[0] !== '<' || raw.includes('>')) {
+    return false;
+  }
+  const lower = raw.toLowerCase();
+  let i = 1;
+  while (i < raw.length && raw[i] === '<') {
+    i += 1;
+  }
+  if (i >= raw.length) {
+    return true;
+  }
+  if (raw[i] === '/') {
+    i += 1;
+  }
+  while (i <= raw.length) {
+    if (i === raw.length) {
+      return true;
+    }
+    if (hasToolMarkupNamePrefix(lower.slice(i))) {
+      return true;
+    }
+    if ('dsml'.startsWith(lower.slice(i))) {
+      return true;
+    }
+    const next = consumeToolMarkupNamePrefixOnce(raw, lower, i);
+    if (!next.ok) {
+      return false;
+    }
+    i = next.next;
+  }
+  return false;
+}
+
+function consumeToolMarkupNamePrefix(raw, lower, idx) {
+  let next = idx;
+  let dsmlLike = false;
+  while (true) {
+    const consumed = consumeToolMarkupNamePrefixOnce(raw, lower, next);
+    if (!consumed.ok) {
+      return { next, dsmlLike };
+    }
+    next = consumed.next;
+    dsmlLike = true;
+  }
+}
+
+function consumeToolMarkupNamePrefixOnce(raw, lower, idx) {
+  if (idx < raw.length && isToolMarkupPipe(raw[idx])) {
+    return { next: idx + 1, ok: true };
+  }
+  if (idx < raw.length && [' ', '\t', '\r', '\n'].includes(raw[idx])) {
+    return { next: idx + 1, ok: true };
+  }
+  if (lower.startsWith('dsml', idx)) {
+    return { next: idx + 'dsml'.length, ok: true };
+  }
+  return { next: idx, ok: false };
+}
+
+function hasToolMarkupNamePrefix(lowerTail) {
+  for (const name of TOOL_MARKUP_NAMES) {
+    if (lowerTail.startsWith(name) || name.startsWith(lowerTail)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function matchToolMarkupName(lower, start) {
@@ -775,10 +846,18 @@ function parseMarkupValue(raw, paramName = '') {
   if (cdata.ok) {
     const literal = parseJSONLiteralValue(cdata.value);
     if (literal.ok) {
+      const literalArray = coerceArrayValue(literal.value, paramName);
+      if (literalArray.ok) {
+        return literalArray.value;
+      }
       return literal.value;
     }
     const structured = parseStructuredCDATAParameterValue(paramName, cdata.value);
-    return structured.ok ? structured.value : cdata.value;
+    if (structured.ok) {
+      return structured.value;
+    }
+    const looseArray = parseLooseJSONArrayValue(cdata.value, paramName);
+    return looseArray.ok ? looseArray.value : cdata.value;
   }
   const s = toStringSafe(extractRawTagValue(raw)).trim();
   if (!s) {
@@ -791,8 +870,14 @@ function parseMarkupValue(raw, paramName = '') {
       return nested;
     }
     if (nested && typeof nested === 'object') {
+      const nestedArray = coerceArrayValue(nested, paramName);
+      if (nestedArray.ok) {
+        return nestedArray.value;
+      }
       if (isOnlyRawValue(nested)) {
-        return toStringSafe(nested._raw);
+        const rawValue = toStringSafe(nested._raw);
+        const looseArray = parseLooseJSONArrayValue(rawValue, paramName);
+        return looseArray.ok ? looseArray.value : rawValue;
       }
       return nested;
     }
@@ -800,7 +885,15 @@ function parseMarkupValue(raw, paramName = '') {
 
   const literal = parseJSONLiteralValue(s);
   if (literal.ok) {
+    const literalArray = coerceArrayValue(literal.value, paramName);
+    if (literalArray.ok) {
+      return literalArray.value;
+    }
     return literal.value;
+  }
+  const looseArray = parseLooseJSONArrayValue(s, paramName);
+  if (looseArray.ok) {
+    return looseArray.value;
   }
   return s;
 }
@@ -935,6 +1028,226 @@ function parseJSONLiteralValue(raw) {
   } catch (_err) {
     return { ok: false, value: null };
   }
+}
+
+function parseLooseJSONArrayValue(raw, paramName = '') {
+  if (preservesCDATAStringParameter(paramName)) {
+    return { ok: false, value: null };
+  }
+  const s = toStringSafe(raw).trim();
+  if (!s) {
+    return { ok: false, value: null };
+  }
+  const candidate = parseLooseJSONArrayCandidate(s, paramName);
+  if (candidate.ok) {
+    return candidate;
+  }
+
+  const segments = splitTopLevelJSONValues(s);
+  if (segments.length < 2) {
+    return { ok: false, value: null };
+  }
+
+  const out = [];
+  for (const segment of segments) {
+    const parsed = parseLooseArrayElementValue(segment);
+    if (!parsed.ok) {
+      return { ok: false, value: null };
+    }
+    out.push(parsed.value);
+  }
+  return { ok: true, value: out };
+}
+
+function parseLooseJSONArrayCandidate(raw, paramName = '') {
+  const parsed = parseLooseArrayElementValue(raw);
+  if (!parsed.ok) {
+    return { ok: false, value: null };
+  }
+  return coerceArrayValue(parsed.value, paramName);
+}
+
+function parseLooseArrayElementValue(raw) {
+  const s = toStringSafe(raw).trim();
+  if (!s) {
+    return { ok: false, value: null };
+  }
+
+  const literal = parseJSONLiteralValue(s);
+  if (literal.ok) {
+    return literal;
+  }
+
+  const repairedBackslashes = repairInvalidJSONBackslashes(s);
+  if (repairedBackslashes !== s) {
+    try {
+      const parsed = JSON.parse(repairedBackslashes);
+      return { ok: true, value: parsed };
+    } catch (_err) {
+      // Fall through.
+    }
+  }
+
+  const repairedLoose = repairLooseJSON(s);
+  if (repairedLoose !== s) {
+    try {
+      const parsed = JSON.parse(repairedLoose);
+      return { ok: true, value: parsed };
+    } catch (_err) {
+      // Fall through.
+    }
+  }
+
+  if (s.includes('<') && s.includes('>')) {
+    const parsed = parseMarkupInput(s);
+    if (Array.isArray(parsed)) {
+      return { ok: true, value: parsed };
+    }
+    if (parsed && typeof parsed === 'object') {
+      return { ok: true, value: parsed };
+    }
+  }
+
+  return { ok: false, value: null };
+}
+
+function coerceArrayValue(value, paramName = '') {
+  if (Array.isArray(value)) {
+    return { ok: true, value };
+  }
+  if (!value || typeof value !== 'object') {
+    return { ok: false, value: null };
+  }
+
+  const keys = Object.keys(value);
+  if (keys.length !== 1) {
+    return { ok: false, value: null };
+  }
+
+  if (Object.prototype.hasOwnProperty.call(value, 'item')) {
+    const items = value.item;
+    const nested = coerceArrayValue(items, '');
+    return nested.ok ? nested : { ok: true, value: [items] };
+  }
+
+  if (paramName && Object.prototype.hasOwnProperty.call(value, paramName)) {
+    const nested = coerceArrayValue(value[paramName], '');
+    if (nested.ok) {
+      return nested;
+    }
+  }
+
+  return { ok: false, value: null };
+}
+
+function splitTopLevelJSONValues(raw) {
+  const s = toStringSafe(raw).trim();
+  if (!s) {
+    return [];
+  }
+
+  const values = [];
+  let start = 0;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{' || ch === '[') {
+      depth += 1;
+      continue;
+    }
+    if (ch === '}' || ch === ']') {
+      if (depth > 0) {
+        depth -= 1;
+      }
+      continue;
+    }
+    if (ch === ',' && depth === 0) {
+      const segment = s.slice(start, i).trim();
+      if (!segment) {
+        return [];
+      }
+      values.push(segment);
+      start = i + 1;
+    }
+  }
+
+  const last = s.slice(start).trim();
+  if (!last) {
+    return [];
+  }
+  values.push(last);
+  return values.length > 1 ? values : [];
+}
+
+function repairInvalidJSONBackslashes(s) {
+  if (!s || !s.includes('\\')) {
+    return s;
+  }
+
+  let out = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch !== '\\') {
+      out += ch;
+      continue;
+    }
+    if (i + 1 < s.length) {
+      const next = s[i + 1];
+      if ('"\\/bfnrt'.includes(next)) {
+        out += `\\${next}`;
+        i += 1;
+        continue;
+      }
+      if (next === 'u' && i + 5 < s.length) {
+        let isHex = true;
+        for (let j = 1; j <= 4; j += 1) {
+          const r = s[i + 1 + j];
+          if (!/[0-9a-fA-F]/.test(r)) {
+            isHex = false;
+            break;
+          }
+        }
+        if (isHex) {
+          out += `\\u${s.slice(i + 2, i + 6)}`;
+          i += 5;
+          continue;
+        }
+      }
+    }
+    out += '\\\\';
+  }
+  return out;
+}
+
+function repairLooseJSON(s) {
+  const raw = toStringSafe(s).trim();
+  if (!raw) {
+    return raw;
+  }
+  let out = raw.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
+  out = out.replace(/(:\s*)(\{(?:[^{}]|\{[^{}]*\})*\}(?:\s*,\s*\{(?:[^{}]|\{[^{}]*\})*\})+)/g, '$1[$2]');
+  return out;
 }
 
 function sanitizeLooseCDATA(text) {

@@ -50,7 +50,10 @@ func (s *claudeStreamRuntime) sendPing() {
 }
 
 func (s *claudeStreamRuntime) sendMessageStart() {
-	inputTokens := util.EstimateTokens(fmt.Sprintf("%v", s.messages))
+	inputTokens := countClaudeInputTokensFromText(s.promptTokenText, s.model)
+	if inputTokens == 0 {
+		inputTokens = util.CountPromptTokens(fmt.Sprintf("%v", s.messages), s.model)
+	}
 	s.send("message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{

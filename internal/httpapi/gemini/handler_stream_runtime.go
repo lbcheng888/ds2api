@@ -196,6 +196,6 @@ func (s *geminiStreamRuntime) finalize() {
 			},
 		},
 		"modelVersion":  s.model,
-		"usageMetadata": buildGeminiUsage(s.finalPrompt, finalThinking, finalText),
+		"usageMetadata": buildGeminiUsage(s.model, s.finalPrompt, finalThinking, finalText),
 	})
 }

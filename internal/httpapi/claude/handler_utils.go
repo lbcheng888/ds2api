@@ -1,11 +1,9 @@
 package claude
 
 import (
-	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/toolcall"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"ds2api/internal/prompt"
@@ -79,12 +77,9 @@ func normalizeClaudeMessages(messages []any) []any {
 	return out
 }
 
-func buildClaudeToolPrompt(tools []any, allowMetaAgentTools bool, allowTaskOutput bool) string {
-	type toolPromptEntry struct {
-		name   string
-		schema string
-	}
-	entries := make([]toolPromptEntry, 0, len(tools))
+func buildClaudeToolPrompt(tools []any) string {
+	toolSchemas := make([]string, 0, len(tools))
+	names := make([]string, 0, len(tools))
 	for _, t := range tools {
 		m, ok := t.(map[string]any)
 		if !ok {
@@ -94,36 +89,15 @@ func buildClaudeToolPrompt(tools []any, allowMetaAgentTools bool, allowTaskOutpu
 		if name == "" {
 			continue
 		}
-		if toolcall.IsTaskTrackingToolName(name) {
-			continue
-		}
-		if claudecodeharness.CanonicalTaskOutputToolName(name) == "taskoutput" && !allowTaskOutput {
-			continue
-		}
-		if !allowMetaAgentTools && toolcall.IsMetaAgentToolName(name) {
-			continue
-		}
+		names = append(names, name)
 		schema, _ := json.Marshal(schemaObj)
-		entries = append(entries, toolPromptEntry{
-			name:   name,
-			schema: fmt.Sprintf("Tool: %s\nDescription: %s\nParameters: %s", name, desc, schema),
-		})
+		toolSchemas = append(toolSchemas, fmt.Sprintf("Tool: %s\nDescription: %s\nParameters: %s", name, desc, schema))
 	}
-	if len(entries) == 0 {
+	if len(toolSchemas) == 0 {
 		return ""
-	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		return strings.ToLower(entries[i].name) < strings.ToLower(entries[j].name)
-	})
-	toolSchemas := make([]string, 0, len(entries))
-	names := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		names = append(names, entry.name)
-		toolSchemas = append(toolSchemas, entry.schema)
 	}
 	return "You have access to these tools:\n\n" +
 		strings.Join(toolSchemas, "\n\n") + "\n\n" +
-		toolcall.BuildTeamAgentInstructions(names) + "\n" +
 		toolcall.BuildToolCallInstructions(names)
 }
 

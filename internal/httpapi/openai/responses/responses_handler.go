@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"ds2api/internal/toolcall"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,9 +12,9 @@ import (
 	"github.com/google/uuid"
 
 	"ds2api/internal/auth"
+	"ds2api/internal/config"
 	dsprotocol "ds2api/internal/deepseek/protocol"
 	openaifmt "ds2api/internal/format/openai"
-	"ds2api/internal/httpapi/openai/shared"
 	"ds2api/internal/promptcompat"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
@@ -46,17 +47,7 @@ func (h *Handler) GetResponseByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, openAIGeneralMaxSize)
-	var req map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "too large") {
-			writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request body too large")
-			return
-		}
-		writeOpenAIError(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-	a, err := shared.DetermineWithAffinity(h.Auth, r, req)
+	a, err := h.Auth.Determine(r)
 	if err != nil {
 		status := http.StatusUnauthorized
 		detail := err.Error()
@@ -74,6 +65,16 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, openAIGeneralMaxSize)
+	var req map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "too large") {
+			writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		writeOpenAIError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
 	if err := h.preprocessInlineFileInputs(r.Context(), a, req); err != nil {
 		writeOpenAIInlineFileError(w, err)
 		return
@@ -91,22 +92,37 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	attempt, err := shared.CallCompletionWithManagedFailover(r.Context(), h.Auth, h.DS, h.Store, a, stdReq)
+	sessionID, err := h.DS.CreateSession(r.Context(), a, 3)
 	if err != nil {
-		status, message, code := shared.CompletionAttemptErrorDetail(a, attempt.Stage)
-		writeOpenAIErrorWithCode(w, status, message, code)
+		if a.UseConfigToken {
+			writeOpenAIError(w, http.StatusUnauthorized, "Account token is invalid. Please re-login the account in admin.")
+		} else {
+			writeOpenAIError(w, http.StatusUnauthorized, "Invalid token. If this should be a DS2API key, add it to config.keys first.")
+		}
+		return
+	}
+	pow, err := h.DS.GetPow(r.Context(), a, 3)
+	if err != nil {
+		writeOpenAIError(w, http.StatusUnauthorized, "Failed to get PoW (invalid token or unknown error).")
+		return
+	}
+	payload := stdReq.CompletionPayload(sessionID)
+	resp, err := h.DS.CallCompletion(r.Context(), a, payload, pow, 3)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "Failed to get completion.")
 		return
 	}
 
 	responseID := "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	refFileTokens := stdReq.RefFileTokens
 	if stdReq.Stream {
-		h.handleResponsesStreamWithRetry(w, r, a, attempt.Response, attempt.Payload, attempt.Pow, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
+		h.handleResponsesStreamWithRetry(w, r, a, resp, payload, pow, owner, responseID, stdReq.ResponseModel, stdReq.PromptTokenText, refFileTokens, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolsRaw, stdReq.ToolChoice, traceID)
 		return
 	}
-	h.handleResponsesNonStreamWithRetry(w, r.Context(), a, attempt.Response, attempt.Payload, attempt.Pow, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolSchemas, stdReq.ToolChoice, stdReq.AllowMetaAgentTools, traceID)
+	h.handleResponsesNonStreamWithRetry(w, r.Context(), a, resp, payload, pow, owner, responseID, stdReq.ResponseModel, stdReq.PromptTokenText, refFileTokens, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolsRaw, stdReq.ToolChoice, traceID)
 }
 
-func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
+func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, refFileTokens int, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -116,30 +132,15 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	result := sse.CollectStream(resp, thinkingEnabled, true)
 	stripReferenceMarkers := h.compatStripReferenceMarkers()
 	sanitizedThinking := cleanVisibleOutput(result.Thinking, stripReferenceMarkers)
-	toolDetectionThinking := cleanVisibleOutput(result.ToolDetectionThinking, stripReferenceMarkers)
 	sanitizedText := cleanVisibleOutput(result.Text, stripReferenceMarkers)
-	if result.ErrorMessage != "" {
-		status, message, code := upstreamStreamErrorDetail(result.ErrorCode, result.ErrorMessage)
-		writeOpenAIErrorWithCode(w, status, message, code)
-		return
-	}
 	if searchEnabled {
 		sanitizedText = replaceCitationMarkersWithLinks(sanitizedText, result.CitationLinks)
 	}
-	textParsed := detectAssistantToolCalls(sanitizedText, sanitizedThinking, toolDetectionThinking, toolNames)
-	if status, message, code, ok := invalidTaskOutputCallDetail(textParsed.Calls, finalPrompt); ok {
-		writeOpenAIErrorWithCode(w, status, message, code)
-		return
-	}
-	if len(textParsed.Calls) == 0 {
-		if status, message, code, ok := missingToolCallDetail(sanitizedText, finalPrompt, toolNames, nil, false); ok {
-			writeOpenAIErrorWithCode(w, status, message, code)
-			return
-		}
-	}
+	textParsed := detectAssistantToolCalls(result.Text, sanitizedText, result.Thinking, result.ToolDetectionThinking, toolNames)
 	if len(textParsed.Calls) == 0 && writeUpstreamEmptyOutputError(w, sanitizedText, sanitizedThinking, result.ContentFilter) {
 		return
 	}
+	logResponsesToolPolicyRejection(traceID, toolChoice, textParsed, "text")
 
 	callCount := len(textParsed.Calls)
 	if toolChoice.IsRequired() && callCount == 0 {
@@ -147,12 +148,15 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 		return
 	}
 
-	responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, sanitizedThinking, sanitizedText, textParsed.Calls)
+	responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, sanitizedThinking, sanitizedText, textParsed.Calls, toolsRaw)
+	if refFileTokens > 0 {
+		addRefFileTokensToUsage(responseObj, refFileTokens)
+	}
 	h.getResponseStore().put(owner, responseID, responseObj)
 	writeJSON(w, http.StatusOK, responseObj)
 }
 
-func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
+func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, resp *http.Response, owner, responseID, model, finalPrompt string, refFileTokens int, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -185,8 +189,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		searchEnabled,
 		stripReferenceMarkers,
 		toolNames,
-		nil,
-		false,
+		toolsRaw,
 		bufferToolContent,
 		emitEarlyToolDeltas,
 		toolChoice,
@@ -195,6 +198,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 			h.getResponseStore().put(owner, responseID, obj)
 		},
 	)
+	streamRuntime.refFileTokens = refFileTokens
 	streamRuntime.sendCreated()
 
 	streamengine.ConsumeSSE(streamengine.ConsumeConfig{
@@ -217,3 +221,33 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	})
 }
 
+func logResponsesToolPolicyRejection(traceID string, policy promptcompat.ToolChoicePolicy, parsed toolcall.ToolCallParseResult, channel string) {
+	rejected := filteredRejectedToolNamesForLog(parsed.RejectedToolNames)
+	if !parsed.RejectedByPolicy || len(rejected) == 0 {
+		return
+	}
+	config.Logger.Warn(
+		"[responses] rejected tool calls by policy",
+		"trace_id", strings.TrimSpace(traceID),
+		"channel", channel,
+		"tool_choice_mode", policy.Mode,
+		"rejected_tool_names", strings.Join(rejected, ","),
+	)
+}
+
+func filteredRejectedToolNamesForLog(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		switch strings.ToLower(trimmed) {
+		case "", "tool_name":
+			continue
+		default:
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}

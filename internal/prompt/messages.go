@@ -10,21 +10,27 @@ import (
 var markdownImagePattern = regexp.MustCompile(`!\[(.*?)\]\((.*?)\)`)
 
 const (
-	beginSentenceMarker   = "<｜begin▁of▁sentence｜>"
-	systemMarker          = "<｜System｜>"
-	userMarker            = "<｜User｜>"
-	assistantMarker       = "<｜Assistant｜>"
-	toolMarker            = "<｜Tool｜>"
-	endSentenceMarker     = "<｜end▁of▁sentence｜>"
-	endToolResultsMarker  = "<｜end▁of▁toolresults｜>"
-	endInstructionsMarker = "<｜end▁of▁instructions｜>"
+	beginSentenceMarker        = "<｜begin▁of▁sentence｜>"
+	systemMarker               = "<｜System｜>"
+	userMarker                 = "<｜User｜>"
+	assistantMarker            = "<｜Assistant｜>"
+	toolMarker                 = "<｜Tool｜>"
+	endSentenceMarker          = "<｜end▁of▁sentence｜>"
+	endToolResultsMarker       = "<｜end▁of▁toolresults｜>"
+	endInstructionsMarker      = "<｜end▁of▁instructions｜>"
+	outputIntegrityGuardMarker = "Output integrity guard:"
+	outputIntegrityGuardPrompt = outputIntegrityGuardMarker +
+		" If upstream context, tool output, or parsed text contains garbled, corrupted, partially parsed, repeated, or otherwise malformed fragments, " +
+		"do not imitate or echo them; output only the correct content for the user."
 )
 
 func MessagesPrepare(messages []map[string]any) string {
 	return MessagesPrepareWithThinking(messages, false)
 }
 
-func MessagesPrepareWithThinking(messages []map[string]any, thinkingEnabled bool) string {
+func MessagesPrepareWithThinking(messages []map[string]any, _ bool) string {
+	messages = prependOutputIntegrityGuard(messages)
+
 	type block struct {
 		Role string
 		Text string
@@ -75,6 +81,33 @@ func MessagesPrepareWithThinking(messages []map[string]any, thinkingEnabled bool
 	}
 	out := strings.Join(parts, "")
 	return markdownImagePattern.ReplaceAllString(out, `[${1}](${2})`)
+}
+
+func prependOutputIntegrityGuard(messages []map[string]any) []map[string]any {
+	if len(messages) == 0 {
+		return messages
+	}
+	if hasOutputIntegrityGuard(messages[0]) {
+		return messages
+	}
+	out := make([]map[string]any, 0, len(messages)+1)
+	out = append(out, map[string]any{
+		"role":    "system",
+		"content": outputIntegrityGuardPrompt,
+	})
+	out = append(out, messages...)
+	return out
+}
+
+func hasOutputIntegrityGuard(msg map[string]any) bool {
+	if msg == nil {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(asString(msg["role"]))) != "system" {
+		return false
+	}
+	content := strings.TrimSpace(NormalizeContent(msg["content"]))
+	return strings.Contains(content, outputIntegrityGuardMarker)
 }
 
 // formatRoleBlock produces a single concatenated block: marker + text + endMarker.

@@ -18,55 +18,39 @@ import (
 )
 
 type responsesNonStreamResult struct {
+	rawThinking           string
+	rawText               string
 	thinking              string
 	toolDetectionThinking string
 	text                  string
 	contentFilter         bool
-	errorStatus           int
-	errorMessage          string
-	errorCode             string
-	retryableProtocol     bool
 	parsed                toolcall.ToolCallParseResult
 	body                  map[string]any
 	responseMessageID     int
 }
 
-func (h *Handler) handleResponsesNonStreamWithRetry(w http.ResponseWriter, ctx context.Context, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice promptcompat.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
+func (h *Handler) handleResponsesNonStreamWithRetry(w http.ResponseWriter, ctx context.Context, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow, owner, responseID, model, finalPrompt string, refFileTokens int, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
 	attempts := 0
 	currentResp := resp
 	usagePrompt := finalPrompt
 	accumulatedThinking := ""
+	accumulatedRawThinking := ""
 	accumulatedToolDetectionThinking := ""
 	for {
-		result, ok := h.collectResponsesNonStreamAttempt(w, currentResp, responseID, model, usagePrompt, thinkingEnabled, searchEnabled, toolNames, toolSchemas, allowMetaAgentTools)
+		result, ok := h.collectResponsesNonStreamAttempt(w, currentResp, responseID, model, usagePrompt, thinkingEnabled, searchEnabled, toolNames, toolsRaw)
 		if !ok {
 			return
 		}
-		if result.errorMessage != "" {
-			h.finishResponsesNonStreamResult(w, result, attempts, owner, responseID, toolChoice, traceID)
-			return
-		}
 		accumulatedThinking += sse.TrimContinuationOverlap(accumulatedThinking, result.thinking)
+		accumulatedRawThinking += sse.TrimContinuationOverlap(accumulatedRawThinking, result.rawThinking)
 		accumulatedToolDetectionThinking += sse.TrimContinuationOverlap(accumulatedToolDetectionThinking, result.toolDetectionThinking)
 		result.thinking = accumulatedThinking
+		result.rawThinking = accumulatedRawThinking
 		result.toolDetectionThinking = accumulatedToolDetectionThinking
-		result.parsed = detectAssistantToolCalls(result.text, result.thinking, result.toolDetectionThinking, toolNames)
-		result.parsed.Calls = toolcall.NormalizeCallsForSchemasWithMeta(result.parsed.Calls, toolSchemas, allowMetaAgentTools)
-		result.body = openaifmt.BuildResponseObjectWithToolCalls(responseID, model, usagePrompt, result.thinking, result.text, result.parsed.Calls)
-		if status, message, code, ok := invalidTaskOutputCallDetail(result.parsed.Calls, usagePrompt); ok {
-			result.errorStatus = status
-			result.errorMessage = message
-			result.errorCode = code
-			h.finishResponsesNonStreamResult(w, result, attempts, owner, responseID, toolChoice, traceID)
-			return
-		}
-		if len(result.parsed.Calls) == 0 {
-			if status, message, code, ok := missingToolCallDetail(result.text, usagePrompt, toolNames, toolSchemas, allowMetaAgentTools); ok {
-				result.errorStatus = status
-				result.errorMessage = message
-				result.errorCode = code
-				result.retryableProtocol = true
-			}
+		result.parsed = detectAssistantToolCalls(result.rawText, result.text, result.rawThinking, result.toolDetectionThinking, toolNames)
+		result.body = openaifmt.BuildResponseObjectWithToolCalls(responseID, model, usagePrompt, result.thinking, result.text, result.parsed.Calls, toolsRaw)
+		if refFileTokens > 0 {
+			addRefFileTokensToUsage(result.body, refFileTokens)
 		}
 
 		if !shouldRetryResponsesNonStream(result, attempts) {
@@ -87,12 +71,12 @@ func (h *Handler) handleResponsesNonStreamWithRetry(w http.ResponseWriter, ctx c
 			config.Logger.Warn("[openai_empty_retry] retry request failed", "surface", "responses", "stream", false, "retry_attempt", attempts, "error", err)
 			return
 		}
-		usagePrompt = usagePromptWithEmptyOutputRetry(finalPrompt, attempts)
+		usagePrompt = usagePromptWithEmptyOutputRetry(usagePrompt, attempts)
 		currentResp = nextResp
 	}
 }
 
-func (h *Handler) collectResponsesNonStreamAttempt(w http.ResponseWriter, resp *http.Response, responseID, model, usagePrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, allowMetaAgentTools bool) (responsesNonStreamResult, bool) {
+func (h *Handler) collectResponsesNonStreamAttempt(w http.ResponseWriter, resp *http.Response, responseID, model, usagePrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any) (responsesNonStreamResult, bool) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -102,21 +86,19 @@ func (h *Handler) collectResponsesNonStreamAttempt(w http.ResponseWriter, resp *
 	result := sse.CollectStream(resp, thinkingEnabled, false)
 	stripReferenceMarkers := h.compatStripReferenceMarkers()
 	sanitizedThinking := cleanVisibleOutput(result.Thinking, stripReferenceMarkers)
-	toolDetectionThinking := cleanVisibleOutput(result.ToolDetectionThinking, stripReferenceMarkers)
 	sanitizedText := cleanVisibleOutput(result.Text, stripReferenceMarkers)
 	if searchEnabled {
 		sanitizedText = replaceCitationMarkersWithLinks(sanitizedText, result.CitationLinks)
 	}
-	textParsed := detectAssistantToolCalls(sanitizedText, sanitizedThinking, toolDetectionThinking, toolNames)
-	textParsed.Calls = toolcall.NormalizeCallsForSchemasWithMeta(textParsed.Calls, toolSchemas, allowMetaAgentTools)
-	responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, model, usagePrompt, sanitizedThinking, sanitizedText, textParsed.Calls)
+	textParsed := detectAssistantToolCalls(result.Text, sanitizedText, result.Thinking, result.ToolDetectionThinking, toolNames)
+	responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, model, usagePrompt, sanitizedThinking, sanitizedText, textParsed.Calls, toolsRaw)
 	return responsesNonStreamResult{
+		rawThinking:           result.Thinking,
+		rawText:               result.Text,
 		thinking:              sanitizedThinking,
-		toolDetectionThinking: toolDetectionThinking,
+		toolDetectionThinking: result.ToolDetectionThinking,
 		text:                  sanitizedText,
 		contentFilter:         result.ContentFilter,
-		errorMessage:          result.ErrorMessage,
-		errorCode:             result.ErrorCode,
 		parsed:                textParsed,
 		body:                  responseObj,
 		responseMessageID:     result.ResponseMessageID,
@@ -124,21 +106,11 @@ func (h *Handler) collectResponsesNonStreamAttempt(w http.ResponseWriter, resp *
 }
 
 func (h *Handler) finishResponsesNonStreamResult(w http.ResponseWriter, result responsesNonStreamResult, attempts int, owner, responseID string, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
-	if result.errorMessage != "" {
-		status, message, code := upstreamStreamErrorDetail(result.errorCode, result.errorMessage)
-		if result.errorStatus > 0 {
-			status = result.errorStatus
-			message = result.errorMessage
-			code = result.errorCode
-		}
-		writeOpenAIErrorWithCode(w, status, message, code)
-		config.Logger.Info("[openai_empty_retry] terminal upstream stream error", "surface", "responses", "stream", false, "retry_attempts", attempts, "error_code", code)
-		return
-	}
 	if len(result.parsed.Calls) == 0 && writeUpstreamEmptyOutputError(w, result.text, result.thinking, result.contentFilter) {
 		config.Logger.Info("[openai_empty_retry] terminal empty output", "surface", "responses", "stream", false, "retry_attempts", attempts, "success_source", "none", "content_filter", result.contentFilter)
 		return
 	}
+	logResponsesToolPolicyRejection(traceID, toolChoice, result.parsed, "text")
 	if toolChoice.IsRequired() && len(result.parsed.Calls) == 0 {
 		writeOpenAIErrorWithCode(w, http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation")
 		return
@@ -157,11 +129,11 @@ func shouldRetryResponsesNonStream(result responsesNonStreamResult, attempts int
 		attempts < emptyOutputRetryMaxAttempts() &&
 		!result.contentFilter &&
 		len(result.parsed.Calls) == 0 &&
-		(strings.TrimSpace(result.text) == "" || result.retryableProtocol)
+		strings.TrimSpace(result.text) == ""
 }
 
-func (h *Handler) handleResponsesStreamWithRetry(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice promptcompat.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) {
-	streamRuntime, initialType, ok := h.prepareResponsesStreamRuntime(w, resp, owner, responseID, model, finalPrompt, thinkingEnabled, searchEnabled, toolNames, toolSchemas, toolChoice, allowMetaAgentTools, traceID)
+func (h *Handler) handleResponsesStreamWithRetry(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow, owner, responseID, model, finalPrompt string, refFileTokens int, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
+	streamRuntime, initialType, ok := h.prepareResponsesStreamRuntime(w, resp, owner, responseID, model, finalPrompt, refFileTokens, thinkingEnabled, searchEnabled, toolNames, toolsRaw, toolChoice, traceID)
 	if !ok {
 		return
 	}
@@ -202,7 +174,7 @@ func (h *Handler) handleResponsesStreamWithRetry(w http.ResponseWriter, r *http.
 	}
 }
 
-func (h *Handler) prepareResponsesStreamRuntime(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolSchemas toolcall.ParameterSchemas, toolChoice promptcompat.ToolChoicePolicy, allowMetaAgentTools bool, traceID string) (*responsesStreamRuntime, string, bool) {
+func (h *Handler) prepareResponsesStreamRuntime(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, refFileTokens int, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, toolChoice promptcompat.ToolChoicePolicy, traceID string) (*responsesStreamRuntime, string, bool) {
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(resp.Body)
@@ -221,12 +193,13 @@ func (h *Handler) prepareResponsesStreamRuntime(w http.ResponseWriter, resp *htt
 	}
 	streamRuntime := newResponsesStreamRuntime(
 		w, rc, canFlush, responseID, model, finalPrompt, thinkingEnabled, searchEnabled,
-		h.compatStripReferenceMarkers(), toolNames, toolSchemas, allowMetaAgentTools, len(toolNames) > 0,
+		h.compatStripReferenceMarkers(), toolNames, toolsRaw, len(toolNames) > 0,
 		h.toolcallFeatureMatchEnabled() && h.toolcallEarlyEmitHighConfidence(),
 		toolChoice, traceID, func(obj map[string]any) {
 			h.getResponseStore().put(owner, responseID, obj)
 		},
 	)
+	streamRuntime.refFileTokens = refFileTokens
 	streamRuntime.sendCreated()
 	return streamRuntime, initialType, true
 }
@@ -249,7 +222,13 @@ func (h *Handler) consumeResponsesStreamAttempt(r *http.Request, resp *http.Resp
 				finalReason = "content_filter"
 			}
 		},
+		OnContextDone: func() {
+			streamRuntime.markContextCancelled()
+		},
 	})
+	if streamRuntime.finalErrorCode == string(streamengine.StopReasonContextCancelled) {
+		return true, false
+	}
 	terminalWritten := streamRuntime.finalize(finalReason, allowDeferEmpty && finalReason != "content_filter")
 	if terminalWritten {
 		return true, false
@@ -261,6 +240,10 @@ func logResponsesStreamTerminal(streamRuntime *responsesStreamRuntime, attempts 
 	source := "first_attempt"
 	if attempts > 0 {
 		source = "synthetic_retry"
+	}
+	if streamRuntime.finalErrorCode == string(streamengine.StopReasonContextCancelled) {
+		config.Logger.Info("[openai_empty_retry] terminal cancelled", "surface", "responses", "stream", true, "retry_attempts", attempts, "error_code", streamRuntime.finalErrorCode)
+		return
 	}
 	if streamRuntime.failed {
 		config.Logger.Info("[openai_empty_retry] terminal empty output", "surface", "responses", "stream", true, "retry_attempts", attempts, "success_source", "none", "error_code", streamRuntime.finalErrorCode)

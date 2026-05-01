@@ -4,6 +4,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestNewFromEnvDefaults(t *testing.T) {
@@ -83,38 +84,27 @@ func TestWrapBodyTruncatesByLimit(t *testing.T) {
 	}
 }
 
-func TestLatestChainBySessionReturnsOrderedEntries(t *testing.T) {
-	s := &Store{enabled: true, limit: 5, maxBodyBytes: 1024}
-
-	first := s.Start("deepseek_completion", "http://x/completion", "acc1", map[string]any{"chat_session_id": "session-1"})
-	firstBody := first.WrapBody(io.NopCloser(strings.NewReader("first")), 200)
-	_, _ = io.ReadAll(firstBody)
-	_ = firstBody.Close()
-
-	other := s.Start("deepseek_completion", "http://x/completion", "acc2", map[string]any{"chat_session_id": "session-2"})
-	otherBody := other.WrapBody(io.NopCloser(strings.NewReader("other")), 200)
-	_, _ = io.ReadAll(otherBody)
-	_ = otherBody.Close()
-
-	second := s.Start("deepseek_continue", "http://x/continue", "acc1", map[string]any{"chat_session_id": "session-1"})
-	secondBody := second.WrapBody(io.NopCloser(strings.NewReader("second")), 200)
-	_, _ = io.ReadAll(secondBody)
-	_ = secondBody.Close()
-
-	chain, ok := s.LatestChainBySession("session-1")
-	if !ok {
-		t.Fatal("expected chain")
+func TestWrapBodyTruncatesUTF8WithoutBreakingRune(t *testing.T) {
+	s := &Store{enabled: true, limit: 5, maxBodyBytes: 5}
+	session := s.Start("test", "http://x", "acc1", map[string]any{"x": 1})
+	if session == nil {
+		t.Fatal("expected session")
 	}
-	if chain.Key != "session:session-1" {
-		t.Fatalf("unexpected chain key: %s", chain.Key)
+	rc := session.WrapBody(io.NopCloser(strings.NewReader("😀xy")), 200)
+	_, _ = io.ReadAll(rc)
+	_ = rc.Close()
+
+	items := s.Snapshot()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
 	}
-	if len(chain.Entries) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(chain.Entries))
+	if !utf8.ValidString(items[0].ResponseBody) {
+		t.Fatalf("expected valid utf-8 response body, got %q", items[0].ResponseBody)
 	}
-	if chain.Entries[0].ResponseBody != "first" || chain.Entries[1].ResponseBody != "second" {
-		t.Fatalf("expected ordered matching entries, got %#v", chain.Entries)
+	if items[0].ResponseBody != "😀x" {
+		t.Fatalf("expected rune-safe truncation, got %q", items[0].ResponseBody)
 	}
-	if len(chain.IDs()) != 2 {
-		t.Fatalf("expected 2 ids, got %#v", chain.IDs())
+	if !items[0].ResponseTruncated {
+		t.Fatal("expected truncated flag true")
 	}
 }

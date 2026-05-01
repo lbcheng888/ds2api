@@ -321,7 +321,7 @@
   },
   {
     "sample_id": "failure-upstream_invalid_tool_call-20260426t034655z",
-    "expect": "tool_call"
+    "expect": "invalid_tool"
   },
   {
     "sample_id": "failure-upstream_invalid_tool_call-20260426t034733z",

@@ -6,7 +6,7 @@ import (
 )
 
 func TestFormatOpenAIToolCalls(t *testing.T) {
-	formatted := FormatOpenAIToolCalls([]ParsedToolCall{{Name: "search", Input: map[string]any{"q": "x"}}})
+	formatted := FormatOpenAIToolCalls([]ParsedToolCall{{Name: "search", Input: map[string]any{"q": "x"}}}, nil)
 	if len(formatted) != 1 {
 		t.Fatalf("expected 1, got %d", len(formatted))
 	}
@@ -38,6 +38,52 @@ func TestParseToolCallsSupportsDSMLShell(t *testing.T) {
 	}
 	if calls[0].Name != "Bash" || calls[0].Input["command"] != "pwd" {
 		t.Fatalf("unexpected DSML parse result: %#v", calls[0])
+	}
+}
+
+func TestParseToolCallsToleratesDSMLTrailingPipeTagTerminator(t *testing.T) {
+	text := strings.Join([]string{
+		`<|DSML|tool_calls| `,
+		`  <|DSML|invoke name="terminal">`,
+		`    <|DSML|parameter name="command"><![CDATA[find "/home" -type d]]></|DSML|parameter>`,
+		`    <|DSML|parameter name="timeout"><![CDATA[10]]></|DSML|parameter>`,
+		`  </|DSML|invoke>`,
+		`</|DSML|tool_calls>`,
+	}, "\n")
+	calls := ParseToolCalls(text, []string{"terminal"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one trailing-pipe DSML call, got %#v", calls)
+	}
+	if calls[0].Name != "terminal" {
+		t.Fatalf("expected terminal tool, got %#v", calls[0])
+	}
+	if calls[0].Input["command"] != `find "/home" -type d` {
+		t.Fatalf("expected command argument, got %#v", calls[0].Input)
+	}
+	if calls[0].Input["timeout"] != float64(10) {
+		t.Fatalf("expected numeric timeout, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsToleratesExtraLeadingLessThanBeforeDSML(t *testing.T) {
+	text := `<<|DSML|tool_calls><<|DSML|invoke name="Bash"><<|DSML|parameter name="command"><![CDATA[pwd]]></|DSML|parameter></|DSML|invoke></|DSML|tool_calls>`
+	calls := ParseToolCalls(text, []string{"Bash"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one extra-leading-less-than DSML call, got %#v", calls)
+	}
+	if calls[0].Name != "Bash" || calls[0].Input["command"] != "pwd" {
+		t.Fatalf("unexpected extra-leading-less-than DSML parse result: %#v", calls[0])
+	}
+}
+
+func TestParseToolCallsToleratesRepeatedDSMLPrefixNoise(t *testing.T) {
+	text := `<<DSML|DSML|tool_calls><<DSML|DSML|invoke name="Bash"><<DSML|DSML|parameter name="command"><![CDATA[git status]]></DSML|DSML|parameter></DSML|DSML|invoke></DSML|DSML|tool_calls>`
+	calls := ParseToolCalls(text, []string{"Bash"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one repeated-prefix DSML call, got %#v", calls)
+	}
+	if calls[0].Name != "Bash" || calls[0].Input["command"] != "git status" {
+		t.Fatalf("unexpected repeated-prefix DSML parse result: %#v", calls[0])
 	}
 }
 
@@ -248,6 +294,59 @@ func TestParseToolCallsTreatsSingleItemCDATAAsArray(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsTreatsLooseJSONListAsArray(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "plain text",
+			body: `{"content":"Test TodoWrite tool","status":"completed"}, {"content":"Another task","status":"pending"}`,
+		},
+		{
+			name: "cdata",
+			body: `<![CDATA[{"content":"Test TodoWrite tool","status":"completed"}, {"content":"Another task","status":"pending"}]]>`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			text := `<tool_calls><invoke name="TodoWrite"><parameter name="todos">` + tt.body + `</parameter></invoke></tool_calls>`
+			calls := ParseToolCalls(text, []string{"TodoWrite"})
+			if len(calls) != 1 {
+				t.Fatalf("expected one TodoWrite call, got %#v", calls)
+			}
+			items, ok := calls[0].Input["todos"].([]any)
+			if !ok || len(items) != 2 {
+				t.Fatalf("expected loose JSON list to parse as array, got %#v", calls[0].Input["todos"])
+			}
+			first, ok := items[0].(map[string]any)
+			if !ok {
+				t.Fatalf("expected first todo object, got %#v", items[0])
+			}
+			if first["content"] != "Test TodoWrite tool" || first["status"] != "completed" {
+				t.Fatalf("unexpected first todo: %#v", first)
+			}
+		})
+	}
+}
+
+func TestParseToolCallsKeepsPreservedTextParametersAsText(t *testing.T) {
+	text := `<tool_calls><invoke name="Write"><parameter name="content"><![CDATA[{"content":"Test TodoWrite tool","status":"completed"}, {"content":"Another task","status":"pending"}]]></parameter></invoke></tool_calls>`
+	calls := ParseToolCalls(text, []string{"Write"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one Write call, got %#v", calls)
+	}
+	got, ok := calls[0].Input["content"].(string)
+	if !ok {
+		t.Fatalf("expected content to stay a string, got %#v", calls[0].Input["content"])
+	}
+	want := `{"content":"Test TodoWrite tool","status":"completed"}, {"content":"Another task","status":"pending"}`
+	if got != want {
+		t.Fatalf("expected content to stay raw, got %q", got)
+	}
+}
+
 func TestParseToolCallsTreatsCDATAObjectFragmentAsObject(t *testing.T) {
 	payload := `<question><![CDATA[Pick one]]></question><options><item><label><![CDATA[A]]></label></item><item><label><![CDATA[B]]></label></item></options>`
 	text := `<tool_calls><invoke name="AskUserQuestion"><parameter name="questions"><![CDATA[` + payload + `]]></parameter></invoke></tool_calls>`
@@ -320,6 +419,28 @@ func TestParseToolCallsDetailedMarksToolCallsSyntax(t *testing.T) {
 	}
 	if len(res.Calls) != 1 {
 		t.Fatalf("expected one parsed call, got %#v", res)
+	}
+}
+
+func TestParseToolCallsRejectsAllEmptyParameterPayload(t *testing.T) {
+	text := `<tool_calls><invoke name="Bash"><parameter name="command"></parameter><parameter name="description">   </parameter><parameter name="timeout"></parameter></invoke></tool_calls>`
+	res := ParseToolCallsDetailed(text, []string{"Bash"})
+	if !res.SawToolCallSyntax {
+		t.Fatalf("expected tool syntax to be detected, got %#v", res)
+	}
+	if len(res.Calls) != 0 {
+		t.Fatalf("expected all-empty payload to be rejected, got %#v", res.Calls)
+	}
+}
+
+func TestParseToolCallsPreservesExplicitZeroArgToolCall(t *testing.T) {
+	text := `<tool_calls><invoke name="noop"></invoke></tool_calls>`
+	res := ParseToolCallsDetailed(text, []string{"noop"})
+	if len(res.Calls) != 1 {
+		t.Fatalf("expected zero-arg tool call to remain valid, got %#v", res.Calls)
+	}
+	if len(res.Calls[0].Input) != 0 {
+		t.Fatalf("expected empty input map for zero-arg tool call, got %#v", res.Calls[0].Input)
 	}
 }
 

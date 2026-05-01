@@ -57,6 +57,49 @@ test('parseToolCalls parses DSML shell as XML-compatible tool call', () => {
   assert.deepEqual(calls[0].input, { path: 'README.MD' });
 });
 
+test('parseToolCalls tolerates DSML trailing pipe tag terminator', () => {
+  const payload = [
+    '<|DSML|tool_calls| ',
+    '  <|DSML|invoke name="terminal">',
+    '    <|DSML|parameter name="command"><![CDATA[find "/home" -type d]]></|DSML|parameter>',
+    '    <|DSML|parameter name="timeout"><![CDATA[10]]></|DSML|parameter>',
+    '  </|DSML|invoke>',
+    '</|DSML|tool_calls>',
+  ].join('\n');
+  const calls = parseToolCalls(payload, ['terminal']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'terminal');
+  assert.deepEqual(calls[0].input, { command: 'find "/home" -type d', timeout: 10 });
+});
+
+test('parseToolCalls tolerates extra leading less-than before DSML tags', () => {
+  const payload = [
+    '<<|DSML|tool_calls>',
+    '  <<|DSML|invoke name="Bash">',
+    '    <<|DSML|parameter name="command"><![CDATA[pwd]]></|DSML|parameter>',
+    '  </|DSML|invoke>',
+    '</|DSML|tool_calls>',
+  ].join('\n');
+  const calls = parseToolCalls(payload, ['Bash']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'Bash');
+  assert.deepEqual(calls[0].input, { command: 'pwd' });
+});
+
+test('parseToolCalls tolerates repeated DSML prefix noise', () => {
+  const payload = [
+    '<<DSML|DSML|tool_calls>',
+    '  <<DSML|DSML|invoke name="Bash">',
+    '    <<DSML|DSML|parameter name="command"><![CDATA[git status]]></DSML|DSML|parameter>',
+    '  </DSML|DSML|invoke>',
+    '</DSML|DSML|tool_calls>',
+  ].join('\n');
+  const calls = parseToolCalls(payload, ['Bash']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'Bash');
+  assert.deepEqual(calls[0].input, { command: 'git status' });
+});
+
 test('parseToolCalls tolerates DSML space-separator typo', () => {
   const payload = '<|DSML tool_calls><|DSML invoke name="Read"><|DSML parameter name="file_path"><![CDATA[/tmp/input.txt]]></|DSML parameter></|DSML invoke></|DSML tool_calls>';
   const calls = parseToolCalls(payload, ['Read']);
@@ -188,6 +231,52 @@ test('parseToolCalls treats single-item CDATA body as array', () => {
   assert.deepEqual(calls[0].input.todos, ['one']);
 });
 
+test('parseToolCalls treats loose JSON list as array', () => {
+  for (const [label, body] of [
+    ['plain text', '{"content":"Test TodoWrite tool","status":"completed"}, {"content":"Another task","status":"pending"}'],
+    ['cdata', '<![CDATA[{"content":"Test TodoWrite tool","status":"completed"}, {"content":"Another task","status":"pending"}]]>'],
+  ]) {
+    const payload = `<tool_calls><invoke name="TodoWrite"><parameter name="todos">${body}</parameter></invoke></tool_calls>`;
+    const calls = parseToolCalls(payload, ['TodoWrite']);
+    assert.equal(calls.length, 1, label);
+    assert.deepEqual(calls[0].input.todos, [
+      { content: 'Test TodoWrite tool', status: 'completed' },
+      { content: 'Another task', status: 'pending' },
+    ]);
+  }
+});
+
+test('parseToolCalls keeps preserved text parameters as text', () => {
+  const payload = '<tool_calls><invoke name="Write"><parameter name="content"><![CDATA[{"content":"Test TodoWrite tool","status":"completed"}, {"content":"Another task","status":"pending"}]]></parameter></invoke></tool_calls>';
+  const calls = parseToolCalls(payload, ['Write']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].input.content, '{"content":"Test TodoWrite tool","status":"completed"}, {"content":"Another task","status":"pending"}');
+});
+
+test('formatOpenAIStreamToolCalls normalizes camelCase inputSchema string fields', () => {
+  const formatted = formatOpenAIStreamToolCalls([
+    { name: 'Write', input: { content: { message: 'hi' }, taskId: 1 } },
+  ], new Map(), [
+    { name: 'Write', inputSchema: { type: 'object', properties: { content: { type: 'string' }, taskId: { type: 'string' } } } },
+  ]);
+  assert.equal(formatted.length, 1);
+  const args = JSON.parse(formatted[0].function.arguments);
+  assert.equal(args.content, '{"message":"hi"}');
+  assert.equal(args.taskId, '1');
+});
+
+test('formatOpenAIStreamToolCalls preserves arrays when schema says array', () => {
+  const todos = [{ content: 'x', status: 'pending', priority: 'high' }];
+  const formatted = formatOpenAIStreamToolCalls([
+    { name: 'todowrite', input: { todos } },
+  ], new Map(), [
+    { name: 'todowrite', inputSchema: { type: 'object', properties: { todos: { type: 'array', items: { type: 'object' } } } } },
+  ]);
+  assert.equal(formatted.length, 1);
+  const args = JSON.parse(formatted[0].function.arguments);
+  assert.deepEqual(args.todos, todos);
+});
+
 test('parseToolCalls treats CDATA object fragment as object', () => {
   const fragment = '<question><![CDATA[Pick one]]></question><options><item><label><![CDATA[A]]></label></item><item><label><![CDATA[B]]></label></item></options>';
   const payload = `<tool_calls><invoke name="AskUserQuestion"><parameter name="questions"><![CDATA[${fragment}]]></parameter></invoke></tool_calls>`;
@@ -259,6 +348,39 @@ test('sieve emits tool_calls for DSML space-separator typo', () => {
   assert.equal(finalCalls[0].input.file_path, '/tmp/input.txt');
   assert.equal(text.includes('准备读取文件'), true);
   assert.equal(text.includes('<|DSML invoke'), false);
+});
+
+test('sieve emits tool_calls for DSML trailing pipe tag terminator', () => {
+  const events = runSieve([
+    '<|DSML|tool_calls| \n',
+    '<|DSML|invoke name="terminal">\n',
+    '<|DSML|parameter name="command"><![CDATA[find "/home" -type d]]></|DSML|parameter>\n',
+    '<|DSML|parameter name="timeout"><![CDATA[10]]></|DSML|parameter>\n',
+    '</|DSML|invoke>\n',
+    '</|DSML|tool_calls>',
+  ], ['terminal']);
+  const finalCalls = events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
+  const text = collectText(events);
+  assert.equal(finalCalls.length, 1);
+  assert.equal(finalCalls[0].name, 'terminal');
+  assert.deepEqual(finalCalls[0].input, { command: 'find "/home" -type d', timeout: 10 });
+  assert.equal(text.toLowerCase().includes('dsml'), false);
+});
+
+test('sieve emits tool_calls for extra leading less-than DSML tags without leaking prefix', () => {
+  const events = runSieve([
+    '<<|DSML|tool_calls>\n',
+    '<<|DSML|invoke name="Bash">\n',
+    '<<|DSML|parameter name="command"><![CDATA[pwd]]></|DSML|parameter>\n',
+    '</|DSML|invoke>\n',
+    '</|DSML|tool_calls>',
+  ], ['Bash']);
+  const finalCalls = events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
+  const text = collectText(events);
+  assert.equal(finalCalls.length, 1);
+  assert.equal(finalCalls[0].name, 'Bash');
+  assert.deepEqual(finalCalls[0].input, { command: 'pwd' });
+  assert.equal(text.includes('<'), false);
 });
 
 test('sieve keeps DSML space lookalike tag names as text', () => {

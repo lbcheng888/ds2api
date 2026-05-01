@@ -18,18 +18,18 @@ type responsesStreamRuntime struct {
 	rc       *http.ResponseController
 	canFlush bool
 
-	responseID  string
-	model       string
-	finalPrompt string
-	toolNames   []string
-	toolSchemas toolcall.ParameterSchemas
-	traceID     string
-	toolChoice  promptcompat.ToolChoicePolicy
+	responseID    string
+	model         string
+	finalPrompt   string
+	refFileTokens int
+	toolNames     []string
+	toolsRaw      any
+	traceID       string
+	toolChoice    promptcompat.ToolChoicePolicy
 
 	thinkingEnabled       bool
 	searchEnabled         bool
 	stripReferenceMarkers bool
-	allowMetaAgentTools   bool
 
 	bufferToolContent    bool
 	emitEarlyToolDeltas  bool
@@ -37,8 +37,10 @@ type responsesStreamRuntime struct {
 	toolCallsDoneEmitted bool
 
 	sieve                 toolstream.State
+	rawThinking           strings.Builder
 	thinking              strings.Builder
 	toolDetectionThinking strings.Builder
+	rawText               strings.Builder
 	text                  strings.Builder
 	visibleText           strings.Builder
 	responseMessageID     int
@@ -51,18 +53,14 @@ type responsesStreamRuntime struct {
 	functionNames         map[int]string
 	messageItemID         string
 	messageOutputID       int
-	reasoningItemID       string
-	reasoningOutputID     int
 	nextOutputID          int
 	messageAdded          bool
 	messagePartAdded      bool
-	reasoningAdded        bool
 	sequence              int
 	failed                bool
 	finalErrorStatus      int
 	finalErrorMessage     string
 	finalErrorCode        string
-	terminalSent          bool
 
 	persistResponse func(obj map[string]any)
 }
@@ -78,8 +76,7 @@ func newResponsesStreamRuntime(
 	searchEnabled bool,
 	stripReferenceMarkers bool,
 	toolNames []string,
-	toolSchemas toolcall.ParameterSchemas,
-	allowMetaAgentTools bool,
+	toolsRaw any,
 	bufferToolContent bool,
 	emitEarlyToolDeltas bool,
 	toolChoice promptcompat.ToolChoicePolicy,
@@ -97,8 +94,7 @@ func newResponsesStreamRuntime(
 		searchEnabled:         searchEnabled,
 		stripReferenceMarkers: stripReferenceMarkers,
 		toolNames:             toolNames,
-		toolSchemas:           toolSchemas,
-		allowMetaAgentTools:   allowMetaAgentTools,
+		toolsRaw:              toolsRaw,
 		bufferToolContent:     bufferToolContent,
 		emitEarlyToolDeltas:   emitEarlyToolDeltas,
 		streamToolCallIDs:     map[int]string{},
@@ -109,7 +105,6 @@ func newResponsesStreamRuntime(
 		functionAdded:         map[int]bool{},
 		functionNames:         map[int]string{},
 		messageOutputID:       -1,
-		reasoningOutputID:     -1,
 		toolChoice:            toolChoice,
 		traceID:               traceID,
 		persistResponse:       persistResponse,
@@ -117,11 +112,7 @@ func newResponsesStreamRuntime(
 }
 
 func (s *responsesStreamRuntime) failResponse(status int, message, code string) {
-	if s.terminalSent {
-		return
-	}
 	s.failed = true
-	s.terminalSent = true
 	s.finalErrorStatus = status
 	s.finalErrorMessage = message
 	s.finalErrorCode = code
@@ -148,52 +139,28 @@ func (s *responsesStreamRuntime) failResponse(status int, message, code string) 
 	s.sendDone()
 }
 
+func (s *responsesStreamRuntime) markContextCancelled() {
+	s.failed = true
+	s.finalErrorStatus = 499
+	s.finalErrorMessage = "request context cancelled"
+	s.finalErrorCode = string(streamengine.StopReasonContextCancelled)
+}
+
 func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput bool) bool {
-	if s.terminalSent {
-		return true
-	}
 	s.failed = false
 	s.finalErrorStatus = 0
 	s.finalErrorMessage = ""
 	s.finalErrorCode = ""
+	if s.bufferToolContent {
+		s.processToolStreamEvents(toolstream.Flush(&s.sieve, s.toolNames), true, true)
+	}
+
 	finalThinking := s.thinking.String()
 	finalToolDetectionThinking := s.toolDetectionThinking.String()
 	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
-
-	if s.bufferToolContent {
-		s.processToolStreamEvents(toolstream.Flush(&s.sieve, s.toolNames), true, true)
-		if s.failed {
-			return true
-		}
-	}
-
-	textParsed := detectAssistantToolCalls(finalText, finalThinking, finalToolDetectionThinking, s.toolNames)
-	textParsed.Calls = toolcall.NormalizeCallsForSchemasWithMeta(textParsed.Calls, s.toolSchemas, s.allowMetaAgentTools)
+	textParsed := detectAssistantToolCalls(s.rawText.String(), finalText, s.rawThinking.String(), finalToolDetectionThinking, s.toolNames)
 	detected := textParsed.Calls
-	if status, message, code, ok := invalidTaskOutputCallDetail(detected, s.finalPrompt); ok {
-		s.failResponse(status, message, code)
-		return true
-	}
-	if len(detected) == 0 {
-		if status, message, code, ok := missingToolCallDetail(finalText, s.finalPrompt, s.toolNames, s.toolSchemas, s.allowMetaAgentTools); ok {
-			if !s.bufferToolContent {
-				// Non-buffered mode: text has already been emitted to the client.
-				// We cannot fail the response. Log the detection and complete normally.
-				config.Logger.Warn("[responses] missing tool call in non-buffered mode",
-					"trace_id", strings.TrimSpace(s.traceID),
-					"message", message,
-				)
-			} else if deferEmptyOutput && !s.messageAdded {
-				s.finalErrorStatus = status
-				s.finalErrorMessage = message
-				s.finalErrorCode = code
-				return false
-			} else {
-				s.failResponse(status, message, code)
-				return true
-			}
-		}
-	}
+	s.logToolPolicyRejections(textParsed)
 
 	if len(detected) > 0 {
 		s.toolCallsEmitted = true
@@ -202,9 +169,6 @@ func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput 
 		}
 	}
 
-	if len(detected) == 0 && strings.TrimSpace(finalText) != "" && !s.messageAdded {
-		s.emitTextDelta(finalText)
-	}
 	s.closeMessageItem()
 
 	if s.toolChoice.IsRequired() && len(detected) == 0 {
@@ -228,12 +192,27 @@ func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput 
 	if s.persistResponse != nil {
 		s.persistResponse(obj)
 	}
-	s.terminalSent = true
 	s.sendEvent("response.completed", openaifmt.BuildResponsesCompletedPayload(obj))
 	s.sendDone()
 	return true
 }
 
+func (s *responsesStreamRuntime) logToolPolicyRejections(textParsed toolcall.ToolCallParseResult) {
+	logRejected := func(parsed toolcall.ToolCallParseResult, channel string) {
+		rejected := filteredRejectedToolNamesForLog(parsed.RejectedToolNames)
+		if !parsed.RejectedByPolicy || len(rejected) == 0 {
+			return
+		}
+		config.Logger.Warn(
+			"[responses] rejected tool calls by policy",
+			"trace_id", strings.TrimSpace(s.traceID),
+			"channel", channel,
+			"tool_choice_mode", s.toolChoice.Mode,
+			"rejected_tool_names", strings.Join(rejected, ","),
+		)
+	}
+	logRejected(textParsed, "text")
+}
 
 func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedDecision {
 	if !parsed.Parsed {
@@ -242,19 +221,15 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 	if parsed.ResponseMessageID > 0 {
 		s.responseMessageID = parsed.ResponseMessageID
 	}
-	if parsed.ContentFilter {
+	if parsed.ContentFilter || parsed.ErrorMessage != "" {
 		return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReason("content_filter")}
-	}
-	if parsed.ErrorMessage != "" {
-		status, message, code := upstreamStreamErrorDetail(parsed.ErrorCode, parsed.ErrorMessage)
-		s.failResponse(status, message, code)
-		return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReasonHandlerRequested}
 	}
 	if parsed.Stop {
 		return streamengine.ParsedDecision{Stop: true}
 	}
 
 	contentSeen := false
+	batch := responsesDeltaBatch{runtime: s}
 	for _, p := range parsed.ToolDetectionThinkingParts {
 		trimmed := sse.TrimContinuationOverlap(s.toolDetectionThinking.String(), p.Text)
 		if trimmed != "" {
@@ -262,16 +237,17 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 		}
 	}
 	for _, p := range parsed.Parts {
-		cleanedText := cleanVisibleOutput(p.Text, s.stripReferenceMarkers)
-		if cleanedText == "" {
-			continue
-		}
-		if p.Type != "thinking" && s.searchEnabled && sse.IsCitation(cleanedText) {
-			continue
-		}
-		contentSeen = true
 		if p.Type == "thinking" {
+			rawTrimmed := sse.TrimContinuationOverlap(s.rawThinking.String(), p.Text)
+			if rawTrimmed != "" {
+				s.rawThinking.WriteString(rawTrimmed)
+				contentSeen = true
+			}
 			if !s.thinkingEnabled {
+				continue
+			}
+			cleanedText := cleanVisibleOutput(rawTrimmed, s.stripReferenceMarkers)
+			if cleanedText == "" {
 				continue
 			}
 			trimmed := sse.TrimContinuationOverlap(s.thinking.String(), cleanedText)
@@ -279,25 +255,35 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 				continue
 			}
 			s.thinking.WriteString(trimmed)
-			s.reasoningAdded = true
-			s.sendEvent("response.reasoning.delta", openaifmt.BuildResponsesReasoningDeltaPayload(s.responseID, trimmed))
+			batch.append("reasoning", trimmed)
 			continue
 		}
 
+		rawTrimmed := sse.TrimContinuationOverlap(s.rawText.String(), p.Text)
+		if rawTrimmed == "" {
+			continue
+		}
+		s.rawText.WriteString(rawTrimmed)
+		contentSeen = true
+		cleanedText := cleanVisibleOutput(rawTrimmed, s.stripReferenceMarkers)
+		if s.searchEnabled && sse.IsCitation(cleanedText) {
+			continue
+		}
 		trimmed := sse.TrimContinuationOverlap(s.text.String(), cleanedText)
-		if trimmed == "" {
-			continue
+		if trimmed != "" {
+			s.text.WriteString(trimmed)
 		}
-		s.text.WriteString(trimmed)
 		if !s.bufferToolContent {
-			s.emitTextDelta(trimmed)
+			if trimmed == "" {
+				continue
+			}
+			batch.append("text", trimmed)
 			continue
 		}
-		s.processToolStreamEvents(toolstream.ProcessChunk(&s.sieve, trimmed, s.toolNames), false, true)
-		if s.failed {
-			return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReasonHandlerRequested, ContentSeen: true}
-		}
+		batch.flush()
+		s.processToolStreamEvents(toolstream.ProcessChunk(&s.sieve, rawTrimmed, s.toolNames), true, true)
 	}
 
+	batch.flush()
 	return streamengine.ParsedDecision{ContentSeen: contentSeen}
 }

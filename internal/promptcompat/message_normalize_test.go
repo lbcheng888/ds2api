@@ -233,29 +233,6 @@ func TestNormalizeOpenAIMessagesForPrompt_AssistantToolCallsMissingNameAreDroppe
 	}
 }
 
-func TestNormalizeOpenAIMessagesForPrompt_AssistantTaskTrackingToolCallsDropped(t *testing.T) {
-	raw := []any{
-		map[string]any{
-			"role": "assistant",
-			"tool_calls": []any{
-				map[string]any{
-					"id":   "call_task",
-					"type": "function",
-					"function": map[string]any{
-						"name":      "TaskCreate",
-						"arguments": `{"subject":"Plan","description":"Track only"}`,
-					},
-				},
-			},
-		},
-	}
-
-	normalized := normalizeOpenAIMessagesForPrompt(raw, "")
-	if len(normalized) != 0 {
-		t.Fatalf("expected task-tracking-only assistant tool history to be dropped, got %#v", normalized)
-	}
-}
-
 func TestNormalizeOpenAIMessagesForPrompt_AssistantNilContentDoesNotInjectNullLiteral(t *testing.T) {
 	raw := []any{
 		map[string]any{
@@ -320,7 +297,7 @@ func TestNormalizeOpenAIMessagesForPrompt_AssistantArrayContentFallbackWhenTextE
 	}
 }
 
-func TestNormalizeOpenAIMessagesForPrompt_AssistantReasoningContentPreservedWithoutToolCalls(t *testing.T) {
+func TestNormalizeOpenAIMessagesForPrompt_AssistantReasoningContentPreserved(t *testing.T) {
 	raw := []any{
 		map[string]any{
 			"role":              "assistant",
@@ -334,38 +311,16 @@ func TestNormalizeOpenAIMessagesForPrompt_AssistantReasoningContentPreservedWith
 		t.Fatalf("expected one normalized assistant message, got %#v", normalized)
 	}
 	content, _ := normalized[0]["content"].(string)
-	if !strings.Contains(content, "<think>internal reasoning</think>") {
-		t.Fatalf("expected think-wrapped reasoning in assistant content, got %q", content)
+	if !strings.Contains(content, "[reasoning_content]") {
+		t.Fatalf("expected labeled reasoning block in assistant content, got %q", content)
+	}
+	if !strings.Contains(content, "internal reasoning") {
+		t.Fatalf("expected reasoning text in assistant content, got %q", content)
 	}
 	if !strings.Contains(content, "visible answer") {
 		t.Fatalf("expected visible answer in assistant content, got %q", content)
 	}
-}
-
-func TestNormalizeOpenAIMessagesForPrompt_AssistantReasoningContentPreservedWithToolCalls(t *testing.T) {
-	raw := []any{
-		map[string]any{
-			"role":              "assistant",
-			"content":           "visible answer",
-			"reasoning_content": "internal reasoning",
-			"tool_calls": []any{
-				map[string]any{"name": "search", "arguments": map[string]any{"q": "docs"}},
-			},
-		},
-	}
-
-	normalized := normalizeOpenAIMessagesForPrompt(raw, "")
-	if len(normalized) != 1 {
-		t.Fatalf("expected one normalized assistant message, got %#v", normalized)
-	}
-	content, _ := normalized[0]["content"].(string)
-	if !strings.Contains(content, "<think>internal reasoning</think>") {
-		t.Fatalf("expected think-wrapped reasoning block in assistant content, got %q", content)
-	}
-	if !strings.Contains(content, "visible answer") {
-		t.Fatalf("expected visible answer in assistant content, got %q", content)
-	}
-	if thinkIdx := strings.Index(content, "<think>"); thinkIdx < 0 || thinkIdx > strings.Index(content, "visible answer") {
+	if reasoningIdx := strings.Index(content, "[reasoning_content]"); reasoningIdx < 0 || reasoningIdx > strings.Index(content, "visible answer") {
 		t.Fatalf("expected reasoning block before visible answer, got %q", content)
 	}
 }

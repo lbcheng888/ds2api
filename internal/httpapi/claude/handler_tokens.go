@@ -3,8 +3,6 @@ package claude
 import (
 	"encoding/json"
 	"net/http"
-
-	"ds2api/internal/util"
 )
 
 func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
@@ -26,26 +24,11 @@ func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 		writeClaudeError(w, http.StatusBadRequest, "Request must include 'model' and 'messages'.")
 		return
 	}
-	inputTokens := 0
-	if sys, ok := req["system"].(string); ok {
-		inputTokens += util.EstimateTokens(sys)
+	normalized, err := normalizeClaudeRequest(h.Store, req)
+	if err != nil {
+		writeClaudeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	for _, item := range messages {
-		msg, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		inputTokens += 2
-		inputTokens += util.EstimateTokens(extractMessageContent(msg["content"]))
-	}
-	if tools, ok := req["tools"].([]any); ok {
-		for _, t := range tools {
-			b, _ := json.Marshal(t)
-			inputTokens += util.EstimateTokens(string(b))
-		}
-	}
-	if inputTokens < 1 {
-		inputTokens = 1
-	}
+	inputTokens := countClaudeInputTokens(normalized.Standard)
 	writeJSON(w, http.StatusOK, map[string]any{"input_tokens": inputTokens})
 }

@@ -9,30 +9,19 @@ import (
 	"github.com/google/uuid"
 )
 
-func BuildResponseObject(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string) map[string]any {
+func BuildResponseObject(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string, toolsRaw any) map[string]any {
 	// Strict mode: only standalone, structured tool-call payloads are treated
 	// as executable tool calls.
 	detected := toolcall.ParseAssistantToolCallsDetailed(finalText, finalThinking, toolNames)
-	return BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText, detected.Calls)
+	return BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText, detected.Calls, toolsRaw)
 }
 
-func BuildResponseObjectWithMeta(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string, allowMetaAgentTools bool) map[string]any {
-	detected := toolcall.ParseAssistantToolCallsDetailed(finalText, finalThinking, toolNames)
-	calls := detected.Calls
-	if !allowMetaAgentTools {
-		calls = toolcall.NormalizeCallsForSchemasWithMeta(calls, nil, false)
-	}
-	return BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText, calls)
-}
-
-func BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText string, detected []toolcall.ParsedToolCall) map[string]any {
+func BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText string, detected []toolcall.ParsedToolCall, toolsRaw any) map[string]any {
 	exposedOutputText := finalText
-	usageThinking := finalThinking
 	output := make([]any, 0, 2)
 	if len(detected) > 0 {
 		exposedOutputText = ""
-		usageThinking = ""
-		output = append(output, toResponsesFunctionCallItems(detected)...)
+		output = append(output, toResponsesFunctionCallItems(detected, toolsRaw)...)
 	} else {
 		content := make([]any, 0, 2)
 		if finalThinking != "" {
@@ -61,7 +50,7 @@ func BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThink
 		responseID,
 		model,
 		finalPrompt,
-		usageThinking,
+		finalThinking,
 		finalText,
 		output,
 		exposedOutputText,
@@ -73,25 +62,25 @@ func BuildResponseObjectFromItems(responseID, model, finalPrompt, finalThinking,
 		output = []any{}
 	}
 	return map[string]any{
-		"id":                 responseID,
-		"type":               "response",
-		"object":             "response",
-		"created_at":         time.Now().Unix(),
-		"status":             "completed",
-		"model":              model,
-		"output":             output,
-		"output_text":        outputText,
-		"usage":              BuildResponsesUsage(finalPrompt, finalThinking, finalText),
-		"system_fingerprint": DeepSeekSystemFingerprint(),
+		"id":          responseID,
+		"type":        "response",
+		"object":      "response",
+		"created_at":  time.Now().Unix(),
+		"status":      "completed",
+		"model":       model,
+		"output":      output,
+		"output_text": outputText,
+		"usage":       BuildResponsesUsageForModel(model, finalPrompt, finalThinking, finalText, 0),
 	}
 }
 
-func toResponsesFunctionCallItems(toolCalls []toolcall.ParsedToolCall) []any {
+func toResponsesFunctionCallItems(toolCalls []toolcall.ParsedToolCall, toolsRaw any) []any {
 	if len(toolCalls) == 0 {
 		return nil
 	}
+	normalizedCalls := toolcall.NormalizeParsedToolCallsForSchemas(toolCalls, toolsRaw)
 	out := make([]any, 0, len(toolCalls))
-	for _, tc := range toolCalls {
+	for _, tc := range normalizedCalls {
 		if strings.TrimSpace(tc.Name) == "" {
 			continue
 		}

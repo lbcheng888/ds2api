@@ -1,7 +1,6 @@
 package claude
 
 import (
-	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/toolcall"
 	"fmt"
 	"strings"
@@ -17,7 +16,7 @@ func hasSystemMessage(messages []any) bool {
 	return false
 }
 
-func extractClaudeToolNames(tools []any, allowMetaAgentTools bool, allowTaskOutput bool) []string {
+func extractClaudeToolNames(tools []any) []string {
 	out := make([]string, 0, len(tools))
 	for _, t := range tools {
 		m, ok := t.(map[string]any)
@@ -25,13 +24,7 @@ func extractClaudeToolNames(tools []any, allowMetaAgentTools bool, allowTaskOutp
 			continue
 		}
 		name, _, _ := extractClaudeToolMeta(m)
-		if name == "" || toolcall.IsTaskTrackingToolName(name) {
-			continue
-		}
-		if claudecodeharness.CanonicalTaskOutputToolName(name) == "taskoutput" && !allowTaskOutput {
-			continue
-		}
-		if allowMetaAgentTools || !toolcall.IsMetaAgentToolName(name) {
+		if name != "" {
 			out = append(out, name)
 		}
 	}
@@ -39,30 +32,9 @@ func extractClaudeToolNames(tools []any, allowMetaAgentTools bool, allowTaskOutp
 }
 
 func extractClaudeToolMeta(m map[string]any) (string, string, any) {
-	name, _ := m["name"].(string)
-	desc, _ := m["description"].(string)
-	schemaObj := m["input_schema"]
-	if schemaObj == nil {
-		schemaObj = m["parameters"]
-	}
-
-	if fn, ok := m["function"].(map[string]any); ok {
-		if strings.TrimSpace(name) == "" {
-			name, _ = fn["name"].(string)
-		}
-		if strings.TrimSpace(desc) == "" {
-			desc, _ = fn["description"].(string)
-		}
-		if schemaObj == nil {
-			if v, ok := fn["input_schema"]; ok {
-				schemaObj = v
-			}
-		}
-		if schemaObj == nil {
-			if v, ok := fn["parameters"]; ok {
-				schemaObj = v
-			}
-		}
+	name, desc, schemaObj := toolcall.ExtractToolMeta(m)
+	if strings.TrimSpace(desc) == "" {
+		desc = "No description available"
 	}
 	return strings.TrimSpace(name), strings.TrimSpace(desc), schemaObj
 }

@@ -64,18 +64,6 @@ func (s *responsesStreamRuntime) buildCompletedResponseObject(finalThinking, fin
 	}
 	indexed := make([]indexedItem, 0, len(calls)+1)
 
-	if s.reasoningAdded {
-		indexed = append(indexed, indexedItem{
-			index: s.ensureReasoningOutputIndex(),
-			item: map[string]any{
-				"id":      s.ensureReasoningItemID(),
-				"type":    "reasoning",
-				"status":  "completed",
-				"summary": []any{},
-			},
-		})
-	}
-
 	if s.messageAdded {
 		text := s.visibleText.String()
 		indexed = append(indexed, indexedItem{
@@ -87,10 +75,8 @@ func (s *responsesStreamRuntime) buildCompletedResponseObject(finalThinking, fin
 				"status": "completed",
 				"content": []map[string]any{
 					{
-						"type":        "output_text",
-						"text":        text,
-						"annotations": []any{},
-						"logprobs":    []any{},
+						"type": "output_text",
+						"text": text,
 					},
 				},
 			},
@@ -105,10 +91,8 @@ func (s *responsesStreamRuntime) buildCompletedResponseObject(finalThinking, fin
 		}
 		if finalText != "" {
 			content = append(content, map[string]any{
-				"type":        "output_text",
-				"text":        finalText,
-				"annotations": []any{},
-				"logprobs":    []any{},
+				"type": "output_text",
+				"text": finalText,
 			})
 		}
 		if len(content) > 0 {
@@ -125,7 +109,8 @@ func (s *responsesStreamRuntime) buildCompletedResponseObject(finalThinking, fin
 		}
 	}
 
-	for idx, tc := range calls {
+	normalizedCalls := toolcall.NormalizeParsedToolCallsForSchemas(calls, s.toolsRaw)
+	for idx, tc := range normalizedCalls {
 		if strings.TrimSpace(tc.Name) == "" {
 			continue
 		}
@@ -160,7 +145,7 @@ func (s *responsesStreamRuntime) buildCompletedResponseObject(finalThinking, fin
 		}
 	}
 
-	return openaifmt.BuildResponseObjectFromItems(
+	obj := openaifmt.BuildResponseObjectFromItems(
 		s.responseID,
 		s.model,
 		s.finalPrompt,
@@ -169,4 +154,8 @@ func (s *responsesStreamRuntime) buildCompletedResponseObject(finalThinking, fin
 		output,
 		outputText,
 	)
+	if s.refFileTokens > 0 {
+		addRefFileTokensToUsage(obj, s.refFileTokens)
+	}
+	return obj
 }

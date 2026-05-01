@@ -33,40 +33,16 @@ func (s *responsesStreamRuntime) ensureMessageOutputIndex() int {
 	return s.messageOutputID
 }
 
-func (s *responsesStreamRuntime) ensureReasoningItemID() string {
-	if strings.TrimSpace(s.reasoningItemID) != "" {
-		return s.reasoningItemID
-	}
-	s.reasoningItemID = "rs_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	return s.reasoningItemID
-}
-
-func (s *responsesStreamRuntime) ensureReasoningOutputIndex() int {
-	if s.reasoningOutputID >= 0 {
-		return s.reasoningOutputID
-	}
-	s.reasoningOutputID = s.allocateOutputIndex()
-	return s.reasoningOutputID
-}
-
-func (s *responsesStreamRuntime) closeReasoningItem() {
-	if !s.reasoningAdded {
-		return
-	}
-}
-
 func (s *responsesStreamRuntime) ensureMessageItemAdded() {
 	if s.messageAdded {
 		return
 	}
-	s.closeReasoningItem()
 	itemID := s.ensureMessageItemID()
 	item := map[string]any{
-		"id":      itemID,
-		"type":    "message",
-		"role":    "assistant",
-		"status":  "in_progress",
-		"content": []any{},
+		"id":     itemID,
+		"type":   "message",
+		"role":   "assistant",
+		"status": "in_progress",
 	}
 	s.sendEvent(
 		"response.output_item.added",
@@ -87,7 +63,7 @@ func (s *responsesStreamRuntime) ensureMessageContentPartAdded() {
 			s.ensureMessageItemID(),
 			s.ensureMessageOutputIndex(),
 			0,
-			map[string]any{"type": "output_text", "text": "", "annotations": []any{}, "logprobs": []any{}},
+			map[string]any{"type": "output_text", "text": ""},
 		),
 	)
 	s.messagePartAdded = true
@@ -136,7 +112,7 @@ func (s *responsesStreamRuntime) closeMessageItem() {
 				itemID,
 				outputIndex,
 				0,
-				map[string]any{"type": "output_text", "text": text, "annotations": []any{}, "logprobs": []any{}},
+				map[string]any{"type": "output_text", "text": text},
 			),
 		)
 		s.messagePartAdded = false
@@ -148,10 +124,8 @@ func (s *responsesStreamRuntime) closeMessageItem() {
 		"status": "completed",
 		"content": []map[string]any{
 			{
-				"type":        "output_text",
-				"text":        text,
-				"annotations": []any{},
-				"logprobs":    []any{},
+				"type": "output_text",
+				"text": text,
 			},
 		},
 	}
@@ -209,7 +183,6 @@ func (s *responsesStreamRuntime) ensureFunctionItemAdded(callIndex int, name str
 	if fnName == "" {
 		return
 	}
-	s.closeReasoningItem()
 	outputIndex := s.ensureFunctionOutputIndex(callIndex)
 	itemID := s.ensureFunctionItemID(callIndex)
 	callID := s.ensureToolCallID(callIndex)
@@ -247,7 +220,8 @@ func (s *responsesStreamRuntime) emitFunctionCallDeltaEvents(deltas []toolstream
 }
 
 func (s *responsesStreamRuntime) emitFunctionCallDoneEvents(calls []toolcall.ParsedToolCall) {
-	for idx, tc := range calls {
+	normalizedCalls := toolcall.NormalizeParsedToolCallsForSchemas(calls, s.toolsRaw)
+	for idx, tc := range normalizedCalls {
 		if strings.TrimSpace(tc.Name) == "" {
 			continue
 		}

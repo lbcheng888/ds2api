@@ -23,7 +23,6 @@ var deepSeekBaseModels = []ModelInfo{
 	{ID: "deepseek-v4-flash-search", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
 	{ID: "deepseek-v4-pro-search", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
 	{ID: "deepseek-v4-vision", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
-	{ID: "deepseek-v4-vision-search", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
 }
 
 var DeepSeekModels = appendNoThinkingVariants(deepSeekBaseModels)
@@ -68,7 +67,7 @@ func GetModelConfig(model string) (thinking bool, search bool, ok bool) {
 	switch baseModel {
 	case "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-vision":
 		return !noThinking, false, true
-	case "deepseek-v4-flash-search", "deepseek-v4-pro-search", "deepseek-v4-vision-search":
+	case "deepseek-v4-flash-search", "deepseek-v4-pro-search":
 		return !noThinking, true, true
 	default:
 		return false, false, false
@@ -82,7 +81,7 @@ func GetModelType(model string) (modelType string, ok bool) {
 		return "default", true
 	case "deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-pro-search":
 		return "expert", true
-	case "deepseek-v4-vision", "deepseek-v4-vision-search":
+	case "deepseek-v4-vision":
 		return "vision", true
 	default:
 		return "", false
@@ -360,8 +359,6 @@ func resolveCanonicalModel(aliases map[string]string, model string) (string, boo
 	useSearch := strings.Contains(model, "search")
 
 	switch {
-	case useVision && useSearch:
-		return "deepseek-v4-vision-search", true
 	case useVision:
 		return "deepseek-v4-vision", true
 	case useReasoner && useSearch:

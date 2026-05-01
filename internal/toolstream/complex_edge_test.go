@@ -342,9 +342,9 @@ func TestSieve_FullwidthPipeWrapperDSMLInvoke(t *testing.T) {
 	}
 }
 
-// ---- 未闭合工具块应暴露为协议错误 ----
+// ---- 未闭合工具块应回退为文本 ----
 
-func TestSieve_UnclosedToolCallBlockReportsProtocolError(t *testing.T) {
+func TestSieve_UnclosedToolCallBlockFallsBack(t *testing.T) {
 	var state State
 	chunks := []string{
 		"<tool_calls>\n",
@@ -358,16 +358,15 @@ func TestSieve_UnclosedToolCallBlockReportsProtocolError(t *testing.T) {
 	}
 	events = append(events, Flush(&state, []string{"read_file"})...)
 
+	var text strings.Builder
 	tc := 0
-	errs := 0
 	for _, e := range events {
+		text.WriteString(e.Content)
 		tc += len(e.ToolCalls)
-		if e.ErrorCode != "" {
-			errs++
-		}
 	}
-	if errs != 1 {
-		t.Fatalf("未闭合工具块应返回一个协议错误，got %d events=%#v", errs, events)
+	// 未闭合的应回退为文本，不应丢失
+	if text.String() == "" {
+		t.Fatalf("未闭合工具块不应丢失所有内容")
 	}
 	if tc != 0 {
 		t.Fatalf("未闭合工具块不应解析出工具调用，got %d", tc)

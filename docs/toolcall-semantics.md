@@ -26,7 +26,7 @@
 </tool_calls>
 ```
 
-这不是原生 DSML 全链路实现。DSML 只作为 prompt 外壳和解析入口别名；进入 parser 前会被归一化成 `<tool_calls>` / `<invoke>` / `<parameter>`，内部仍以现有 XML 解析语义为准。
+这不是原生 DSML 全链路实现。DSML 主要用于让模型有意识地输出协议标识，隔离普通 XML 语义；进入 parser 前会按固定本地标签名归一化成 `<tool_calls>` / `<invoke>` / `<parameter>`，内部仍以现有 XML 解析语义为准。
 
 约束：
 
@@ -39,7 +39,8 @@
 兼容修复：
 
 - 如果模型漏掉 opening wrapper，但后面仍输出了一个或多个 invoke 并以 closing wrapper 收尾，Go 解析链路会在解析前补回缺失的 opening wrapper。
-- 如果模型把 DSML 标签里的分隔符 `|` 写漏成空格（例如 `<|DSML tool_calls>` / `<|DSML invoke>` / `<|DSML parameter>`，或无 leading pipe 的 `<DSML tool_calls>` 形态），或把 `DSML` 与工具标签名直接黏连（例如 `<DSMLtool_calls>` / `<DSMLinvoke>` / `<DSMLparameter>`），或把最前面的 pipe 误写成全宽竖线（例如 `<｜DSML|tool_calls>` / `<｜DSML|invoke>` / `<｜DSML|parameter>`），Go / Node 会在固定工具标签名范围内归一化；相似但非工具标签名（如 `tool_calls_extra`）仍按普通文本处理。
+- Go / Node 解析层不再枚举每一种 DSML typo。它会把工具标签名前的 `DSML`、管道符 `|` / `｜`、空白、重复 leading `<` 视为可容忍的协议噪声，然后只匹配固定本地标签名 `tool_calls` / `invoke` / `parameter`。例如 `<DSML|tool_calls>`、`<<|DSML|tool_calls>`、`<|DSML tool_calls>`、`<DSMLtool_calls>`、`<<DSML|DSML|tool_calls>` 都会归一化；相似但非固定标签名（如 `tool_calls_extra`）仍按普通文本处理。
+- 如果模型在固定工具标签名后多输出一个尾部管道符，例如 `<|DSML|tool_calls|` / `<|DSML|invoke|` / `<|DSML|parameter|`，兼容层会把这个尾部 `|` 当作异常标签终止符并补齐缺失的 `>`；如果后面已经有 `>`，也会消费这个多余 `|` 后再归一化。
 - 这是一个针对常见模型失误的窄修复，不改变推荐输出格式；prompt 仍要求模型直接输出完整 DSML 外壳。
 - 裸 `<invoke ...>` / `<parameter ...>` 不会被当成“已支持的工具语法”；只有 `tool_calls` wrapper 或可修复的缺失 opening wrapper 才会进入工具调用路径。
 
@@ -53,7 +54,7 @@
 
 在流式链路中（Go / Node 一致）：
 
-- DSML `<|DSML|tool_calls>` wrapper、兼容变体（`<dsml|tool_calls>`、`<｜tool_calls>`、`<|tool_calls>`、`<｜DSML|tool_calls>`）、窄容错空格分隔形态（如 `<|DSML tool_calls>`）、黏连形态（如 `<DSMLtool_calls>`）和 canonical `<tool_calls>` wrapper 都会进入结构化捕获
+- DSML `<|DSML|tool_calls>` wrapper、基于固定本地标签名的 DSML 噪声容错形态、尾部管道符形态（如 `<|DSML|tool_calls|`）和 canonical `<tool_calls>` wrapper 都会进入结构化捕获
 - 如果流里直接从 invoke 开始，但后面补上了 closing wrapper，Go 流式筛分也会按缺失 opening wrapper 的修复路径尝试恢复
 - 已识别成功的工具调用不会再次回流到普通文本
 - 不符合新格式的块不会执行，并继续按原样文本透传
@@ -61,6 +62,7 @@
 - 支持嵌套围栏（如 4 反引号嵌套 3 反引号）和 CDATA 内围栏保护
 - 如果模型把 `<![CDATA[` 打开后却没有闭合，流式扫描阶段仍会保守地继续缓冲，不会误把 CDATA 里的示例 XML 当成真实工具调用；在最终 parse / flush 恢复阶段，会对这类 loose CDATA 做窄修复，尽量保住外层已完整包裹的真实工具调用
 - 当文本中 mention 了某种标签名（如 `<dsml|tool_calls>` 或 Markdown inline code 里的 `<|DSML|tool_calls>`）而后面紧跟真正工具调用时，sieve 会跳过不可解析的 mention 候选并继续匹配后续真实工具块，不会因 mention 导致工具调用丢失，也不会截断 mention 后的正文
+- Go 侧 SSE 读取不再使用 `bufio.Scanner` 的固定 token 上限；单个 `data:` 行中包含很长的写文件参数时，非流式收集、流式解析与 auto-continue 透传都应保留完整行，再交给 tool parser 处理
 
 另外，`<parameter>` 的值如果本身是合法 JSON 字面量，也会按结构化值解析，而不是一律保留为字符串。例如 `123`、`true`、`null`、`[1,2]`、`{"a":1}` 都会还原成对应的 number / boolean / null / array / object。
 结构化 XML 参数也会还原为 JSON 结构：如果参数体只包含一个或多个 `<item>...</item>` 子节点，会输出数组；嵌套对象里的 item-only 字段也同样按数组处理。例如 `<parameter name="questions"><item><question>...</question></item></parameter>` 会输出 `{"questions":[{"question":"..."}]}`，而不是 `{"questions":{"item":...}}`。
@@ -94,7 +96,7 @@ node --test tests/node/stream-tool-sieve.test.js
 
 - DSML `<|DSML|tool_calls>` wrapper 正常解析
 - legacy canonical `<tool_calls>` wrapper 正常解析
-- 别名变体（`<dsml|tool_calls>`、`<｜tool_calls>`、`<|tool_calls>`）、DSML 空格分隔 typo（如 `<|DSML tool_calls>`）和黏连 typo（如 `<DSMLtool_calls>`）正常解析
+- 固定本地标签名的 DSML 噪声容错形态（如 `<DSML|tool_calls>`、`<<|DSML|tool_calls>`、`<|DSML tool_calls>`、`<DSMLtool_calls>`、`<<DSML|DSML|tool_calls>`）正常解析
 - 混搭标签（DSML wrapper + canonical inner）归一化后正常解析
 - 波浪线围栏 `~~~` 内的示例不执行
 - 嵌套围栏（4 反引号嵌套 3 反引号）内的示例不执行

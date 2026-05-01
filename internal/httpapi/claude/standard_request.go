@@ -7,7 +7,6 @@ import (
 	"ds2api/internal/config"
 	"ds2api/internal/prompt"
 	"ds2api/internal/promptcompat"
-	"ds2api/internal/toolcall"
 	"ds2api/internal/util"
 )
 
@@ -26,19 +25,10 @@ func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNorma
 		req["max_tokens"] = 8192
 	}
 	normalizedMessages := normalizeClaudeMessages(messagesRaw)
-	allowMetaAgentTools := false
-	if store != nil {
-		type metaAgentConfig interface {
-			CompatAllowMetaAgentTools() bool
-		}
-		if cfg, ok := store.(metaAgentConfig); ok {
-			allowMetaAgentTools = cfg.CompatAllowMetaAgentTools()
-		}
-	}
 	payload := cloneMap(req)
 	payload["messages"] = normalizedMessages
 	toolsRequested, _ := req["tools"].([]any)
-	payload["messages"] = injectClaudeToolPrompt(payload, normalizedMessages, toolsRequested, allowMetaAgentTools, allowMetaAgentTools)
+	payload["messages"] = injectClaudeToolPrompt(payload, normalizedMessages, toolsRequested)
 
 	dsPayload := convertClaudeToDeepSeek(payload, store)
 	dsModel, _ := dsPayload["model"].(string)
@@ -51,57 +41,35 @@ func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNorma
 		thinkingEnabled = false
 	}
 	finalPrompt := prompt.MessagesPrepareWithThinking(toMessageMaps(dsPayload["messages"]), thinkingEnabled)
-	toolNames := extractClaudeToolNames(toolsRequested, allowMetaAgentTools, allowMetaAgentTools)
+	toolNames := extractClaudeToolNames(toolsRequested)
 	if len(toolNames) == 0 && len(toolsRequested) > 0 {
 		toolNames = []string{"__any_tool__"}
 	}
-	reasoningEffort := claudeReasoningEffort(req, store)
 
 	return claudeNormalizedRequest{
 		Standard: promptcompat.StandardRequest{
-			Surface:             "anthropic_messages",
-			RequestedModel:      strings.TrimSpace(model),
-			ResolvedModel:       dsModel,
-			ResponseModel:       strings.TrimSpace(model),
-			Messages:            payload["messages"].([]any),
-			FinalPrompt:         finalPrompt,
-			ToolNames:           toolNames,
-			ToolSchemas:         toolcall.ExtractParameterSchemas(toolsRequested),
-			AllowMetaAgentTools: allowMetaAgentTools,
-			Stream:              util.ToBool(req["stream"]),
-			Thinking:            thinkingEnabled,
-			ReasoningEffort:     reasoningEffort,
-			Search:              searchEnabled,
+			Surface:         "anthropic_messages",
+			RequestedModel:  strings.TrimSpace(model),
+			ResolvedModel:   dsModel,
+			ResponseModel:   strings.TrimSpace(model),
+			Messages:        payload["messages"].([]any),
+			PromptTokenText: finalPrompt,
+			ToolsRaw:        toolsRequested,
+			FinalPrompt:     finalPrompt,
+			ToolNames:       toolNames,
+			Stream:          util.ToBool(req["stream"]),
+			Thinking:        thinkingEnabled,
+			Search:          searchEnabled,
 		},
 		NormalizedMessages: normalizedMessages,
 	}, nil
 }
 
-func claudeReasoningEffort(req map[string]any, store ConfigReader) string {
-	if outputConfig, _ := req["output_config"].(map[string]any); outputConfig != nil {
-		if effort := config.NormalizeReasoningEffort(strings.TrimSpace(fmt.Sprintf("%v", outputConfig["effort"]))); effort != "" {
-			return effort
-		}
-	}
-	if effort := config.NormalizeReasoningEffort(strings.TrimSpace(fmt.Sprintf("%v", req["reasoning_effort"]))); effort != "" {
-		return effort
-	}
-	if store != nil {
-		type defaultEffortConfig interface {
-			CompatDefaultReasoningEffort() string
-		}
-		if cfg, ok := store.(defaultEffortConfig); ok {
-			return config.NormalizeReasoningEffort(cfg.CompatDefaultReasoningEffort())
-		}
-	}
-	return ""
-}
-
-func injectClaudeToolPrompt(payload map[string]any, normalizedMessages []any, tools []any, allowMetaAgentTools bool, allowTaskOutput bool) []any {
+func injectClaudeToolPrompt(payload map[string]any, normalizedMessages []any, tools []any) []any {
 	if len(tools) == 0 {
 		return normalizedMessages
 	}
-	toolPrompt := strings.TrimSpace(buildClaudeToolPrompt(tools, allowMetaAgentTools, allowTaskOutput))
+	toolPrompt := strings.TrimSpace(buildClaudeToolPrompt(tools))
 	if toolPrompt == "" {
 		return normalizedMessages
 	}

@@ -36,7 +36,7 @@ go run ./cmd/ds2api
 cd webui
 
 # 2. 安装依赖
-npm install
+npm ci
 
 # 3. 启动开发服务器（热更新）
 npm run dev

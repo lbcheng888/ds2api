@@ -77,13 +77,18 @@ func (m *filesRouteDSStub) DeleteAllSessionsForToken(_ context.Context, _ string
 	return nil
 }
 
-func newMultipartUploadRequest(t *testing.T, purpose string, filename string, data []byte) *http.Request {
+func newMultipartUploadRequest(t *testing.T, purpose string, filename string, data []byte, model string) *http.Request {
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	if purpose != "" {
 		if err := writer.WriteField("purpose", purpose); err != nil {
 			t.Fatalf("write purpose failed: %v", err)
+		}
+	}
+	if model != "" {
+		if err := writer.WriteField("model", model); err != nil {
+			t.Fatalf("write model failed: %v", err)
 		}
 	}
 	part, err := writer.CreateFormFile("file", filename)
@@ -108,7 +113,7 @@ func TestFilesRouteUploadSuccess(t *testing.T) {
 	r := chi.NewRouter()
 	registerOpenAITestRoutes(r, h)
 
-	req := newMultipartUploadRequest(t, "assistants", "notes.txt", []byte("hello world"))
+	req := newMultipartUploadRequest(t, "assistants", "notes.txt", []byte("hello world"), "deepseek-v4-vision")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -120,6 +125,9 @@ func TestFilesRouteUploadSuccess(t *testing.T) {
 	}
 	if ds.lastReq.Purpose != "assistants" {
 		t.Fatalf("expected purpose assistants, got %q", ds.lastReq.Purpose)
+	}
+	if ds.lastReq.ModelType != "vision" {
+		t.Fatalf("expected vision model type, got %q", ds.lastReq.ModelType)
 	}
 	if string(ds.lastReq.Data) != "hello world" {
 		t.Fatalf("unexpected uploaded data: %q", string(ds.lastReq.Data))
@@ -145,7 +153,7 @@ func TestFilesRouteUploadIncludesAccountIDForManagedAccount(t *testing.T) {
 	r := chi.NewRouter()
 	registerOpenAITestRoutes(r, h)
 
-	req := newMultipartUploadRequest(t, "assistants", "notes.txt", []byte("hello world"))
+	req := newMultipartUploadRequest(t, "assistants", "notes.txt", []byte("hello world"), "deepseek-v4-vision")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 

@@ -60,10 +60,9 @@ npm run build --prefix webui
 ./tests/scripts/check-refactor-line-gate.sh
 ./tests/scripts/check-node-split-syntax.sh
 ./tests/scripts/check-cross-build.sh
-
-# 历史阶段门禁：阶段 6 手工烟测签字检查（默认读取 plans/stage6-manual-smoke.md）
-./tests/scripts/check-stage6-manual-smoke.sh
 ```
+
+说明：`plans/stage6-manual-smoke.md` 已移除，阶段 6 手工烟测不再作为当前 CI 或发布门禁。
 
 ### 端到端测试 | End-to-End Tests
 

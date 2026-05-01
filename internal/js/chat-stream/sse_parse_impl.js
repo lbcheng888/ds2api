@@ -70,7 +70,6 @@ function finalizeThinkingParts(parts, thinkingEnabled, newType) {
   }
   if (!thinkingEnabled) {
     finalParts = dropThinkingParts(finalParts);
-    finalType = 'text';
   }
   return { parts: finalParts, newType: finalType };
 }
@@ -231,6 +230,12 @@ function parseChunkForContent(chunk, thinkingEnabled, currentType, stripReferenc
     }
   }
 
+  if (pathValue === 'response/content') {
+    newType = 'text';
+  } else if (pathValue === 'response/thinking_content' && (!thinkingEnabled || newType !== 'text')) {
+    newType = 'thinking';
+  }
+
   let partType = 'text';
   if (pathValue === 'response/thinking_content') {
     if (!thinkingEnabled) {
@@ -244,8 +249,8 @@ function parseChunkForContent(chunk, thinkingEnabled, currentType, stripReferenc
     partType = 'text';
   } else if (pathValue.includes('response/fragments') && pathValue.includes('/content')) {
     partType = newType;
-  } else if (!pathValue && thinkingEnabled) {
-    partType = newType;
+  } else if (!pathValue) {
+    partType = newType || 'text';
   }
 
   const val = chunk.v;
@@ -326,6 +331,10 @@ function parseChunkForContent(chunk, thinkingEnabled, currentType, stripReferenc
   }
 
   if (val && typeof val === 'object') {
+    const directContent = asContentString(val, stripReferenceMarkers);
+    if (directContent) {
+      parts.push({ text: directContent, type: partType });
+    }
     const resp = val.response && typeof val.response === 'object' ? val.response : val;
     if (Array.isArray(resp.fragments)) {
       for (const frag of resp.fragments) {
@@ -639,6 +648,12 @@ function asContentString(v, stripReferenceMarkers = true) {
     }
     if (Object.prototype.hasOwnProperty.call(v, 'v')) {
       return asContentString(v.v, stripReferenceMarkers);
+    }
+    if (Object.prototype.hasOwnProperty.call(v, 'text')) {
+      return asContentString(v.text, stripReferenceMarkers);
+    }
+    if (Object.prototype.hasOwnProperty.call(v, 'value')) {
+      return asContentString(v.value, stripReferenceMarkers);
     }
     return '';
   }

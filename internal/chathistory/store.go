@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"ds2api/internal/config"
+	"ds2api/internal/util"
 )
 
 const (
@@ -309,8 +310,12 @@ func (s *Store) Update(id string, params UpdateParams) (Entry, error) {
 	if params.Status != "" {
 		item.Status = params.Status
 	}
-	item.ReasoningContent = params.ReasoningContent
-	item.Content = params.Content
+	if params.ReasoningContent != "" || item.ReasoningContent == "" {
+		item.ReasoningContent = params.ReasoningContent
+	}
+	if params.Content != "" || item.Content == "" {
+		item.Content = params.Content
+	}
 	item.Error = strings.TrimSpace(params.Error)
 	item.StatusCode = params.StatusCode
 	item.ElapsedMs = params.ElapsedMs
@@ -610,8 +615,8 @@ func buildPreview(item Entry) string {
 	if candidate == "" {
 		candidate = strings.TrimSpace(item.UserInput)
 	}
-	if len(candidate) > defaultPreviewAt {
-		return candidate[:defaultPreviewAt] + "..."
+	if truncated, ok := util.TruncateRunes(candidate, defaultPreviewAt); ok {
+		return truncated + "..."
 	}
 	return candidate
 }

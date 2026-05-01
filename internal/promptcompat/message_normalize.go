@@ -6,6 +6,7 @@ import (
 	"ds2api/internal/prompt"
 )
 
+const assistantReasoningLabel = "reasoning_content"
 
 func NormalizeOpenAIMessagesForPrompt(raw []any, traceID string) []map[string]any {
 	_ = traceID
@@ -54,10 +55,6 @@ func NormalizeOpenAIMessagesForPrompt(raw []any, traceID string) []map[string]an
 	return out
 }
 
-func normalizeOpenAIMessagesForPrompt(raw []any, traceID string) []map[string]any {
-	return NormalizeOpenAIMessagesForPrompt(raw, traceID)
-}
-
 func buildAssistantContentForPrompt(msg map[string]any) string {
 	content := strings.TrimSpace(NormalizeOpenAIContentForPrompt(msg["content"]))
 	reasoning := strings.TrimSpace(normalizeOpenAIReasoningContentForPrompt(msg["reasoning_content"]))
@@ -67,7 +64,7 @@ func buildAssistantContentForPrompt(msg map[string]any) string {
 	toolHistory := prompt.FormatToolCallsForPrompt(msg["tool_calls"])
 	parts := make([]string, 0, 3)
 	if reasoning != "" {
-		parts = append(parts, "<think>"+reasoning+"</think>")
+		parts = append(parts, formatPromptLabeledBlock(assistantReasoningLabel, reasoning))
 	}
 	if content != "" {
 		parts = append(parts, content)
@@ -140,6 +137,15 @@ func extractOpenAIReasoningTextFromItem(m map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func formatPromptLabeledBlock(label, text string) string {
+	label = strings.TrimSpace(label)
+	text = strings.TrimSpace(text)
+	if label == "" {
+		return text
+	}
+	return "[" + label + "]\n" + text + "\n[/" + label + "]"
 }
 
 func buildToolContentForPrompt(msg map[string]any) string {

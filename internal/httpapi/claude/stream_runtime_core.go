@@ -8,8 +8,6 @@ import (
 
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
-	textclean "ds2api/internal/textclean"
-	"ds2api/internal/toolcall"
 )
 
 type claudeStreamRuntime struct {
@@ -17,22 +15,20 @@ type claudeStreamRuntime struct {
 	rc       *http.ResponseController
 	canFlush bool
 
-	model               string
-	finalPrompt         string
-	toolNames           []string
-	toolSchemas         toolcall.ParameterSchemas
-	allowMetaAgentTools bool
-	messages            []any
+	model           string
+	toolNames       []string
+	messages        []any
+	toolsRaw        any
+	promptTokenText string
 
 	thinkingEnabled       bool
 	searchEnabled         bool
 	bufferToolContent     bool
 	stripReferenceMarkers bool
 
-	messageID       string
-	outputSanitizer textclean.StreamSanitizer
-	thinking        strings.Builder
-	text            strings.Builder
+	messageID string
+	thinking  strings.Builder
+	text      strings.Builder
 
 	nextBlockIndex     int
 	thinkingBlockOpen  bool
@@ -41,9 +37,6 @@ type claudeStreamRuntime struct {
 	textBlockIndex     int
 	ended              bool
 	upstreamErr        string
-
-	recoveryNeeded bool
-	recoveryContext string
 }
 
 func newClaudeStreamRuntime(
@@ -56,24 +49,22 @@ func newClaudeStreamRuntime(
 	searchEnabled bool,
 	stripReferenceMarkers bool,
 	toolNames []string,
-	toolSchemas toolcall.ParameterSchemas,
-	finalPrompt string,
-	allowMetaAgentTools bool,
+	toolsRaw any,
+	promptTokenText string,
 ) *claudeStreamRuntime {
 	return &claudeStreamRuntime{
 		w:                     w,
 		rc:                    rc,
 		canFlush:              canFlush,
 		model:                 model,
-		finalPrompt:           finalPrompt,
 		messages:              messages,
 		thinkingEnabled:       thinkingEnabled,
 		searchEnabled:         searchEnabled,
 		bufferToolContent:     len(toolNames) > 0,
 		stripReferenceMarkers: stripReferenceMarkers,
 		toolNames:             toolNames,
-		toolSchemas:           toolSchemas,
-		allowMetaAgentTools:   allowMetaAgentTools,
+		toolsRaw:              toolsRaw,
+		promptTokenText:       promptTokenText,
 		messageID:             fmt.Sprintf("msg_%d", time.Now().UnixNano()),
 		thinkingBlockIndex:    -1,
 		textBlockIndex:        -1,
@@ -89,15 +80,12 @@ func (s *claudeStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 		return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReason("upstream_error")}
 	}
 	if parsed.Stop {
-		if parsed.Finished && s.bufferToolContent && len(s.toolNames) > 0 {
-			return streamengine.ParsedDecision{}
-		}
 		return streamengine.ParsedDecision{Stop: true}
 	}
 
 	contentSeen := false
 	for _, p := range parsed.Parts {
-		cleanedText := cleanVisibleOutput(s.outputSanitizer.Sanitize(p.Text), s.stripReferenceMarkers)
+		cleanedText := cleanVisibleOutput(p.Text, s.stripReferenceMarkers)
 		if cleanedText == "" {
 			continue
 		}
@@ -115,9 +103,6 @@ func (s *claudeStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 				continue
 			}
 			s.thinking.WriteString(trimmed)
-			if s.bufferToolContent {
-				continue
-			}
 			s.closeTextBlock()
 			if !s.thinkingBlockOpen {
 				s.thinkingBlockIndex = s.nextBlockIndex

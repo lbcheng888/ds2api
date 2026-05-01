@@ -343,54 +343,6 @@ func TestChatCompletionsStreamRetriesEmptyOutputOnSameSession(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsStreamRetriesMissingToolPromise(t *testing.T) {
-	ds := &streamStatusDSSeqStub{resps: []*http.Response{
-		makeOpenAISSEHTTPResponse(`data: {"response_message_id":51,"p":"response/content","v":"三个文件冲突较多。我先逐个分析，然后处理。"}`, "data: [DONE]"),
-		makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":"visible"}`, "data: [DONE]"),
-	}}
-	h := &openAITestSurface{
-		Store: mockOpenAIConfig{wideInput: true},
-		Auth:  streamStatusAuthStub{},
-		DS:    ds,
-	}
-	reqBody := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"请继续"}],"tools":[{"type":"function","function":{"name":"Read","parameters":{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}}}],"stream":true}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
-	req.Header.Set("Authorization", "Bearer direct-token")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	newOpenAITestRouter(h).ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
-	}
-	if len(ds.payloads) != 2 {
-		t.Fatalf("expected retry after missing tool promise, got %d calls", len(ds.payloads))
-	}
-	if parentID, ok := ds.payloads[1]["parent_message_id"].(int); !ok || parentID != 51 {
-		t.Fatalf("expected retry parent_message_id=51, got %#v", ds.payloads[1]["parent_message_id"])
-	}
-	if retryPrompt := asString(ds.payloads[1]["prompt"]); !strings.Contains(retryPrompt, "promised to read, edit, run") {
-		t.Fatalf("expected missing-tool retry instruction, got %q", retryPrompt)
-	}
-	body := rec.Body.String()
-	if strings.Contains(body, "三个文件冲突较多") {
-		t.Fatalf("missing-tool promise leaked before retry, body=%s", body)
-	}
-	frames, done := parseSSEDataFrames(t, body)
-	if !done {
-		t.Fatalf("expected [DONE], body=%s", body)
-	}
-	if len(frames) < 2 {
-		t.Fatalf("expected content and finish frames, got %#v body=%s", frames, body)
-	}
-	choices, _ := frames[0]["choices"].([]any)
-	choice, _ := choices[0].(map[string]any)
-	delta, _ := choice["delta"].(map[string]any)
-	if asString(delta["content"]) != "visible" {
-		t.Fatalf("expected retry visible content, got %#v body=%s", delta, body)
-	}
-}
-
 func TestChatCompletionsNonStreamRetriesThinkingOnlyOutput(t *testing.T) {
 	ds := &streamStatusDSSeqStub{resps: []*http.Response{
 		makeOpenAISSEHTTPResponse(`data: {"response_message_id":99,"p":"response/thinking_content","v":"plan"}`, "data: [DONE]"),
@@ -455,46 +407,6 @@ func TestChatCompletionsContentFilterDoesNotRetry(t *testing.T) {
 	}
 	if len(ds.payloads) != 1 {
 		t.Fatalf("expected no retry on content_filter, got %d calls", len(ds.payloads))
-	}
-}
-
-func TestChatCompletionsInputExceedsLimitDoesNotRetryAsEmptyOutput(t *testing.T) {
-	ds := &streamStatusDSSeqStub{resps: []*http.Response{
-		makeOpenAISSEHTTPResponse(
-			`event: ready`,
-			`data: {"request_message_id":1,"response_message_id":2,"model_type":"expert"}`,
-			`event: hint`,
-			`data: {"type":"error","content":"内容超长，请删减后再试","clear_response":true,"finish_reason":"input_exceeds_limit"}`,
-			`event: close`,
-			`data: {"click_behavior":"none","auto_resume":false}`,
-		),
-		makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":"visible"}`, "data: [DONE]"),
-	}}
-	h := &openAITestSurface{
-		Store: mockOpenAIConfig{wideInput: true},
-		Auth:  streamStatusAuthStub{},
-		DS:    ds,
-	}
-	reqBody := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":false}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
-	req.Header.Set("Authorization", "Bearer direct-token")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	newOpenAITestRouter(h).ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected input limit 413, got %d body=%s", rec.Code, rec.Body.String())
-	}
-	if len(ds.payloads) != 1 {
-		t.Fatalf("expected no retry on input_exceeds_limit, got %d calls", len(ds.payloads))
-	}
-	var out map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatalf("decode response failed: %v body=%s", err, rec.Body.String())
-	}
-	errObj, _ := out["error"].(map[string]any)
-	if asString(errObj["code"]) != "input_exceeds_limit" {
-		t.Fatalf("expected input_exceeds_limit code, got %#v", out)
 	}
 }
 

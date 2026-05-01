@@ -47,7 +47,6 @@ jobs:
 
       - name: Release Blocking Gates
         run: |
-          ./tests/scripts/check-stage6-manual-smoke.sh
           ./tests/scripts/check-refactor-line-gate.sh
           ./tests/scripts/run-unit-all.sh
 

@@ -1,11 +1,11 @@
 package claude
 
 import (
+	"ds2api/internal/toolcall"
 	"fmt"
 	"time"
 
-	claudecodeharness "ds2api/internal/harness/claudecode"
-	"ds2api/internal/toolcall"
+	"ds2api/internal/prompt"
 	"ds2api/internal/util"
 )
 
@@ -14,7 +14,6 @@ func BuildMessageResponse(messageID, model string, normalizedMessages []any, fin
 	if len(detected) == 0 && finalText == "" && finalThinking != "" {
 		detected = toolcall.ParseToolCalls(finalThinking, toolNames)
 	}
-	detected = claudecodeharness.FilterInvalidTaskOutputCalls(detected, fmt.Sprintf("%v", normalizedMessages))
 	content := make([]map[string]any, 0, 4)
 	if finalThinking != "" {
 		content = append(content, map[string]any{"type": "thinking", "thinking": finalThinking})
@@ -45,8 +44,23 @@ func BuildMessageResponse(messageID, model string, normalizedMessages []any, fin
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
 		"usage": map[string]any{
-			"input_tokens":  util.EstimateTokens(fmt.Sprintf("%v", normalizedMessages)),
-			"output_tokens": util.EstimateTokens(finalThinking) + util.EstimateTokens(finalText),
+			"input_tokens":  util.CountPromptTokens(prompt.MessagesPrepareWithThinking(claudeMessageMaps(normalizedMessages), false), model),
+			"output_tokens": util.CountOutputTokens(finalThinking, model) + util.CountOutputTokens(finalText, model),
 		},
 	}
+}
+
+func claudeMessageMaps(messages []any) []map[string]any {
+	if len(messages) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(messages))
+	for _, item := range messages {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
 }

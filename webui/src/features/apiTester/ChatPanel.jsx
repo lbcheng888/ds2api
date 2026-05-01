@@ -13,6 +13,7 @@ export default function ChatPanel({
     setSelectedAccount,
     effectiveKey,
     selectedAccount,
+    model,
     onMessage,
     response,
     isStreaming,
@@ -37,11 +38,15 @@ export default function ChatPanel({
 
         setUploadingFiles(true)
         const initialSelectedAccount = String(selectedAccount || '').trim()
+        const selectedModel = String(model || '').trim()
         let boundAccount = initialSelectedAccount
         for (const file of files) {
             const formData = new FormData()
             formData.append('file', file)
             formData.append('purpose', 'assistants')
+            if (selectedModel) {
+                formData.append('model', selectedModel)
+            }
 
             const headers = {
                 'Authorization': `Bearer ${effectiveKey}`,
@@ -181,8 +186,9 @@ export default function ChatPanel({
                     />
                     <div className="absolute left-2 bottom-2 z-10">
                         <button
+                            type="button"
                             onClick={() => fileInputRef.current?.click()}
-                            disabled={uploadingFiles || isStreaming || !hasAvailableModel}
+                            disabled={uploadingFiles || isStreaming}
                             className="p-2 text-muted-foreground hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             title="Attach files"
                         >

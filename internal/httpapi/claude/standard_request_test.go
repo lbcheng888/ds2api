@@ -32,12 +32,15 @@ func TestNormalizeClaudeRequest(t *testing.T) {
 	if len(norm.Standard.ToolNames) == 0 {
 		t.Fatalf("expected tool names")
 	}
+	if norm.Standard.ToolsRaw == nil {
+		t.Fatalf("expected ToolsRaw preserved for downstream normalization")
+	}
 	if norm.Standard.FinalPrompt == "" {
 		t.Fatalf("expected non-empty final prompt")
 	}
 }
 
-func TestNormalizeClaudeRequestExtractsToolSchemas(t *testing.T) {
+func TestNormalizeClaudeRequestSupportsCamelCaseInputSchemaPromptInjection(t *testing.T) {
 	t.Setenv("DS2API_CONFIG_JSON", `{}`)
 	store := config.LoadStore()
 	req := map[string]any{
@@ -47,14 +50,9 @@ func TestNormalizeClaudeRequestExtractsToolSchemas(t *testing.T) {
 		},
 		"tools": []any{
 			map[string]any{
-				"name": "Read",
-				"input_schema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"file_path": map[string]any{"type": "string"},
-					},
-					"required": []any{"file_path"},
-				},
+				"name":        "todowrite",
+				"description": "Write todos",
+				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"todos": map[string]any{"type": "array"}}},
 			},
 		},
 	}
@@ -62,47 +60,8 @@ func TestNormalizeClaudeRequestExtractsToolSchemas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("normalize failed: %v", err)
 	}
-	if _, ok := norm.Standard.ToolSchemas["Read"]; !ok {
-		t.Fatalf("expected Read schema to be extracted, got %#v", norm.Standard.ToolSchemas)
-	}
-}
-
-func TestNormalizeClaudeRequestUsesDefaultReasoningEffort(t *testing.T) {
-	t.Setenv("DS2API_CONFIG_JSON", `{"compat":{"default_reasoning_effort":"max"}}`)
-	store := config.LoadStore()
-	req := map[string]any{
-		"model": "deepseek-v4-pro",
-		"messages": []any{
-			map[string]any{"role": "user", "content": "hello"},
-		},
-	}
-	norm, err := normalizeClaudeRequest(store, req)
-	if err != nil {
-		t.Fatalf("normalize failed: %v", err)
-	}
-	if got := norm.Standard.ReasoningEffort; got != "max" {
-		t.Fatalf("expected default reasoning effort max, got %q", got)
-	}
-}
-
-func TestNormalizeClaudeRequestExplicitReasoningEffortOverridesDefault(t *testing.T) {
-	t.Setenv("DS2API_CONFIG_JSON", `{"compat":{"default_reasoning_effort":"max"}}`)
-	store := config.LoadStore()
-	req := map[string]any{
-		"model": "deepseek-v4-pro",
-		"output_config": map[string]any{
-			"effort": "high",
-		},
-		"messages": []any{
-			map[string]any{"role": "user", "content": "hello"},
-		},
-	}
-	norm, err := normalizeClaudeRequest(store, req)
-	if err != nil {
-		t.Fatalf("normalize failed: %v", err)
-	}
-	if got := norm.Standard.ReasoningEffort; got != "high" {
-		t.Fatalf("expected explicit reasoning effort high, got %q", got)
+	if !containsStr(norm.Standard.FinalPrompt, `"type":"array"`) {
+		t.Fatalf("expected inputSchema to be injected into prompt, got=%q", norm.Standard.FinalPrompt)
 	}
 }
 

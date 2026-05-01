@@ -130,8 +130,8 @@ func TestHandleVercelStreamPrepareAppliesCurrentInputFile(t *testing.T) {
 		t.Fatalf("expected payload object, got %#v", body["payload"])
 	}
 	promptText, _ := payload["prompt"].(string)
-	if !strings.Contains(promptText, "Answer the latest user request directly.") {
-		t.Fatalf("expected neutral prompt, got %s", promptText)
+	if !strings.Contains(promptText, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
+		t.Fatalf("expected continuation prompt, got %s", promptText)
 	}
 	if strings.Contains(promptText, "first user turn") || strings.Contains(promptText, "latest user turn") {
 		t.Fatalf("expected original turns hidden from prompt, got %s", promptText)

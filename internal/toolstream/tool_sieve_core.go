@@ -1,11 +1,6 @@
 package toolstream
 
-import (
-	"strings"
-
-	claudecodeharness "ds2api/internal/harness/claudecode"
-	"ds2api/internal/toolcall"
-)
+import "ds2api/internal/toolcall"
 
 func ProcessChunk(state *State, chunk string, toolNames []string) []Event {
 	if state == nil {
@@ -127,15 +122,15 @@ func Flush(state *State, toolNames []string) []Event {
 							state.noteText(suffix)
 							events = append(events, Event{Content: suffix})
 						}
-					} else if code, message, ok := incompleteToolTransactionError(content); ok {
-						events = append(events, Event{ErrorCode: code, ErrorMessage: message})
 					} else {
+						// If capture never resolved into a real tool call, release
+						// the buffered text instead of swallowing it.
 						state.noteText(content)
 						events = append(events, Event{Content: content})
 					}
-				} else if code, message, ok := incompleteToolTransactionError(content); ok {
-					events = append(events, Event{ErrorCode: code, ErrorMessage: message})
 				} else {
+					// If capture never resolved into a real tool call, release the
+					// buffered text instead of swallowing it.
 					state.noteText(content)
 					events = append(events, Event{Content: content})
 				}
@@ -175,29 +170,25 @@ func findToolSegmentStart(state *State, s string) int {
 	if s == "" {
 		return -1
 	}
-	lower := strings.ToLower(s)
 	offset := 0
 	for {
-		bestKeyIdx := -1
-		matchedTag := ""
-		for _, tag := range xmlToolTagsToDetect {
-			idx := strings.Index(lower[offset:], tag)
-			if idx >= 0 {
-				idx += offset
-				if bestKeyIdx < 0 || idx < bestKeyIdx {
-					bestKeyIdx = idx
-					matchedTag = tag
-				}
-			}
-		}
-		if bestKeyIdx < 0 {
+		tag, ok := toolcall.FindToolMarkupTagOutsideIgnored(s, offset)
+		if !ok {
 			return -1
 		}
-		if !insideCodeFenceWithState(state, s[:bestKeyIdx]) {
-			return bestKeyIdx
+		start := includeDuplicateLeadingLessThan(s, tag.Start)
+		if !insideCodeFenceWithState(state, s[:start]) {
+			return start
 		}
-		offset = bestKeyIdx + len(matchedTag)
+		offset = tag.End + 1
 	}
+}
+
+func includeDuplicateLeadingLessThan(s string, idx int) int {
+	for idx > 0 && s[idx-1] == '<' {
+		idx--
+	}
+	return idx
 }
 
 func consumeToolCapture(state *State, toolNames []string) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
@@ -218,66 +209,4 @@ func consumeToolCapture(state *State, toolNames []string) (prefix string, calls 
 		return "", nil, "", false
 	}
 	return captured, nil, "", true
-}
-
-func incompleteToolTransactionError(captured string) (string, string, bool) {
-	trimmed := strings.TrimSpace(captured)
-	if trimmed == "" {
-		return "", "", false
-	}
-	if isCompleteBareInvokeText(trimmed) {
-		return "", "", false
-	}
-	lower := strings.ToLower(trimmed)
-	if hasOpenXMLToolTag(trimmed) || containsAnyToolSyntax(lower, []string{
-		"<tool_call",
-		"<tool_calls",
-		"<invoke",
-		"<function_call",
-		"<function_calls",
-		"<tool_use",
-		"<attempt_completion",
-		"<ask_followup_question",
-		"<new_task",
-		"<|dsml",
-		"<｜dsml",
-		"<dsml",
-	}) {
-		return claudecodeharness.InvalidToolCallCode, "Upstream model emitted invalid tool call syntax.", true
-	}
-	if (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) && hasVisibleJSONToolHints(lower) {
-		return claudecodeharness.InvalidToolCallCode, "Upstream model emitted invalid tool call syntax.", true
-	}
-	return "", "", false
-}
-
-func isCompleteBareInvokeText(trimmed string) bool {
-	lower := strings.ToLower(strings.TrimSpace(trimmed))
-	if !strings.HasPrefix(lower, "<invoke") {
-		return false
-	}
-	return strings.Contains(lower, "</invoke>") &&
-		!strings.Contains(lower, "<tool_calls") &&
-		!strings.Contains(lower, "<|dsml|tool_calls")
-}
-
-func hasVisibleJSONToolHints(lower string) bool {
-	hasName := strings.Contains(lower, `"tool"`) ||
-		strings.Contains(lower, `"name"`) ||
-		strings.Contains(lower, `"tool_name"`) ||
-		strings.Contains(lower, `"function"`)
-	hasArgs := strings.Contains(lower, `"arguments"`) ||
-		strings.Contains(lower, `"input"`) ||
-		strings.Contains(lower, `"params"`) ||
-		strings.Contains(lower, `"parameters"`)
-	return hasName && hasArgs
-}
-
-func containsAnyToolSyntax(text string, needles []string) bool {
-	for _, needle := range needles {
-		if strings.Contains(text, needle) {
-			return true
-		}
-	}
-	return false
 }

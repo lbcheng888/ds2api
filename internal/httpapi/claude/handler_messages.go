@@ -3,14 +3,15 @@ package claude
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 
 	"ds2api/internal/config"
+	"ds2api/internal/httpapi/requestbody"
 	streamengine "ds2api/internal/stream"
-	"ds2api/internal/toolcall"
 	"ds2api/internal/translatorcliproxy"
 	"ds2api/internal/util"
 
@@ -34,7 +35,11 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store ConfigReader) bool {
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeClaudeError(w, http.StatusBadRequest, "invalid body")
+		if errors.Is(err, requestbody.ErrInvalidUTF8Body) {
+			writeClaudeError(w, http.StatusBadRequest, "invalid json")
+		} else {
+			writeClaudeError(w, http.StatusBadRequest, "invalid body")
+		}
 		return true
 	}
 	var req map[string]any
@@ -178,7 +183,7 @@ func stripClaudeThinkingBlocks(raw []byte) []byte {
 	return out
 }
 
-func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Request, resp *http.Response, model string, messages []any, thinkingEnabled, searchEnabled bool, toolNames []string, schemas ...toolcall.ParameterSchemas) {
+func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Request, resp *http.Response, model string, messages []any, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -196,10 +201,6 @@ func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Requ
 		config.Logger.Warn("[claude_stream] response writer does not support flush; streaming may be buffered")
 	}
 
-	toolSchemas := toolcall.ParameterSchemas(nil)
-	if len(schemas) > 0 {
-		toolSchemas = schemas[0]
-	}
 	streamRuntime := newClaudeStreamRuntime(
 		w,
 		rc,
@@ -210,9 +211,8 @@ func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Requ
 		searchEnabled,
 		h.compatStripReferenceMarkers(),
 		toolNames,
-		toolSchemas,
-		"",
-		h.compatAllowMetaAgentTools(),
+		toolsRaw,
+		buildClaudePromptTokenText(messages, thinkingEnabled),
 	)
 	streamRuntime.sendMessageStart()
 

@@ -210,6 +210,37 @@ test('vercel stream retries empty output once and keeps one terminal frame', asy
   assert.match(completionBodies[1].prompt, /Previous reply had no visible output\. Please regenerate the visible final answer or tool call now\.$/);
 });
 
+test('vercel stream coalesces many small content deltas while keeping one choice', async () => {
+  const lines = Array.from({ length: 100 }, () => `data: ${JSON.stringify({ p: 'response/content', v: '字' })}\n\n`);
+  lines.push('data: [DONE]\n\n');
+  const { frames } = await runMockVercelStream(lines);
+  const parsed = frames.filter((frame) => frame !== '[DONE]').map((frame) => JSON.parse(frame));
+  const contentFrames = parsed.filter((item) => item.choices?.[0]?.delta?.content);
+  const content = contentFrames.map((item) => item.choices[0].delta.content).join('');
+  assert.equal(content, '字'.repeat(100));
+  assert.ok(contentFrames.length < 100, `expected fewer than 100 content frames, got ${contentFrames.length}`);
+  for (const item of parsed) {
+    assert.equal(item.choices.length, 1);
+  }
+});
+
+test('vercel stream flushes reasoning before content and before stop', async () => {
+  const { frames } = await runMockVercelStream([
+    `data: ${JSON.stringify({ p: 'response/fragments', o: 'APPEND', v: [
+      { type: 'THINK', content: '思考' },
+      { type: 'THINK', content: '过程' },
+      { type: 'RESPONSE', content: '回答' },
+    ] })}\n\n`,
+    'data: [DONE]\n\n',
+  ], { thinking_enabled: true });
+  const parsed = frames.filter((frame) => frame !== '[DONE]').map((frame) => JSON.parse(frame));
+  const reasoning = parsed.map((item) => item.choices?.[0]?.delta?.reasoning_content || '').join('');
+  const content = parsed.map((item) => item.choices?.[0]?.delta?.content || '').join('');
+  assert.equal(reasoning, '思考过程');
+  assert.equal(content, '回答');
+  assert.equal(parsed.at(-1).choices[0].finish_reason, 'stop');
+});
+
 test('vercel stream exhausts DeepSeek continue before synthetic retry', async () => {
   const { frames, fetchURLs, fetchBodies } = await runMockVercelStreamSequence([
     [
@@ -225,6 +256,42 @@ test('vercel stream exhausts DeepSeek continue before synthetic retry', async ()
   assert.equal(parsed[0].choices[0].delta.content, 'continued');
   assert.equal(parsed[1].choices[0].finish_reason, 'stop');
   assert.equal(fetchBodies.some((body) => String(body.prompt || '').includes('Previous reply had no visible output')), false);
+});
+
+test('vercel stream continues direct quasi_status incomplete before final tool call', async () => {
+  const { frames, fetchURLs } = await runMockVercelStreamSequence([
+    [
+      'data: {"response_message_id":7,"p":"response/content","v":"<tool_calls><invoke name=\\"write_file\\"><parameter name=\\"content\\"><![CDATA[part-one"}\n\n',
+      'data: {"p":"response/quasi_status","v":"INCOMPLETE"}\n\n',
+      'data: [DONE]\n\n',
+    ],
+    [
+      'data: {"response_message_id":8,"p":"response/content","v":"-part-two]]></parameter></invoke></tool_calls>"}\n\n',
+      'data: {"p":"response/status","v":"FINISHED"}\n\n',
+      'data: [DONE]\n\n',
+    ],
+  ], { tool_names: ['write_file'] });
+  const parsed = frames.filter((frame) => frame !== '[DONE]').map((frame) => JSON.parse(frame));
+  const toolDelta = parsed.find((item) => item.choices?.[0]?.delta?.tool_calls);
+  assert.equal(fetchURLs.filter((url) => url === 'https://chat.deepseek.com/api/v0/chat/continue').length, 1);
+  assert.ok(toolDelta);
+  const args = JSON.parse(toolDelta.choices[0].delta.tool_calls[0].function.arguments);
+  assert.equal(args.content, 'part-one-part-two');
+  assert.equal(parsed.at(-1).choices[0].finish_reason, 'tool_calls');
+});
+
+
+
+test('vercel stream usage completion_tokens does not double-count visible output', async () => {
+  const sample = 'abcdefghijklmnopqrst';
+  const { frames } = await runMockVercelStream([
+    `data: ${JSON.stringify({ p: 'response/content', v: sample })}\n\n`,
+    'data: [DONE]\n\n',
+  ]);
+  const parsed = frames.filter((frame) => frame !== '[DONE]').map((frame) => JSON.parse(frame));
+  const terminal = parsed.find((item) => Array.isArray(item.choices) && item.choices[0] && item.choices[0].finish_reason);
+  assert.ok(terminal);
+  assert.equal(terminal.usage.completion_tokens, 5);
 });
 
 test('vercel stream reuses prior PoW when refresh fails', async () => {
@@ -512,14 +579,23 @@ test('parseChunkForContent drops thinking content when thinking is disabled', ()
     'text',
   );
   assert.equal(thinking.finished, false);
-  assert.equal(thinking.newType, 'text');
+  assert.equal(thinking.newType, 'thinking');
   assert.deepEqual(thinking.parts, []);
+
+  const hiddenContinuation = parseChunkForContent(
+    { v: 'still hidden' },
+    false,
+    thinking.newType,
+  );
+  assert.equal(hiddenContinuation.newType, 'thinking');
+  assert.deepEqual(hiddenContinuation.parts, []);
 
   const answer = parseChunkForContent(
     { p: 'response/content', v: 'visible answer' },
     false,
-    thinking.newType,
+    hiddenContinuation.newType,
   );
+  assert.equal(answer.newType, 'text');
   assert.deepEqual(answer.parts, [{ text: 'visible answer', type: 'text' }]);
 });
 
@@ -538,6 +614,12 @@ test('parseChunkForContent supports wrapped response.fragments object shape', ()
   const parsed = parseChunkForContent(chunk, false, 'text');
   assert.equal(parsed.finished, false);
   assert.equal(parsed.parts.map((p) => p.text).join(''), 'AB');
+});
+
+test('parseChunkForContent reads object-shaped response/content payloads (Go parity)', () => {
+  const parsed = parseChunkForContent({ p: 'response/content', v: { text: 'vision text' } }, false, 'text', true);
+  assert.equal(parsed.parsed, true);
+  assert.deepEqual(parsed.parts, [{ text: 'vision text', type: 'text' }]);
 });
 
 test('parseChunkForContent preserves space-only content tokens', () => {

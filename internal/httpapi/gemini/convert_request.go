@@ -36,16 +36,17 @@ func normalizeGeminiRequest(store ConfigReader, routeModel string, req map[strin
 	passThrough := collectGeminiPassThrough(req)
 
 	return promptcompat.StandardRequest{
-		Surface:        "google_gemini",
-		RequestedModel: requestedModel,
-		ResolvedModel:  resolvedModel,
-		ResponseModel:  requestedModel,
-		Messages:       messagesRaw,
-		FinalPrompt:    finalPrompt,
-		ToolNames:      toolNames,
-		Stream:         stream,
-		Thinking:       thinkingEnabled,
-		Search:         searchEnabled,
-		PassThrough:    passThrough,
+		Surface:         "google_gemini",
+		RequestedModel:  requestedModel,
+		ResolvedModel:   resolvedModel,
+		ResponseModel:   requestedModel,
+		Messages:        messagesRaw,
+		PromptTokenText: finalPrompt,
+		FinalPrompt:     finalPrompt,
+		ToolNames:       toolNames,
+		Stream:          stream,
+		Thinking:        thinkingEnabled,
+		Search:          searchEnabled,
+		PassThrough:     passThrough,
 	}, nil
 }

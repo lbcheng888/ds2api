@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 
 	openaifmt "ds2api/internal/format/openai"
-	"ds2api/internal/toolcall"
+	"ds2api/internal/sse"
 	"ds2api/internal/toolstream"
 )
 
@@ -43,13 +43,11 @@ func (s *responsesStreamRuntime) sendDone() {
 
 func (s *responsesStreamRuntime) processToolStreamEvents(events []toolstream.Event, emitContent bool, resetAfterToolCalls bool) {
 	for _, evt := range events {
-		if evt.ErrorMessage != "" {
-			status, message, code := invalidToolCallDetail(evt.ErrorMessage)
-			s.failResponse(status, message, code)
-			return
-		}
 		if emitContent && evt.Content != "" {
-			s.emitTextDelta(evt.Content)
+			cleaned := cleanVisibleOutput(evt.Content, s.stripReferenceMarkers)
+			if cleaned != "" && (!s.searchEnabled || !sse.IsCitation(cleaned)) {
+				s.emitTextDelta(cleaned)
+			}
 		}
 		if len(evt.ToolCallDeltas) > 0 {
 			if !s.emitEarlyToolDeltas {
@@ -62,15 +60,7 @@ func (s *responsesStreamRuntime) processToolStreamEvents(events []toolstream.Eve
 			s.emitFunctionCallDeltaEvents(filtered)
 		}
 		if len(evt.ToolCalls) > 0 {
-			calls := toolcall.NormalizeCallsForSchemasWithMeta(evt.ToolCalls, s.toolSchemas, s.allowMetaAgentTools)
-			if len(calls) == 0 {
-				continue
-			}
-			if status, message, code, ok := invalidTaskOutputCallDetail(calls, s.finalPrompt); ok {
-				s.failResponse(status, message, code)
-				return
-			}
-			s.emitFunctionCallDoneEvents(calls)
+			s.emitFunctionCallDoneEvents(evt.ToolCalls)
 			if resetAfterToolCalls {
 				s.resetStreamToolCallState()
 			}

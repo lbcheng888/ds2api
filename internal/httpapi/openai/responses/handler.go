@@ -134,8 +134,8 @@ func filterIncrementalToolCallDeltasByAllowed(deltas []toolstream.ToolCallDelta,
 	return shared.FilterIncrementalToolCallDeltasByAllowed(deltas, seenNames)
 }
 
-func detectAssistantToolCalls(text, exposedThinking, detectionThinking string, toolNames []string) toolcall.ToolCallParseResult {
-	return shared.DetectAssistantToolCalls(text, exposedThinking, detectionThinking, toolNames)
+func detectAssistantToolCalls(rawText, visibleText, exposedThinking, detectionThinking string, toolNames []string) toolcall.ToolCallParseResult {
+	return shared.DetectAssistantToolCalls(rawText, visibleText, exposedThinking, detectionThinking, toolNames)
 }
 
 func invalidTaskOutputCallDetail(calls []toolcall.ParsedToolCall, finalPrompt string) (int, string, string, bool) {

@@ -36,7 +36,7 @@ go run ./cmd/ds2api
 cd webui
 
 # 2. Install dependencies
-npm install
+npm ci
 
 # 3. Start dev server (hot reload)
 npm run dev

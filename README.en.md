@@ -16,7 +16,7 @@
 
 Language: [中文](README.MD) | [English](README.en.md)
 
-DS2API converts DeepSeek Web chat capability into OpenAI-compatible, Claude-compatible, and Gemini-compatible APIs. The backend is a **pure Go implementation**, with a React WebUI admin panel (source in `webui/`, build output auto-generated to `static/admin` during deployment).
+DS2API converts DeepSeek Web chat capability into OpenAI-compatible, Claude-compatible, and Gemini-compatible APIs. The core backend is Go-based, with a small Node Runtime bridge used for Vercel streaming, and the React WebUI admin panel lives in `webui/` (build output auto-generated to `static/admin` during deployment).
 
 Documentation entry: [Docs Index](docs/README.md) / [Architecture](docs/ARCHITECTURE.en.md) / [API Reference](API.en.md)
 
@@ -27,6 +27,30 @@ Documentation entry: [Docs Index](docs/README.md) / [Architecture](docs/ARCHITEC
 > The author and repository maintainers are not responsible for any direct or indirect loss, account suspension, data loss, legal risk, or third-party claims arising from use, modification, distribution, deployment, or reliance on this project.
 >
 > Do not use this project in ways that violate service terms, agreements, laws, or platform rules. Before any commercial use, review the `LICENSE`, the relevant terms, and confirm that you have the author's written permission.
+
+## Table of Contents
+
+- [Architecture Overview (Summary)](#architecture-overview-summary)
+- [Key Capabilities](#key-capabilities)
+- [Platform Compatibility Matrix](#platform-compatibility-matrix)
+- [Model Support](#model-support)
+  - [OpenAI Endpoint](#openai-endpoint-get-v1models)
+  - [Claude Endpoint](#claude-endpoint-get-anthropicv1models)
+  - [Gemini Endpoint](#gemini-endpoint)
+- [Quick Start](#quick-start)
+  - [Option 1: Download Release Binaries](#option-1-download-release-binaries)
+  - [Option 2: Docker / GHCR](#option-2-docker--ghcr)
+  - [Option 3: Vercel](#option-3-vercel)
+  - [Option 4: Local Run](#option-4-local-run)
+- [Configuration](#configuration)
+- [Authentication Modes](#authentication-modes)
+- [Concurrency Model](#concurrency-model)
+- [Tool Call Adaptation](#tool-call-adaptation)
+- [Local Dev Packet Capture](#local-dev-packet-capture)
+- [Documentation Index](#documentation-index)
+- [Testing](#testing)
+- [Release Artifact Automation (GitHub Actions)](#release-artifact-automation-github-actions)
+- [Disclaimer](#disclaimer)
 
 ## Architecture Overview (Summary)
 
@@ -104,6 +128,8 @@ For the full module-by-module architecture and directory responsibilities, see [
 | WebUI Admin Panel | SPA at `/admin` (bilingual Chinese/English, dark mode, with server-side conversation history) |
 | Health Probes | `GET /healthz` (liveness), `GET /readyz` (readiness) |
 
+OpenAI `/v1/*` routes remain canonical, and DS2API also accepts root shortcuts such as `/models`, `/chat/completions`, `/responses`, `/embeddings`, and `/files` for clients configured with the bare service URL.
+
 ## Platform Compatibility Matrix
 
 | Tier | Platform | Status |
@@ -126,9 +152,9 @@ For the full module-by-module architecture and directory responsibilities, see [
 | default | `deepseek-v4-flash-search` | enabled by default, request-controlled | ✅ |
 | expert | `deepseek-v4-pro-search` | enabled by default, request-controlled | ✅ |
 | vision | `deepseek-v4-vision` | enabled by default, request-controlled | ❌ |
-| vision | `deepseek-v4-vision-search` | enabled by default, request-controlled | ✅ |
 
 Besides native IDs, DS2API also accepts common aliases as input (for example `gpt-4.1`, `gpt-5`, `gpt-5-codex`, `o3`, `claude-*`, `gemini-*`), but `/v1/models` returns normalized DeepSeek native model IDs. The complete alias behavior is documented in [API.en.md](API.en.md#model-alias-resolution) and `config.example.json`.
+Current upstream vision support exposes only the `vision` lane and does not provide a separate search-enabled vision variant.
 
 ### Claude Endpoint (`GET /anthropic/v1/models`)
 
@@ -209,6 +235,7 @@ docker-compose up -d
 ```
 
 The default `docker-compose.yml` uses `ghcr.io/cjackhwang/ds2api:latest` and maps host port `6011` to container port `5001`. If you want `5001` exposed directly, set `DS2API_HOST_PORT=5001` (or adjust the `ports` mapping).
+It also mounts `./config.json` to `/data/config.json` and sets `DS2API_CONFIG_PATH=/data/config.json` by default, which avoids runtime token persistence failures caused by read-only `/app`.
 
 Rebuild after updates: `docker-compose up -d --build`
 
@@ -279,7 +306,7 @@ Common fields:
 - `runtime`: account concurrency, queueing, and token refresh behavior, hot-reloadable via Admin Settings.
 - `auto_delete.mode`: remote session cleanup after each request, supporting `none` / `single` / `all`.
 - `history_split`: legacy multi-turn history split field, now ignored and kept only for backward-compatible config loading.
-- `current_input_file`: the only active split mode; it is enabled by default and uploads the full context as a hidden context file once the character threshold is reached.
+- `current_input_file`: the only active split mode; it is enabled by default and uploads the full context as a `DS2API_HISTORY.txt` context file once the character threshold is reached.
 - If you turn off `current_input_file`, requests pass through directly without uploading any split context file.
 
 For the full environment variable list, see [docs/DEPLOY.en.md](docs/DEPLOY.en.md). For auth behavior, see [API.en.md](API.en.md#authentication).
@@ -382,10 +409,10 @@ npm run build --prefix webui
 
 Workflow: `.github/workflows/release-artifacts.yml`
 
-- **Trigger**: only on GitHub Release `published` (normal pushes do not trigger builds)
-- **Outputs**: multi-platform archives (`linux/amd64`, `linux/arm64`, `linux/armv7`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`, `windows/arm64`) + `sha256sums.txt`
+- **Trigger**: by default only on GitHub Release `published`; you can also run it manually via `workflow_dispatch` and pass `release_tag` to rerun / backfill
+- **Outputs**: multi-platform binary archives (`linux/amd64`, `linux/arm64`, `linux/armv7`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`, `windows/arm64`), Linux Docker image export tarballs, and `sha256sums.txt`
 - **Container publishing**: GHCR only (`ghcr.io/cjackhwang/ds2api`)
-- **Each archive includes**: `ds2api` executable, `static/admin`, WASM file (with embedded fallback support), `config.example.json`-based config template, README, LICENSE
+- **Each binary archive includes**: the `ds2api` executable, `static/admin`, `config.example.json`, `.env.example`, `README.MD`, `README.en.md`, and `LICENSE`
 
 ## Disclaimer
 

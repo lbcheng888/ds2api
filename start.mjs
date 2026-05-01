@@ -11,12 +11,11 @@
  *   node start.mjs install  # 安装前端依赖
  *   node start.mjs stop     # 停止所有服务
  *   node start.mjs status   # 查看服务状态
- *   node start.mjs service-restart # 以 macOS launchd 常驻方式重启后端
  */
 
 import { spawn, execSync } from 'child_process';
 import { createInterface } from 'readline';
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -28,9 +27,6 @@ const isWindows = process.platform === 'win32';
 
 // 编译产物路径
 const BINARY = join(__dirname, isWindows ? 'ds2api.exe' : 'ds2api');
-const LAUNCHD_LABEL = 'com.lbcheng.ds2api';
-const LAUNCHD_PLIST = join(process.env.HOME || '', 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
-const LAUNCHD_LOG_DIR = join(__dirname, 'logs');
 
 // 配置（从环境变量读取，与 Go 主程序保持一致）
 const CONFIG = {
@@ -38,7 +34,6 @@ const CONFIG = {
   frontendPort: 5173,
   logLevel: process.env.LOG_LEVEL || 'INFO',
   adminKey: process.env.DS2API_ADMIN_KEY || 'admin',
-  configPath: process.env.DS2API_CONFIG_PATH || join(__dirname, 'config.json'),
   webuiDir: join(__dirname, 'webui'),
   staticAdminDir: process.env.DS2API_STATIC_ADMIN_DIR || join(__dirname, 'static', 'admin'),
 };
@@ -131,9 +126,12 @@ function binaryExists() {
 
 // 查找占用端口的进程 PID
 function findPidByPort(port) {
+  const numericPort = parseInt(port, 10);
+  if (isNaN(numericPort)) return [];
+  
   try {
     if (isWindows) {
-      const output = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, {
+      const output = execSync(`netstat -ano | findstr :${numericPort} | findstr LISTENING`, {
         encoding: 'utf-8',
         shell: true,
         stdio: ['pipe', 'pipe', 'ignore'],
@@ -146,7 +144,7 @@ function findPidByPort(port) {
       }
       return [...pids];
     } else {
-      const output = execSync(`lsof -nP -tiTCP:${port} -sTCP:LISTEN`, {
+      const output = execSync(`lsof -ti :${numericPort}`, {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'ignore'],
       });
@@ -168,202 +166,8 @@ function getRunningStatus() {
   };
 }
 
-function userLaunchdDomain() {
-  const uid = execSync('id -u', { encoding: 'utf-8' }).trim();
-  return `gui/${uid}`;
-}
-
-function xmlEscape(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&apos;');
-}
-
-function writeLaunchAgentPlist() {
-  if (isWindows) throw new Error('launchd 仅支持 macOS');
-  if (!process.env.HOME) throw new Error('HOME 未设置，无法写入 LaunchAgents');
-  mkdirSync(dirname(LAUNCHD_PLIST), { recursive: true });
-  mkdirSync(LAUNCHD_LOG_DIR, { recursive: true });
-  const env = {
-    PORT: CONFIG.port,
-    LOG_LEVEL: CONFIG.logLevel,
-    DS2API_ADMIN_KEY: CONFIG.adminKey,
-    DS2API_CONFIG_PATH: CONFIG.configPath,
-    DS2API_STATIC_ADMIN_DIR: CONFIG.staticAdminDir,
-    PATH: process.env.PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
-  };
-  const envXML = Object.entries(env)
-    .map(([key, value]) => `    <key>${xmlEscape(key)}</key>\n    <string>${xmlEscape(value)}</string>`)
-    .join('\n');
-  const plist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${xmlEscape(LAUNCHD_LABEL)}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${xmlEscape(BINARY)}</string>
-  </array>
-  <key>WorkingDirectory</key>
-  <string>${xmlEscape(__dirname)}</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-${envXML}
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>${xmlEscape(join(LAUNCHD_LOG_DIR, 'ds2api.launchd.out.log'))}</string>
-  <key>StandardErrorPath</key>
-  <string>${xmlEscape(join(LAUNCHD_LOG_DIR, 'ds2api.launchd.err.log'))}</string>
-</dict>
-</plist>
-`;
-  writeFileSync(LAUNCHD_PLIST, plist, 'utf-8');
-  return LAUNCHD_PLIST;
-}
-
-function launchctl(args, options = {}) {
-  return execSync(`launchctl ${args.join(' ')}`, {
-    encoding: 'utf-8',
-    stdio: options.stdio || ['ignore', 'pipe', 'pipe'],
-  });
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function restartDrainTimeoutMs() {
-  const raw = Number.parseInt(process.env.DS2API_RESTART_DRAIN_TIMEOUT_SECONDS || '300', 10);
-  const seconds = Number.isFinite(raw) && raw >= 0 ? raw : 300;
-  return seconds * 1000;
-}
-
-function forceRestartEnabled() {
-  return ['1', 'true', 'yes'].includes(String(process.env.DS2API_FORCE_RESTART || '').trim().toLowerCase());
-}
-
-async function fetchQueueStatus() {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 1500);
-  try {
-    const res = await fetch(`http://127.0.0.1:${CONFIG.port}/admin/queue/status`, {
-      headers: { Authorization: `Bearer ${CONFIG.adminKey}` },
-      signal: controller.signal,
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function countEstablishedBackendConnections() {
-  if (isWindows) return 0;
-  try {
-    const output = execSync(`lsof -nP -iTCP:${CONFIG.port} -sTCP:ESTABLISHED`, {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'ignore'],
-    });
-    return output.trim().split('\n').filter(line => line.trim() && !line.startsWith('COMMAND')).length;
-  } catch {
-    return 0;
-  }
-}
-
-async function waitForBackendDrain() {
-  const timeoutMs = restartDrainTimeoutMs();
-  if (timeoutMs === 0 || forceRestartEnabled()) return;
-  if (getRunningStatus().backend.length === 0) return;
-
-  const started = Date.now();
-  let lastDetail = '';
-  while (Date.now() - started <= timeoutMs) {
-    const status = await fetchQueueStatus();
-    if (status) {
-      const inUse = Number(status.in_use || 0);
-      const waiting = Number(status.waiting || 0);
-      if (inUse === 0 && waiting === 0) return;
-      lastDetail = `in_use=${inUse}, waiting=${waiting}`;
-    } else {
-      const established = countEstablishedBackendConnections();
-      if (established === 0) return;
-      lastDetail = `established_connections=${established}`;
-    }
-    log.warn(`后端仍有活跃请求，等待安全重启 (${lastDetail})...`);
-    await sleep(3000);
-  }
-  throw new Error(`service-restart 已取消：${Math.round(timeoutMs / 1000)} 秒内后端仍未空闲 (${lastDetail || 'unknown'}). 如确认要强制重启，设置 DS2API_FORCE_RESTART=1`);
-}
-
-function bootoutLaunchAgent({ quiet = false } = {}) {
-  if (isWindows) return;
-  try {
-    launchctl(['bootout', userLaunchdDomain(), LAUNCHD_PLIST], { stdio: quiet ? 'ignore' : 'inherit' });
-  } catch {
-    try {
-      launchctl(['bootout', `${userLaunchdDomain()}/${LAUNCHD_LABEL}`], { stdio: quiet ? 'ignore' : 'inherit' });
-    } catch {
-      // 未加载时 bootout 会失败，属于正常状态。
-    }
-  }
-}
-
-async function startLaunchAgent() {
-  if (isWindows) throw new Error('service-start 仅支持 macOS launchd');
-  if (!binaryExists()) {
-    log.warn('未找到编译产物，正在编译...');
-    await buildBackend();
-  }
-  const plistPath = writeLaunchAgentPlist();
-  bootoutLaunchAgent({ quiet: true });
-  launchctl(['bootstrap', userLaunchdDomain(), plistPath], { stdio: 'inherit' });
-  launchctl(['kickstart', '-k', `${userLaunchdDomain()}/${LAUNCHD_LABEL}`], { stdio: 'inherit' });
-  log.success(`launchd 后端已启动: ${LAUNCHD_LABEL}`);
-  log.info(`plist: ${plistPath}`);
-  log.info(`日志: ${join(LAUNCHD_LOG_DIR, 'ds2api.launchd.out.log')}`);
-}
-
-function stopLaunchAgent() {
-  if (isWindows) throw new Error('service-stop 仅支持 macOS launchd');
-  bootoutLaunchAgent({ quiet: true });
-  log.success(`launchd 后端已停止: ${LAUNCHD_LABEL}`);
-}
-
-async function restartLaunchAgent() {
-  if (isWindows) throw new Error('service-restart 仅支持 macOS launchd');
-  await waitForBackendDrain();
-  stopLaunchAgent();
-  await startLaunchAgent();
-}
-
-function showLaunchAgentStatus() {
-  if (isWindows) throw new Error('service-status 仅支持 macOS launchd');
-  try {
-    const out = launchctl(['print', `${userLaunchdDomain()}/${LAUNCHD_LABEL}`]);
-    const stateLine = out.split('\n').find(line => line.includes('state =')) || 'state = unknown';
-    log.success(`${LAUNCHD_LABEL}: ${stateLine.trim()}`);
-  } catch {
-    log.warn(`${LAUNCHD_LABEL}: 未加载`);
-  }
-  const running = getRunningStatus();
-  console.log(`  后端 (:${CONFIG.port}): ${running.backend.length > 0 ? `${colors.green}运行中${colors.reset} (PID: ${running.backend.join(', ')})` : `${colors.dim}未运行${colors.reset}`}`);
-}
-
 // 停止服务
 async function stopServices() {
-  if (!isWindows) {
-    bootoutLaunchAgent({ quiet: true });
-  }
   const running = getRunningStatus();
 
   if (!running.isRunning) {
@@ -416,7 +220,7 @@ async function installFrontendDeps() {
     const proc = spawn('npm', ['ci', '--registry', MIRRORS.npm], {
       cwd: CONFIG.webuiDir,
       stdio: 'inherit',
-      shell: true,
+      shell: isWindows,
     });
     proc.on('close', code => code === 0 ? resolve() : reject(new Error('前端依赖安装失败')));
   });
@@ -438,7 +242,7 @@ async function buildBackend() {
     const proc = spawn('go', ['build', '-o', BINARY, './cmd/ds2api'], {
       cwd: __dirname,
       stdio: 'inherit',
-      shell: true,
+      shell: isWindows,
       env: { ...process.env, GOPROXY: MIRRORS.goproxy },
     });
     proc.on('close', code => code === 0 ? resolve() : reject(new Error('后端编译失败')));
@@ -456,7 +260,7 @@ async function buildWebui() {
   return new Promise((resolve, reject) => {
     const proc = spawn(
       'npm', ['run', 'build', '--', '--outDir', CONFIG.staticAdminDir, '--emptyOutDir'],
-      { cwd: CONFIG.webuiDir, stdio: 'inherit', shell: true }
+      { cwd: CONFIG.webuiDir, stdio: 'inherit', shell: isWindows }
     );
     proc.on('close', code => code === 0 ? resolve() : reject(new Error('前端构建失败')));
   });
@@ -469,9 +273,8 @@ async function startBackendDev() {
   const proc = spawn('go', ['run', './cmd/ds2api'], {
     cwd: __dirname,
     stdio: 'inherit',
-    shell: true,
-    env: {
-      ...process.env,
+    shell: isWindows,
+    env: { ...process.env,
       PORT: CONFIG.port,
       LOG_LEVEL: CONFIG.logLevel,
       DS2API_ADMIN_KEY: CONFIG.adminKey,
@@ -580,7 +383,6 @@ async function showMenu() {
   console.log(`  PORT:              ${colors.cyan}${CONFIG.port}${colors.reset}`);
   console.log(`  LOG_LEVEL:         ${colors.cyan}${CONFIG.logLevel}${colors.reset}`);
   console.log(`  DS2API_ADMIN_KEY:  ${colors.cyan}${CONFIG.adminKey}${colors.reset}`);
-  console.log(`  DS2API_CONFIG_PATH:${colors.cyan}${CONFIG.configPath}${colors.reset}`);
   console.log(`  GOPROXY:           ${colors.cyan}${MIRRORS.goproxy}${colors.reset}`);
   console.log(`  NPM_REGISTRY:      ${colors.cyan}${MIRRORS.npm}${colors.reset}`);
   console.log(`${colors.dim}  自定义: DS2API_ADMIN_KEY=密钥 PORT=5001 node start.mjs${colors.reset}`);
@@ -670,7 +472,7 @@ ${colors.bright}请选择操作:${colors.reset}
 async function main() {
   const cmd = process.argv[2];
 
-  if (!checkGo() && !['install', 'webui', 'stop', 'status', 'service-stop', 'service-status', 'help', '-h', '--help'].includes(cmd)) {
+  if (!checkGo() && !['install', 'webui', 'stop', 'status', 'help', '-h', '--help'].includes(cmd)) {
     log.error('未找到 Go，请先安装 Go: https://go.dev/dl/');
     if (!cmd) {
       // 无 Go 时仍允许进入菜单（可以只操作前端）
@@ -726,22 +528,6 @@ async function main() {
       break;
     }
 
-    case 'service-start':
-      await startLaunchAgent();
-      break;
-
-    case 'service-stop':
-      stopLaunchAgent();
-      break;
-
-    case 'service-restart':
-      await restartLaunchAgent();
-      break;
-
-    case 'service-status':
-      showLaunchAgentStatus();
-      break;
-
     case 'help':
     case '-h':
     case '--help':
@@ -757,10 +543,6 @@ ${colors.cyan}使用方法:${colors.reset}
   node start.mjs install      安装前端依赖 (npm ci)
   node start.mjs stop         停止所有服务
   node start.mjs status       查看服务状态
-  node start.mjs service-start   macOS launchd 常驻启动后端
-  node start.mjs service-stop    macOS launchd 停止后端
-  node start.mjs service-restart macOS launchd 重启后端
-  node start.mjs service-status  查看 launchd 后端状态
 
 ${colors.cyan}常用环境变量:${colors.reset}
   PORT               后端端口 (默认: 5001)

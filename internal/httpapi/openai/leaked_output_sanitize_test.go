@@ -42,35 +42,11 @@ func TestSanitizeLeakedOutputRemovesDanglingThinkBlock(t *testing.T) {
 	}
 }
 
-func TestSanitizeLeakedOutputRemovesDanglingToolTagFragment(t *testing.T) {
-	raw := "Let me inspect more files.\n\n\ntool_calls>\n"
+func TestSanitizeLeakedOutputRemovesCompleteDSMLToolCallWrapper(t *testing.T) {
+	raw := "前置文本\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"Bash\">\n<｜DSML｜parameter name=\"command\"></｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>\n后置文本"
 	got := sanitizeLeakedOutput(raw)
-	if got != "Let me inspect more files.\n" {
-		t.Fatalf("unexpected sanitize result for dangling tool tag fragment: %q", got)
-	}
-}
-
-func TestSanitizeLeakedOutputRemovesSystemReminderBlocks(t *testing.T) {
-	raw := "前文\n<system-reminder>\ninternal planning instructions\n</system-reminder>\n后文"
-	got := sanitizeLeakedOutput(raw)
-	if got != "前文\n\n后文" {
-		t.Fatalf("unexpected sanitize result for system reminder block: %q", got)
-	}
-}
-
-func TestSanitizeLeakedOutputRemovesDanglingSystemReminder(t *testing.T) {
-	raw := "前文\n<system-reminder>\ninternal planning instructions"
-	got := sanitizeLeakedOutput(raw)
-	if got != "前文\n" {
-		t.Fatalf("unexpected sanitize result for dangling system reminder: %q", got)
-	}
-}
-
-func TestSanitizeLeakedOutputRemovesCodexCorePrinciplesLeak(t *testing.T) {
-	raw := "可见结论\nAs you answer the user's questions, you can use the following context:\n# Codex Core Principles\n- Codex is an AI-first coding agent, built on GPT-5.\n- User messages are in the Codex thread."
-	got := sanitizeLeakedOutput(raw)
-	if got != "可见结论" {
-		t.Fatalf("unexpected sanitize result for codex core principles leak: %q", got)
+	if got != "前置文本\n\n后置文本" {
+		t.Fatalf("unexpected sanitize result for leaked dsml wrapper: %q", got)
 	}
 }
 

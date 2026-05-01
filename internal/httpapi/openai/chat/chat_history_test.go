@@ -126,6 +126,7 @@ func TestStartChatHistoryRecoversFromTransientWriteFailure(t *testing.T) {
 	session := startChatHistory(historyStore, req, a, stdReq)
 	if session == nil {
 		t.Fatalf("expected session even when initial persistence fails")
+		return
 	}
 	if session.disabled {
 		t.Fatalf("expected session to remain active after transient start failure")
@@ -194,7 +195,7 @@ func TestHandleStreamContextCancelledMarksHistoryStopped(t *testing.T) {
 	rec := httptest.NewRecorder()
 	resp := makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":"hello"}`, `data: [DONE]`)
 
-	h.handleStream(rec, req, resp, "cid-stop", "deepseek-v4-flash", "prompt", false, false, nil, session)
+	h.handleStream(rec, req, resp, "cid-stop", "deepseek-v4-flash", "prompt", 0, false, false, nil, nil, session)
 
 	snapshot, err := historyStore.Snapshot()
 	if err != nil {
@@ -307,19 +308,19 @@ func TestChatCompletionsCurrentInputFilePersistsNeutralPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected detail item, got %v", err)
 	}
-	if full.HistoryText != "" {
-		t.Fatalf("expected current input file flow to leave history text empty, got %q", full.HistoryText)
-	}
 	if len(ds.uploadCalls) != 1 {
 		t.Fatalf("expected current input upload to happen, got %d", len(ds.uploadCalls))
 	}
-	if ds.uploadCalls[0].Filename != "IGNORE.txt" {
-		t.Fatalf("expected IGNORE.txt upload, got %q", ds.uploadCalls[0].Filename)
+	if ds.uploadCalls[0].Filename != "DS2API_HISTORY.txt" {
+		t.Fatalf("expected DS2API_HISTORY.txt upload, got %q", ds.uploadCalls[0].Filename)
+	}
+	if full.HistoryText != string(ds.uploadCalls[0].Data) {
+		t.Fatalf("expected uploaded current input file to be persisted in history text")
 	}
 	if len(full.Messages) != 1 {
-		t.Fatalf("expected neutral prompt to be the only persisted message, got %#v", full.Messages)
+		t.Fatalf("expected continuation prompt to be the only persisted message, got %#v", full.Messages)
 	}
-	if !strings.Contains(full.Messages[0].Content, "Answer the latest user request directly.") {
-		t.Fatalf("expected neutral prompt to be persisted, got %#v", full.Messages[0])
+	if !strings.Contains(full.Messages[0].Content, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
+		t.Fatalf("expected continuation prompt to be persisted, got %#v", full.Messages[0])
 	}
 }

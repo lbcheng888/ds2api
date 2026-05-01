@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -93,7 +94,7 @@ func TestHandleNonStreamReturns429WhenUpstreamOutputEmpty(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-empty", "deepseek-v4-flash", "prompt", false, false, nil, nil)
+	h.handleNonStream(rec, resp, "cid-empty", "deepseek-v4-flash", "prompt", 0, false, false, nil, nil, nil)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected status 429 for empty upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -112,7 +113,7 @@ func TestHandleNonStreamReturnsContentFilterErrorWhenUpstreamFilteredWithoutOutp
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-empty-filtered", "deepseek-v4-flash", "prompt", false, false, nil, nil)
+	h.handleNonStream(rec, resp, "cid-empty-filtered", "deepseek-v4-flash", "prompt", 0, false, false, nil, nil, nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400 for filtered upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -131,7 +132,7 @@ func TestHandleNonStreamReturns429WhenUpstreamHasOnlyThinking(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-thinking-only", "deepseek-v4-pro", "prompt", true, false, nil, nil)
+	h.handleNonStream(rec, resp, "cid-thinking-only", "deepseek-v4-pro", "prompt", 0, true, false, nil, nil, nil)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected status 429 for thinking-only upstream output, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -150,7 +151,7 @@ func TestHandleNonStreamPromotesThinkingToolCallsWhenTextEmpty(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-thinking-tool", "deepseek-v4-pro", "prompt", true, false, []string{"search"}, nil)
+	h.handleNonStream(rec, resp, "cid-thinking-tool", "deepseek-v4-pro", "prompt", 0, true, false, []string{"search"}, nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for thinking tool calls, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -181,7 +182,7 @@ func TestHandleNonStreamPromotesHiddenThinkingDSMLToolCallsWhenTextEmpty(t *test
 	)
 	rec := httptest.NewRecorder()
 
-	h.handleNonStream(rec, resp, "cid-hidden-thinking-tool", "deepseek-v4-pro", "prompt", false, false, []string{"search"}, nil)
+	h.handleNonStream(rec, resp, "cid-hidden-thinking-tool", "deepseek-v4-pro", "prompt", 0, false, false, []string{"search"}, nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for hidden thinking tool calls, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -211,7 +212,7 @@ func TestHandleStreamToolsPlainTextStreamsBeforeFinish(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	h.handleStream(rec, req, resp, "cid6", "deepseek-v4-flash", "prompt", false, false, []string{"search"}, nil)
+	h.handleStream(rec, req, resp, "cid6", "deepseek-v4-flash", "prompt", 0, false, false, []string{"search"}, nil, nil)
 
 	frames, done := parseSSEDataFrames(t, rec.Body.String())
 	if !done {
@@ -239,6 +240,118 @@ func TestHandleStreamToolsPlainTextStreamsBeforeFinish(t *testing.T) {
 	}
 }
 
+func TestHandleStreamThinkingDisabledDoesNotLeakHiddenFragmentContinuations(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/fragments","o":"APPEND","v":[{"type":"THINK","content":"我们"}]}`,
+		`data: {"p":"response/fragments/-1/content","v":"被"}`,
+		`data: {"v":"要求"}`,
+		`data: {"p":"response/fragments","o":"APPEND","v":[{"type":"RESPONSE","content":"答"}]}`,
+		`data: {"p":"response/fragments/-1/content","v":"案"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h.handleStream(rec, req, resp, "cid-hidden-fragment", "deepseek-v4-flash", "prompt", 0, false, false, nil, nil, nil)
+
+	frames, done := parseSSEDataFrames(t, rec.Body.String())
+	if !done {
+		t.Fatalf("expected [DONE], body=%s", rec.Body.String())
+	}
+	content := strings.Builder{}
+	for _, frame := range frames {
+		choices, _ := frame["choices"].([]any)
+		for _, item := range choices {
+			choice, _ := item.(map[string]any)
+			delta, _ := choice["delta"].(map[string]any)
+			if c, ok := delta["content"].(string); ok {
+				content.WriteString(c)
+			}
+		}
+	}
+	if got := content.String(); got != "答案" {
+		t.Fatalf("expected only visible response text, got %q body=%s", got, rec.Body.String())
+	}
+}
+
+func TestHandleStreamEmitsSingleChoiceFramesForMultipleParsedParts(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/fragments","o":"APPEND","v":[{"type":"THINK","content":"我们"},{"type":"THINK","content":"被"},{"type":"THINK","content":"要求"},{"type":"RESPONSE","content":"答"},{"type":"RESPONSE","content":"案"}]}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h.handleStream(rec, req, resp, "cid-multi-parts", "deepseek-v4-pro", "prompt", 0, true, false, nil, nil, nil)
+
+	frames, done := parseSSEDataFrames(t, rec.Body.String())
+	if !done {
+		t.Fatalf("expected [DONE], body=%s", rec.Body.String())
+	}
+	var reasoning, content strings.Builder
+	for _, frame := range frames {
+		choices, _ := frame["choices"].([]any)
+		if len(choices) != 1 {
+			t.Fatalf("expected exactly one choice per stream frame, got %d frame=%#v body=%s", len(choices), frame, rec.Body.String())
+		}
+		choice, _ := choices[0].(map[string]any)
+		delta, _ := choice["delta"].(map[string]any)
+		reasoning.WriteString(asString(delta["reasoning_content"]))
+		content.WriteString(asString(delta["content"]))
+	}
+	if got := reasoning.String(); got != "我们被要求" {
+		t.Fatalf("first-choice-only client would miss reasoning tokens: got %q body=%s", got, rec.Body.String())
+	}
+	if got := content.String(); got != "答案" {
+		t.Fatalf("first-choice-only client would miss content tokens: got %q body=%s", got, rec.Body.String())
+	}
+}
+
+func TestHandleStreamCoalescesSmallContentDeltas(t *testing.T) {
+	h := &Handler{}
+	lines := make([]string, 0, 101)
+	for i := 0; i < 100; i++ {
+		b, _ := json.Marshal(map[string]any{
+			"p": "response/content",
+			"v": "字",
+		})
+		lines = append(lines, "data: "+string(b))
+	}
+	lines = append(lines, "data: [DONE]")
+	resp := makeSSEHTTPResponse(lines...)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h.handleStream(rec, req, resp, "cid-coalesce", "deepseek-v4-flash", "prompt", 0, false, false, nil, nil, nil)
+
+	frames, done := parseSSEDataFrames(t, rec.Body.String())
+	if !done {
+		t.Fatalf("expected [DONE], body=%s", rec.Body.String())
+	}
+	var content strings.Builder
+	contentDeltaFrames := 0
+	for _, frame := range frames {
+		choices, _ := frame["choices"].([]any)
+		if len(choices) != 1 {
+			t.Fatalf("expected exactly one choice per stream frame, got %d frame=%#v body=%s", len(choices), frame, rec.Body.String())
+		}
+		choice, _ := choices[0].(map[string]any)
+		delta, _ := choice["delta"].(map[string]any)
+		if c, ok := delta["content"].(string); ok {
+			contentDeltaFrames++
+			content.WriteString(c)
+		}
+	}
+	if got, want := content.String(), strings.Repeat("字", 100); got != want {
+		t.Fatalf("coalesced stream content mismatch: got %q want %q body=%s", got, want, rec.Body.String())
+	}
+	if contentDeltaFrames >= 100 {
+		t.Fatalf("expected coalescing to reduce 100 tiny content frames, got %d body=%s", contentDeltaFrames, rec.Body.String())
+	}
+}
+
 func TestHandleStreamIncompleteCapturedToolJSONFlushesAsTextOnFinalize(t *testing.T) {
 	h := &Handler{}
 	resp := makeSSEHTTPResponse(
@@ -248,7 +361,7 @@ func TestHandleStreamIncompleteCapturedToolJSONFlushesAsTextOnFinalize(t *testin
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	h.handleStream(rec, req, resp, "cid10", "deepseek-v4-flash", "prompt", false, false, []string{"search"}, nil)
+	h.handleStream(rec, req, resp, "cid10", "deepseek-v4-flash", "prompt", 0, false, false, []string{"search"}, nil, nil)
 
 	frames, done := parseSSEDataFrames(t, rec.Body.String())
 	if !done {
@@ -282,7 +395,7 @@ func TestHandleStreamPromotesThinkingToolCallsOnFinalizeWithoutMidstreamIntercep
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	h.handleStream(rec, req, resp, "cid-thinking-stream", "deepseek-v4-pro", "prompt", true, false, []string{"search"}, nil)
+	h.handleStream(rec, req, resp, "cid-thinking-stream", "deepseek-v4-pro", "prompt", 0, true, false, []string{"search"}, nil, nil)
 
 	frames, done := parseSSEDataFrames(t, rec.Body.String())
 	if !done {
@@ -291,19 +404,15 @@ func TestHandleStreamPromotesThinkingToolCallsOnFinalizeWithoutMidstreamIntercep
 	if !streamHasToolCallsDelta(frames) {
 		t.Fatalf("expected tool_calls delta from finalize fallback, body=%s", rec.Body.String())
 	}
-	reasoningSeen := false
 	for _, frame := range frames {
 		choices, _ := frame["choices"].([]any)
 		for _, item := range choices {
 			choice, _ := item.(map[string]any)
 			delta, _ := choice["delta"].(map[string]any)
 			if asString(delta["reasoning_content"]) != "" {
-				reasoningSeen = true
+				t.Fatalf("did not expect leaked reasoning_content markup, body=%s", rec.Body.String())
 			}
 		}
-	}
-	if !reasoningSeen {
-		t.Fatalf("expected reasoning_content to stream before finalize fallback, body=%s", rec.Body.String())
 	}
 	if streamFinishReason(frames) != "tool_calls" {
 		t.Fatalf("expected finish_reason=tool_calls, body=%s", rec.Body.String())
@@ -319,7 +428,7 @@ func TestHandleStreamPromotesHiddenThinkingDSMLToolCallsOnFinalize(t *testing.T)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	h.handleStream(rec, req, resp, "cid-hidden-thinking-stream", "deepseek-v4-pro", "prompt", false, false, []string{"search"}, nil)
+	h.handleStream(rec, req, resp, "cid-hidden-thinking-stream", "deepseek-v4-pro", "prompt", 0, false, false, []string{"search"}, nil, nil)
 
 	frames, done := parseSSEDataFrames(t, rec.Body.String())
 	if !done {
@@ -353,7 +462,7 @@ func TestHandleStreamEmitsDistinctToolCallIDsAcrossSeparateToolBlocks(t *testing
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	h.handleStream(rec, req, resp, "cid-multi", "deepseek-v4-flash", "prompt", false, false, []string{"read_file", "search"}, nil)
+	h.handleStream(rec, req, resp, "cid-multi", "deepseek-v4-flash", "prompt", 0, false, false, []string{"read_file", "search"}, nil, nil)
 
 	frames, done := parseSSEDataFrames(t, rec.Body.String())
 	if !done {
@@ -388,5 +497,108 @@ func TestHandleStreamEmitsDistinctToolCallIDsAcrossSeparateToolBlocks(t *testing
 	}
 	if ids[0] == ids[1] {
 		t.Fatalf("expected distinct tool call ids across blocks, got %#v body=%s", ids, rec.Body.String())
+	}
+}
+
+func TestHandleStreamCoercesSchemaDeclaredStringArgumentsOnFinalize(t *testing.T) {
+	h := &Handler{}
+	line := func(v string) string {
+		b, _ := json.Marshal(map[string]any{"p": "response/content", "v": v})
+		return "data: " + string(b)
+	}
+	resp := makeSSEHTTPResponse(
+		line(`<tool_calls><invoke name="Write">{"input":{"content":{"message":"hi"},"taskId":1}}</invoke></tool_calls>`),
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	toolsRaw := []any{
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": "Write",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"content": map[string]any{"type": "string"},
+						"taskId":  map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+
+	h.handleStream(rec, req, resp, "cid-string-protect", "deepseek-v4-flash", "prompt", 0, false, false, []string{"Write"}, toolsRaw, nil)
+
+	frames, done := parseSSEDataFrames(t, rec.Body.String())
+	if !done {
+		t.Fatalf("expected [DONE], body=%s", rec.Body.String())
+	}
+	for _, frame := range frames {
+		choices, _ := frame["choices"].([]any)
+		for _, item := range choices {
+			choice, _ := item.(map[string]any)
+			delta, _ := choice["delta"].(map[string]any)
+			toolCalls, _ := delta["tool_calls"].([]any)
+			if len(toolCalls) == 0 {
+				continue
+			}
+			call, _ := toolCalls[0].(map[string]any)
+			fn, _ := call["function"].(map[string]any)
+			args := map[string]any{}
+			if err := json.Unmarshal([]byte(asString(fn["arguments"])), &args); err != nil {
+				t.Fatalf("decode streamed tool arguments failed: %v", err)
+			}
+			if args["content"] != `{"message":"hi"}` {
+				t.Fatalf("expected streamed content stringified by schema, got %#v", args["content"])
+			}
+			if args["taskId"] != "1" {
+				t.Fatalf("expected streamed taskId stringified by schema, got %#v", args["taskId"])
+			}
+			return
+		}
+	}
+	t.Fatalf("expected at least one streamed tool call delta, body=%s", rec.Body.String())
+}
+
+func TestHandleNonStreamWithRetryIncludesRefFileTokensInUsage(t *testing.T) {
+	h := &Handler{}
+
+	run := func(refFileTokens int) map[string]any {
+		resp := makeSSEHTTPResponse(
+			`data: {"p":"response/content","v":"hello world"}`,
+			`data: [DONE]`,
+		)
+		rec := httptest.NewRecorder()
+		h.handleNonStreamWithRetry(rec, context.Background(), nil, resp, nil, "", "cid-ref", "deepseek-v4-flash", "prompt", refFileTokens, false, false, nil, nil, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+		}
+		return decodeJSONBody(t, rec.Body.String())
+	}
+
+	base := run(0)
+	withRef := run(7)
+
+	baseUsage, _ := base["usage"].(map[string]any)
+	refUsage, _ := withRef["usage"].(map[string]any)
+	if baseUsage == nil || refUsage == nil {
+		t.Fatalf("expected usage objects, base=%#v ref=%#v", base["usage"], withRef["usage"])
+	}
+
+	getInt := func(m map[string]any, key string) int {
+		t.Helper()
+		v, ok := m[key].(float64)
+		if !ok {
+			t.Fatalf("expected numeric %s, got %#v", key, m[key])
+		}
+		return int(v)
+	}
+
+	if got := getInt(refUsage, "prompt_tokens") - getInt(baseUsage, "prompt_tokens"); got != 7 {
+		t.Fatalf("expected prompt_tokens delta 7, got %d", got)
+	}
+	if got := getInt(refUsage, "total_tokens") - getInt(baseUsage, "total_tokens"); got != 7 {
+		t.Fatalf("expected total_tokens delta 7, got %d", got)
 	}
 }

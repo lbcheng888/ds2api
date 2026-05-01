@@ -11,9 +11,7 @@ function describeModel(t, modelID) {
     const noThinking = modelID.endsWith('-nothinking')
 
     let description = t('apiTester.models.generic')
-    if (modelID.includes('vision-search')) {
-        description = t('apiTester.models.visionSearch')
-    } else if (modelID.includes('vision')) {
+    if (modelID.includes('vision')) {
         description = t('apiTester.models.vision')
     } else if (modelID.includes('pro-search')) {
         description = t('apiTester.models.proSearch')
@@ -219,6 +217,7 @@ export default function ApiTesterContainer({ config, onMessage, authFetch }) {
                 setSelectedAccount={setSelectedAccount}
                 effectiveKey={effectiveKey}
                 selectedAccount={selectedAccount}
+                model={model}
                 onMessage={onMessage}
                 response={response}
                 isStreaming={isStreaming}

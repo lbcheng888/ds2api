@@ -44,6 +44,9 @@ func rewriteDSMLToolMarkupOutsideIgnored(text string) string {
 			}
 			b.WriteString(tag.Name)
 			b.WriteString(text[tag.NameEnd : tag.End+1])
+			if text[tag.End] != '>' {
+				b.WriteByte('>')
+			}
 			i = tag.End + 1
 			continue
 		}

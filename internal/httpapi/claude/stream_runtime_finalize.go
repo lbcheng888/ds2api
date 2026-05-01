@@ -1,11 +1,11 @@
 package claude
 
 import (
+	"ds2api/internal/toolcall"
 	"encoding/json"
 	"fmt"
 	"time"
 
-	claudecodeharness "ds2api/internal/harness/claudecode"
 	streamengine "ds2api/internal/stream"
 	"ds2api/internal/util"
 )
@@ -45,116 +45,71 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 
 	finalThinking := s.thinking.String()
 	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
-	visibleText := finalText
 
 	if s.bufferToolContent {
-		evaluated := claudecodeharness.EvaluateFinalOutput(claudecodeharness.FinalEvaluationInput{
-			FinalPrompt:         s.finalPrompt,
-			Text:                finalText,
-			Thinking:            finalThinking,
-			ToolNames:           s.toolNames,
-			ToolSchemas:         s.toolSchemas,
-			AllowMetaAgentTools: s.allowMetaAgentTools,
-		})
-		visibleText = evaluated.Text
-
-		// DroppedTaskOutputIDs: silently filter, keep valid calls. Do NOT error out.
-		// The filtering is already done inside EvaluateFinalOutput — evaluated.Calls
-		// already has invalid calls removed. Just proceed normally.
-
-		if evaluated.MissingToolDecision.Blocked {
-			// Smart recovery: emit visible text + correction prompt, end turn normally.
-			s.recoveryNeeded = true
-			s.recoveryContext = "The model described planned work but didn't emit tool calls. Retrying with clearer instructions..."
-			if visibleText == "" {
-				visibleText = "Let me try again with the correct tool calls."
-			}
-			s.emitBufferedText(visibleText)
-			s.emitBufferedText("[System-Reminder: " + s.recoveryContext + "]")
-		} else {
-			detected := evaluated.Calls
-			if len(detected) > 0 {
-				stopReason = "tool_use"
-				s.emitBufferedText(visibleText)
-				for i, tc := range detected {
-					idx := s.nextBlockIndex + i
-					s.send("content_block_start", map[string]any{
-						"type":  "content_block_start",
-						"index": idx,
-						"content_block": map[string]any{
-							"type":  "tool_use",
-							"id":    fmt.Sprintf("toolu_%d_%d", time.Now().Unix(), idx),
-							"name":  tc.Name,
-							"input": map[string]any{},
-						},
-					})
-
-					inputBytes, _ := json.Marshal(tc.Input)
-					s.send("content_block_delta", map[string]any{
-						"type":  "content_block_delta",
-						"index": idx,
-						"delta": map[string]any{
-							"type":         "input_json_delta",
-							"partial_json": string(inputBytes),
-						},
-					})
-
-					s.send("content_block_stop", map[string]any{
-						"type":  "content_block_stop",
-						"index": idx,
-					})
-				}
-				s.nextBlockIndex += len(detected)
-			} else if visibleText != "" {
-				s.emitBufferedText(visibleText)
-			}
+		detected := toolcall.ParseStandaloneToolCalls(finalText, s.toolNames)
+		if len(detected) == 0 && finalText == "" && finalThinking != "" {
+			detected = toolcall.ParseStandaloneToolCalls(finalThinking, s.toolNames)
 		}
-	} else {
-		// Lightweight harness evaluation for non-buffered mode.
-		// Text has already been emitted via streaming; we can only append warnings.
-		parsed, _ := claudecodeharness.DetectFinalToolCalls(claudecodeharness.FinalToolCallInput{
-			Text:      finalText,
-			Thinking:  finalThinking,
-			ToolNames: s.toolNames,
-		})
-		if len(parsed.Calls) == 0 {
-			missingDecision := claudecodeharness.DetectMissingToolCall(claudecodeharness.MissingToolCallInput{
-				Text:                finalText,
-				FinalPrompt:         s.finalPrompt,
-				ToolNames:           s.toolNames,
-				ToolSchemas:         s.toolSchemas,
-				AllowMetaAgentTools: s.allowMetaAgentTools,
-			})
-			if missingDecision.Blocked {
-				// Emit a warning-level text block appended after streaming content.
-				// This is NOT an error -- text has already been sent to the client.
-				idx := s.nextBlockIndex
-				s.nextBlockIndex++
+		if len(detected) > 0 {
+			detected = toolcall.NormalizeParsedToolCallsForSchemas(detected, s.toolsRaw)
+			stopReason = "tool_use"
+			for i, tc := range detected {
+				idx := s.nextBlockIndex + i
 				s.send("content_block_start", map[string]any{
 					"type":  "content_block_start",
 					"index": idx,
 					"content_block": map[string]any{
-						"type": "text",
-						"text": "",
+						"type":  "tool_use",
+						"id":    fmt.Sprintf("toolu_%d_%d", time.Now().Unix(), idx),
+						"name":  tc.Name,
+						"input": map[string]any{},
 					},
 				})
+
+				inputBytes, _ := json.Marshal(tc.Input)
 				s.send("content_block_delta", map[string]any{
 					"type":  "content_block_delta",
 					"index": idx,
 					"delta": map[string]any{
-						"type": "text_delta",
-						"text": "\n\n[System Reminder: " + missingDecision.Message + "]",
+						"type":         "input_json_delta",
+						"partial_json": string(inputBytes),
 					},
 				})
+
 				s.send("content_block_stop", map[string]any{
 					"type":  "content_block_stop",
 					"index": idx,
 				})
 			}
+			s.nextBlockIndex += len(detected)
+		} else if finalText != "" {
+			idx := s.nextBlockIndex
+			s.nextBlockIndex++
+			s.send("content_block_start", map[string]any{
+				"type":  "content_block_start",
+				"index": idx,
+				"content_block": map[string]any{
+					"type": "text",
+					"text": "",
+				},
+			})
+			s.send("content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": idx,
+				"delta": map[string]any{
+					"type": "text_delta",
+					"text": finalText,
+				},
+			})
+			s.send("content_block_stop", map[string]any{
+				"type":  "content_block_stop",
+				"index": idx,
+			})
 		}
 	}
 
-	outputTokens := util.EstimateTokens(finalThinking) + util.EstimateTokens(visibleText)
+	outputTokens := util.CountOutputTokens(finalThinking, s.model) + util.CountOutputTokens(finalText, s.model)
 	s.send("message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
@@ -168,34 +123,6 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 	s.send("message_stop", map[string]any{"type": "message_stop"})
 }
 
-func (s *claudeStreamRuntime) emitBufferedText(text string) {
-	if text == "" {
-		return
-	}
-	idx := s.nextBlockIndex
-	s.nextBlockIndex++
-	s.send("content_block_start", map[string]any{
-		"type":  "content_block_start",
-		"index": idx,
-		"content_block": map[string]any{
-			"type": "text",
-			"text": "",
-		},
-	})
-	s.send("content_block_delta", map[string]any{
-		"type":  "content_block_delta",
-		"index": idx,
-		"delta": map[string]any{
-			"type": "text_delta",
-			"text": text,
-		},
-	})
-	s.send("content_block_stop", map[string]any{
-		"type":  "content_block_stop",
-		"index": idx,
-	})
-}
-
 func (s *claudeStreamRuntime) onFinalize(reason streamengine.StopReason, scannerErr error) {
 	if string(reason) == "upstream_error" {
 		s.sendError(s.upstreamErr)
@@ -206,8 +133,4 @@ func (s *claudeStreamRuntime) onFinalize(reason streamengine.StopReason, scanner
 		return
 	}
 	s.finalize("end_turn")
-}
-
-func (s *claudeStreamRuntime) IsRecoveryNeeded() bool {
-	return s.recoveryNeeded
 }
