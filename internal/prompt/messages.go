@@ -87,9 +87,21 @@ func prependOutputIntegrityGuard(messages []map[string]any) []map[string]any {
 	if len(messages) == 0 {
 		return messages
 	}
-	if hasOutputIntegrityGuard(messages[0]) {
-		return messages
+	// Merge into the first existing system message instead of creating
+	// a separate one. This keeps system messages consolidated (one instead
+	// of two) and reduces per-request context overhead, especially
+	// noticeable during account switches or session recreation.
+	for _, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(asString(msg["role"])), "system") {
+			if hasOutputIntegrityGuard(msg) {
+				return messages
+			}
+			merged := outputIntegrityGuardPrompt + "\n\n" + NormalizeContent(msg["content"])
+			msg["content"] = merged
+			return messages
+		}
 	}
+	// No system message exists; prepend as a new one.
 	out := make([]map[string]any, 0, len(messages)+1)
 	out = append(out, map[string]any{
 		"role":    "system",
@@ -147,12 +159,7 @@ func NormalizeContent(v any) string {
 				}
 			}
 			if typeStr == "thinking" || typeStr == "reasoning" {
-				for _, key := range []string{"thinking", "text", "content"} {
-					if txt, ok := m[key].(string); ok && strings.TrimSpace(txt) != "" {
-						parts = append(parts, txt)
-						break
-					}
-				}
+				continue
 			}
 		}
 		return strings.Join(parts, "\n")

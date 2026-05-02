@@ -2,6 +2,7 @@ package toolcall
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -157,7 +158,94 @@ func normalizeToolValueWithSchema(value any, schema any) (any, bool) {
 		}
 		return out, true
 	}
+	if is, ok := isBooleanSchema(schemaMap); ok && is {
+		if b, coerced := coerceBoolValue(value); coerced {
+			return b, true
+		}
+		return value, false
+	}
+	if is, ok := isNumberOrIntegerSchema(schemaMap); ok && is {
+		if n, coerced := coerceNumberValue(value); coerced {
+			return n, true
+		}
+		return value, false
+	}
 	return value, false
+}
+
+func isBooleanSchema(schema map[string]any) (bool, bool) {
+	typ, ok := schema["type"].(string)
+	if !ok {
+		return false, false
+	}
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "boolean":
+		return true, true
+	default:
+		return false, true
+	}
+}
+
+func coerceBoolValue(v any) (bool, bool) {
+	switch x := v.(type) {
+	case bool:
+		return x, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(x)) {
+		case "true", "1", "yes", "on":
+			return true, true
+		case "false", "0", "no", "off", "":
+			return false, true
+		default:
+			return false, false
+		}
+	default:
+		return false, false
+	}
+}
+
+func isNumberOrIntegerSchema(schema map[string]any) (bool, bool) {
+	typ, ok := schema["type"].(string)
+	if !ok {
+		return false, false
+	}
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "number", "integer":
+		return true, true
+	default:
+		return false, true
+	}
+}
+
+func coerceNumberValue(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, false
+	case float32:
+		return float64(x), true
+	case int:
+		return float64(x), false
+	case int64:
+		return float64(x), false
+	case json.Number:
+		n, err := x.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return n, false
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return 0, false
+		}
+		var f float64
+		if _, err := fmt.Sscanf(s, "%f", &f); err == nil {
+			return f, true
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
 }
 
 func shouldCoerceSchemaToString(schema map[string]any) bool {

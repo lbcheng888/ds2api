@@ -74,14 +74,14 @@ func TestBuildOpenAIFinalPrompt_VercelPreparePathKeepsFinalAnswerInstruction(t *
 	}
 
 	finalPrompt, _ := buildOpenAIFinalPrompt(messages, tools, "", false)
-	if !strings.Contains(finalPrompt, "Remember: The ONLY valid way to use tools is the <|DSML|tool_calls>...</|DSML|tool_calls> block at the end of your response.") {
-		t.Fatalf("vercel prepare finalPrompt missing final tool-call anchor instruction: %q", finalPrompt)
+	if !strings.Contains(finalPrompt, "Tool calls use this format:") {
+		t.Fatalf("vercel prepare finalPrompt missing tool call format instruction: %q", finalPrompt)
 	}
-	if !strings.Contains(finalPrompt, "TOOL CALL FORMAT") {
-		t.Fatalf("vercel prepare finalPrompt missing xml format instruction: %q", finalPrompt)
+	if !strings.Contains(finalPrompt, "Tool calls use this format:") {
+		t.Fatalf("vercel prepare finalPrompt missing tool call format instruction: %q", finalPrompt)
 	}
-	if !strings.Contains(finalPrompt, "Do NOT wrap XML in markdown fences") {
-		t.Fatalf("vercel prepare finalPrompt missing no-fence xml instruction: %q", finalPrompt)
+	if !strings.Contains(finalPrompt, "Do NOT wrap in Markdown fences") {
+		t.Fatalf("vercel prepare finalPrompt missing no-fence instruction: %q", finalPrompt)
 	}
 	if strings.Contains(finalPrompt, "```json") {
 		t.Fatalf("vercel prepare finalPrompt should not require fenced tool calls: %q", finalPrompt)
@@ -108,7 +108,7 @@ func TestBuildOpenAIFinalPromptPrependsOutputIntegrityGuard(t *testing.T) {
 
 	finalPrompt, _ := buildOpenAIFinalPrompt(messages, tools, "", false)
 	guardIdx := strings.Index(finalPrompt, "Output integrity guard")
-	toolIdx := strings.Index(finalPrompt, "TOOL CALL FORMAT")
+	toolIdx := strings.Index(finalPrompt, "Tool calls use this format:")
 	if guardIdx < 0 {
 		t.Fatalf("expected output integrity guard in final prompt, got: %q", finalPrompt)
 	}

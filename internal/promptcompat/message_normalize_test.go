@@ -142,8 +142,8 @@ func TestNormalizeOpenAIMessagesForPrompt_EmptyToolContentPreservedAsNull(t *tes
 		t.Fatalf("expected tool role preserved, got %#v", normalized[0]["role"])
 	}
 	got, _ := normalized[0]["content"].(string)
-	if got != "null" {
-		t.Fatalf("expected empty tool content normalized as null string, got %q", got)
+	if got != "[noop_tool call_5]\n[no output]" {
+		t.Fatalf("expected empty tool content with name+id prefix, got %q", got)
 	}
 }
 

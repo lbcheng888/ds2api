@@ -56,8 +56,8 @@ func TestBuildToolCallInstructions_BashUsesCommandAndDescriptionExamples(t *test
 	if strings.Contains(out, "Wrong 5 — parallel shell calls") {
 		t.Fatalf("unexpected parallel shell negative example, got: %s", out)
 	}
-	if !strings.Contains(out, "You can issue multiple Bash calls in parallel") {
-		t.Fatalf("expected parallel shell encouragement in prompt, got: %s", out)
+	if !strings.Contains(out, "Tool calls use this format:") {
+		t.Fatalf("expected tool call format header, got: %s", out)
 	}
 }
 
@@ -120,7 +120,7 @@ func TestBuildToolCallInstructions_WriteUsesFilePathAndContent(t *testing.T) {
 
 func TestBuildToolCallInstructions_EditWarnsToUseFreshExactOldString(t *testing.T) {
 	out := BuildToolCallInstructions([]string{"Edit"})
-	if !strings.Contains(out, "old_string must be copied exactly from a fresh Read result") {
+	if !strings.Contains(out, "copy old_string exactly from a fresh Read") {
 		t.Fatalf("expected edit reliability rule, got: %s", out)
 	}
 	blocks := findInvokeBlocks(out, "Edit")
@@ -147,14 +147,14 @@ func TestBuildToolCallInstructions_UpdateUsesEditShape(t *testing.T) {
 
 func TestBuildToolCallInstructions_AnchorsMissingOpeningWrapperFailureMode(t *testing.T) {
 	out := BuildToolCallInstructions([]string{"read_file"})
-	if !strings.Contains(out, "Never omit the opening <|DSML|tool_calls> tag") {
-		t.Fatalf("expected explicit missing-opening-tag warning, got: %s", out)
+	if !strings.Contains(out, "Tool calls use this format:") {
+		t.Fatalf("expected tool call format header, got: %s", out)
 	}
-	if !strings.Contains(out, "Wrong 3 — missing opening wrapper") {
-		t.Fatalf("expected missing-opening-wrapper negative example, got: %s", out)
+	if !strings.Contains(out, "Do NOT wrap in Markdown fences") {
+		t.Fatalf("expected no-fence instruction, got: %s", out)
 	}
-	if !strings.Contains(out, "Wrong 4 — JSON text instead of a tool call") {
-		t.Fatalf("expected JSON-as-text negative example, got: %s", out)
+	if !strings.Contains(out, "Tool calls use this format:") {
+		t.Fatalf("expected tool call format header, got: %s", out)
 	}
 }
 

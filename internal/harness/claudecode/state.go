@@ -213,10 +213,24 @@ func LooksLikeUnexecutedAgentLaunch(finalText, finalPrompt string, allowMetaAgen
 	return false
 }
 
-var agentLaunchNumPattern = regexp.MustCompile(`(?i)(?:launch|start|create|run|spawn)\s+\d+\s*(?:agent|sub-agent|subagent)s?`)
+const chineseAgentCountTokenPattern = `(?:\d+|[一二两俩三四五六七八九十]+)`
+
+var (
+	agentLaunchNumPattern                  = regexp.MustCompile(`(?i)(?:launch|start|create|run|spawn)\s+\d+\s*(?:agent|sub-agent|subagent)s?`)
+	chineseAgentLaunchVerbCountPattern     = regexp.MustCompile(`(?:启动|创建|运行|生成|发起|调用|准备|派|开)\s*` + chineseAgentCountTokenPattern + `\s*个?\s*(?:并行)?\s*(?:实现)?(?:子代理|代理|agent|agents)`)
+	chineseAgentCountLaunchVerbPattern     = regexp.MustCompile(chineseAgentCountTokenPattern + `\s*个?\s*(?:(?:实现)?(?:子代理|代理)\s*)?(?:同时|并行)?\s*(?:启动|发起|调用|派|开)`)
+	chineseSimultaneousAgentLaunchPattern  = regexp.MustCompile(`(?:同时|并行)\s*(?:启动|发起|调用|派|开)\s*` + chineseAgentCountTokenPattern + `\s*个?\s*(?:实现)?(?:子代理|代理)?`)
+	chinesePluralAgentLaunchPromisePattern = regexp.MustCompile(`(?:启动|创建|运行|生成|发起|调用|准备|派|开)\s*(?:多个|多\s*个|若干|几\s*个)\s*(?:并行)?\s*(?:实现)?(?:子代理|代理)`)
+)
 
 func containAnyAgentLaunchPatterns(lower string) bool {
 	if agentLaunchNumPattern.MatchString(lower) {
+		return true
+	}
+	if chineseAgentLaunchVerbCountPattern.MatchString(lower) ||
+		chineseAgentCountLaunchVerbPattern.MatchString(lower) ||
+		chineseSimultaneousAgentLaunchPattern.MatchString(lower) ||
+		chinesePluralAgentLaunchPromisePattern.MatchString(lower) {
 		return true
 	}
 	return containsAny(lower, []string{
@@ -234,6 +248,10 @@ func containAnyAgentLaunchPatterns(lower string) bool {
 		"启动代理",
 		"启动 agent",
 		"启动agent",
+		"调用子代理",
+		"调用代理",
+		"发起子代理",
+		"发起代理",
 		"启动 team agents",
 		"启动team agents",
 		"启动 4 个并行",
@@ -259,6 +277,8 @@ func containAnyAgentLaunchPatterns(lower string) bool {
 		"子代理并行",
 		"多个子代理",
 		"多 个子代理",
+		"几个子代理",
+		"若干子代理",
 		"并行代理",
 		"个并行代理",
 		"提交后启动",
@@ -292,6 +312,9 @@ func agentLaunchEvidenceText(text string) string {
 		"启动四个实现子代理",
 		"启动多个实现子代理",
 		"实现子代理",
+		"准备三个子代理",
+		"三个同时启动",
+		"同时启动三个代理",
 		"启动 4 个实现代理",
 		"启动4个实现代理",
 		"启动四个实现代理",
@@ -303,6 +326,9 @@ func agentLaunchEvidenceText(text string) string {
 		"启动并行子代理",
 		"子代理并行",
 		"多个子代理",
+		"准备三个子代理",
+		"三个同时启动",
+		"同时启动三个代理",
 		"启动 4 个并行",
 		"启动4个并行",
 		"并行代理",

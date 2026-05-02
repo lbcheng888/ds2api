@@ -6,9 +6,11 @@ import (
 	"strings"
 
 	openaifmt "ds2api/internal/format/openai"
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
 	"ds2api/internal/textclean"
+	"ds2api/internal/toolcall"
 	"ds2api/internal/toolstream"
 )
 
@@ -222,7 +224,7 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 				continue
 			}
 			cleaned := cleanVisibleOutput(evt.Content, s.stripReferenceMarkers)
-			cleaned = textclean.StripDSMLContent(cleaned)
+			cleaned = textclean.StripDSMLAggressive(evt.Content, cleaned)
 			if cleaned == "" || (s.searchEnabled && sse.IsCitation(cleaned)) {
 				continue
 			}
@@ -231,6 +233,22 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 		batch.flush()
 	}
 
+	if len(detected.Calls) == 0 && !s.toolCallsEmitted && s.bufferToolContent {
+		if synthesized := claudecodeharness.SynthesizeAgentToolCallsFromLaunchPromise(
+			s.finalPrompt, finalText, s.toolNames, true,
+		); len(synthesized) > 0 {
+			synthesized = claudecodeharness.CompleteToolCallsWithSchemaDefaults(synthesized, nil)
+			detected.Calls = toolcall.NormalizeCallsForSchemasWithMeta(synthesized, nil, true)
+		}
+	}
+	if len(detected.Calls) > 0 && !s.toolCallsDoneEmitted {
+		finishReason = "tool_calls"
+		s.sendDelta(map[string]any{
+			"tool_calls": formatFinalStreamToolCallsWithStableIDs(detected.Calls, s.streamToolCallIDs, s.toolsRaw),
+		})
+		s.toolCallsEmitted = true
+		s.toolCallsDoneEmitted = true
+	}
 	if len(detected.Calls) > 0 || s.toolCallsEmitted {
 		finishReason = "tool_calls"
 	}
@@ -362,7 +380,7 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 					}
 					if evt.Content != "" {
 						cleaned := cleanVisibleOutput(evt.Content, s.stripReferenceMarkers)
-						cleaned = textclean.StripDSMLContent(cleaned)
+						cleaned = textclean.StripDSMLAggressive(evt.Content, cleaned)
 						if cleaned == "" || (s.searchEnabled && sse.IsCitation(cleaned)) {
 							continue
 						}

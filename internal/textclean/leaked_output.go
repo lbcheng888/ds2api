@@ -38,16 +38,7 @@ var leakedAgentXMLBlockPatterns = []*regexp.Regexp{
 }
 
 // StripDSMLContent removes DSML-format tool call markup from streaming
-// visible content. It is called only in streaming output paths (emitFinalContent
-// and the no-tool-buffer passthrough), never in tool detection or non-stream
-// paths where the markup needs to survive for ParseStandaloneToolCallsDetailed.
-//
-// Strategy (order matters):
-//  1. Complete wrapper blocks: <|DSML|tool_calls> ... </|DSML|tool_calls>
-//  2. Complete inner blocks: <|DSML|invoke> ... </|DSML|invoke>
-//     and <|DSML|parameter> ... </|DSML|parameter> — these include the
-//     parameter text values that would otherwise leak.
-//  3. Standalone tag lines as a last resort.
+// visible content.
 func StripDSMLContent(text string) string {
 	if text == "" {
 		return text
@@ -56,6 +47,52 @@ func StripDSMLContent(text string) string {
 	out = leakedDSMLInnerPairPattern.ReplaceAllString(out, "")
 	out = leakedDSMLTagLinePattern.ReplaceAllString(out, "")
 	return strings.TrimSpace(out)
+}
+
+// StripDSMLAggressive is like StripDSMLContent but also removes any residual
+// content between stripped DSML tags — text that likely originated as tool
+// call parameter values. When the original content contained DSML markers and
+// the cleaned result still has text, this text is probably leaked parameter
+// content. We drop everything from the first DSML marker to end-of-text.
+func StripDSMLAggressive(original, cleaned string) string {
+	if cleaned == "" {
+		return ""
+	}
+	hadDSML := leakedDSMLTagLinePattern.MatchString(original) ||
+		strings.Contains(original, "<|DSML|") ||
+		strings.Contains(original, "<dsml|") ||
+		strings.Contains(original, "<dsml ")
+	if !hadDSML {
+		return cleaned
+	}
+	// DSML was present. If cleaning removed the tags but left
+	// orphan parameter content behind, the result is unsafe — drop it.
+	// Only keep text that came BEFORE any DSML marker.
+	idx := strings.Index(original, "<|DSML|")
+	if idx < 0 {
+		idx = strings.Index(original, "<|dsml|")
+	}
+	if idx < 0 {
+		idx = strings.Index(original, "<dsml|")
+	}
+	if idx < 0 {
+		idx = strings.Index(original, "<dsml ")
+	}
+	if idx < 0 {
+		return cleaned
+	}
+	prefix := strings.TrimSpace(original[:idx])
+	if prefix == "" {
+		return ""
+	}
+	// Also strip the prefix from cleaned to check if it's the same
+	if strings.HasPrefix(strings.TrimSpace(cleaned), prefix) {
+		rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(cleaned), prefix))
+		if strings.TrimSpace(rest) == "" {
+			return prefix
+		}
+	}
+	return prefix
 }
 
 var leakedDSMLWrapperPattern = regexp.MustCompile(`(?is)<\s*(?:\||｜)?\s*(?:DSML|dsml)\s*(?:\||｜)?\s*\s*tool_calls\b[^>]*>.*?</\s*(?:\||｜)?\s*(?:DSML|dsml)\s*(?:\||｜)?\s*\s*tool_calls\s*>`)

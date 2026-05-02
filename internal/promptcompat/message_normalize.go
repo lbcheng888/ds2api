@@ -151,9 +151,17 @@ func formatPromptLabeledBlock(label, text string) string {
 func buildToolContentForPrompt(msg map[string]any) string {
 	content := NormalizeOpenAIContentForPrompt(msg["content"])
 	if strings.TrimSpace(content) == "" {
-		return "null"
+		content = "[no output]"
 	}
-	return content
+	name := strings.TrimSpace(asString(msg["name"]))
+	callID := strings.TrimSpace(asString(msg["tool_call_id"]))
+	var prefix string
+	if name != "" && callID != "" {
+		prefix = "[" + name + " " + callID + "]\n"
+	} else if name != "" {
+		prefix = "[" + name + "]\n"
+	}
+	return prefix + content
 }
 
 func NormalizeOpenAIContentForPrompt(v any) string {
