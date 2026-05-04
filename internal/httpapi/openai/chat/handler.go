@@ -120,10 +120,6 @@ func upstreamEmptyOutputDetail(contentFilter bool, text, thinking string) (int, 
 	return shared.UpstreamEmptyOutputDetail(contentFilter, text, thinking)
 }
 
-func upstreamStreamErrorDetail(code, message string) (int, string, string) {
-	return shared.UpstreamStreamErrorDetail(code, message)
-}
-
 func writeUpstreamEmptyOutputError(w http.ResponseWriter, text, thinking string, contentFilter bool) bool {
 	return shared.WriteUpstreamEmptyOutputError(w, text, thinking, contentFilter)
 }
@@ -158,16 +154,4 @@ func formatFinalStreamToolCallsWithStableIDs(calls []toolcall.ParsedToolCall, id
 
 func detectAssistantToolCalls(rawText, visibleText, exposedThinking, detectionThinking string, toolNames []string) toolcall.ToolCallParseResult {
 	return shared.DetectAssistantToolCalls(rawText, visibleText, exposedThinking, detectionThinking, toolNames)
-}
-
-func invalidTaskOutputCallDetail(calls []toolcall.ParsedToolCall, finalPrompt string) (int, string, string, bool) {
-	return shared.InvalidTaskOutputCallDetail(calls, finalPrompt)
-}
-
-func invalidToolCallDetail(message string) (int, string, string) {
-	return shared.InvalidToolCallDetail(message)
-}
-
-func missingToolCallDetail(finalText, finalPrompt string, toolNames []string, toolSchemas toolcall.ParameterSchemas, allowMetaAgentTools bool) (int, string, string, bool) {
-	return shared.MissingToolCallDetail(finalText, finalPrompt, toolNames, toolSchemas, allowMetaAgentTools)
 }

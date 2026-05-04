@@ -1,12 +1,13 @@
 package claude
 
 import (
-	"ds2api/internal/toolcall"
 	"encoding/json"
 	"fmt"
 	"time"
 
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	streamengine "ds2api/internal/stream"
+	"ds2api/internal/toolcall"
 	"ds2api/internal/util"
 )
 
@@ -47,9 +48,20 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
 
 	if s.bufferToolContent {
-		detected := toolcall.ParseStandaloneToolCalls(finalText, s.toolNames)
-		if len(detected) == 0 && finalText == "" && finalThinking != "" {
-			detected = toolcall.ParseStandaloneToolCalls(finalThinking, s.toolNames)
+		evaluated := claudecodeharness.EvaluateFinalOutput(claudecodeharness.FinalEvaluationInput{
+			FinalPrompt:         s.promptTokenText,
+			Text:                finalText,
+			Thinking:            finalThinking,
+			ToolNames:           s.toolNames,
+			ToolSchemas:         toolcall.ExtractParameterSchemas(s.toolsRaw),
+			AllowMetaAgentTools: true,
+			Profile:             "claude",
+		})
+		finalText = evaluated.Text
+		detected := evaluated.Calls
+		if evaluated.MissingToolDecision.Blocked {
+			s.sendErrorWithCode(evaluated.MissingToolDecision.Message, evaluated.MissingToolDecision.Code)
+			return
 		}
 		if len(detected) > 0 {
 			detected = toolcall.NormalizeParsedToolCallsForSchemas(detected, s.toolsRaw)

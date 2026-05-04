@@ -22,7 +22,8 @@ Rules:
 - Numbers, booleans, null stay plain text. Objects use nested XML. Arrays repeat <item>.
 - Use only parameter names from the tool schema. Do not invent fields.
 - Do NOT wrap in Markdown fences. Output ONLY the tool block, no extra text.
-- Bookkeeping tools (TaskCreate, TaskUpdate, TodoWrite) must be paired with a real execution tool.
+- Bookkeeping/mode tools (TaskCreate, TaskUpdate, TodoWrite, EnterPlanMode) must be paired with a real execution tool when the user asked to execute.
+- Do not put multiple Bash/shell commands in one tool_calls block; call one shell command, observe it, then continue.
 - For Edit tools, copy old_string exactly from a fresh Read; re-Read after any edit failure.
 
 ` + buildCorrectToolExamples(toolNames)
@@ -97,28 +98,6 @@ func firstBasicExample(names []string) (promptToolExample, bool) {
 	return promptToolExample{}, false
 }
 
-func firstNBasicExamples(names []string, count int) []promptToolExample {
-	out := make([]promptToolExample, 0, count)
-	for _, name := range names {
-		if params, ok := exampleBasicParams(name); ok {
-			out = append(out, promptToolExample{name: name, params: params})
-			if len(out) == count {
-				return out
-			}
-		}
-	}
-	return out
-}
-
-func firstNestedExample(names []string) (promptToolExample, bool) {
-	for _, name := range names {
-		if params, ok := exampleNestedParams(name); ok {
-			return promptToolExample{name: name, params: params}, true
-		}
-	}
-	return promptToolExample{}, false
-}
-
 func firstScriptExample(names []string) (promptToolExample, bool) {
 	for _, name := range names {
 		if params, ok := exampleScriptParams(name); ok {
@@ -185,18 +164,6 @@ func exampleBasicParams(name string) (string, bool) {
 		return wrapParameter("file_path", promptCDATA("README.md")) + "\n" + wrapParameter("old_string", promptCDATA("## Install\n\nRun `make test` before submitting.\n")) + "\n" + wrapParameter("new_string", promptCDATA("## Install\n\nRun `make test && make lint` before submitting.\n")), true
 	case "MultiEdit":
 		return wrapParameter("file_path", promptCDATA("README.md")) + "\n" + `<|DSML|parameter name="edits"><item><old_string>` + promptCDATA("## Install\n\nRun `make test` before submitting.\n") + `</old_string><new_string>` + promptCDATA("## Install\n\nRun `make test && make lint` before submitting.\n") + `</new_string></item></|DSML|parameter>`, true
-	}
-	return "", false
-}
-
-func exampleNestedParams(name string) (string, bool) {
-	switch strings.TrimSpace(name) {
-	case "MultiEdit":
-		return wrapParameter("file_path", promptCDATA("README.md")) + "\n" + `<|DSML|parameter name="edits"><item><old_string>` + promptCDATA("## Install\n\nRun `make test` before submitting.\n") + `</old_string><new_string>` + promptCDATA("## Install\n\nRun `make test && make lint` before submitting.\n") + `</new_string></item></|DSML|parameter>`, true
-	case "Task":
-		return wrapParameter("description", promptCDATA("Investigate flaky tests")) + "\n" + wrapParameter("prompt", promptCDATA("Run targeted tests and summarize failures")), true
-	case "ask_followup_question":
-		return wrapParameter("question", promptCDATA("Which approach do you prefer?")) + "\n" + `<|DSML|parameter name="follow_up"><item><text>` + promptCDATA("Option A") + `</text></item><item><text>` + promptCDATA("Option B") + `</text></item></|DSML|parameter>`, true
 	}
 	return "", false
 }

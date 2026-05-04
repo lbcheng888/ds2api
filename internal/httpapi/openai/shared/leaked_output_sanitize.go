@@ -10,6 +10,8 @@ import (
 var emptyJSONFencePattern = regexp.MustCompile("(?is)```json\\s*```")
 var leakedToolCallArrayPattern = regexp.MustCompile(`(?is)\[\{\s*"function"\s*:\s*\{[\s\S]*?\}\s*,\s*"id"\s*:\s*"call[^"]*"\s*,\s*"type"\s*:\s*"function"\s*}\]`)
 var leakedToolResultBlobPattern = regexp.MustCompile(`(?is)<\s*\|\s*tool\s*\|\s*>\s*\{[\s\S]*?"tool_call_id"\s*:\s*"call[^"]*"\s*}`)
+var leakedHistoryTranscriptMarkerPattern = regexp.MustCompile(`(?im)^\s*===\s*\d+\.\s*(?:SYSTEM|USER|ASSISTANT|TOOL)\s*===\s*$`)
+var leakedToolCallIDLinePattern = regexp.MustCompile(`(?im)^\s*\[tool_call_id\s*=\s*call[^\]]*\]\s*$`)
 
 var leakedThinkTagPattern = regexp.MustCompile(`(?is)</?\s*think\s*>`)
 
@@ -45,6 +47,7 @@ func sanitizeLeakedOutput(text string) string {
 	out := emptyJSONFencePattern.ReplaceAllString(text, "")
 	out = leakedToolCallArrayPattern.ReplaceAllString(out, "")
 	out = leakedToolResultBlobPattern.ReplaceAllString(out, "")
+	out, _ = stripLeakedHistoryTranscriptSuffix(out)
 	out = stripDanglingThinkSuffix(out)
 	out = leakedThinkTagPattern.ReplaceAllString(out, "")
 	out = leakedBOSMarkerPattern.ReplaceAllString(out, "")
@@ -52,6 +55,23 @@ func sanitizeLeakedOutput(text string) string {
 	out = stripLeakedToolCallWrapperBlocks(out)
 	out = sanitizeLeakedAgentXMLBlocks(out)
 	return out
+}
+
+func stripLeakedHistoryTranscriptSuffix(text string) (string, bool) {
+	if text == "" {
+		return text, false
+	}
+	idx := -1
+	if loc := leakedHistoryTranscriptMarkerPattern.FindStringIndex(text); loc != nil {
+		idx = loc[0]
+	}
+	if loc := leakedToolCallIDLinePattern.FindStringIndex(text); loc != nil && (idx < 0 || loc[0] < idx) {
+		idx = loc[0]
+	}
+	if idx < 0 {
+		return text, false
+	}
+	return strings.TrimRight(text[:idx], " \t\r"), true
 }
 
 func stripLeakedToolCallWrapperBlocks(text string) string {

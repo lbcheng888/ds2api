@@ -69,11 +69,11 @@
   },
   {
     "sample_id": "failure-20260426t055752z",
-    "expect": "tool_call"
+    "expect": "missing_tool"
   },
   {
     "sample_id": "failure-20260426t055936z",
-    "expect": "tool_call"
+    "expect": "missing_tool"
   },
   {
     "sample_id": "failure-20260426t060252z",

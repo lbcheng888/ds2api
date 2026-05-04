@@ -75,6 +75,14 @@ func ParseDeepSeekContentLine(raw []byte, thinkingEnabled bool, currentType stri
 			NextType:      currentType,
 		}
 	}
+	if hasDeepSeekContentFilterRefusal(chunk) {
+		return LineResult{
+			Parsed:        true,
+			Stop:          true,
+			ContentFilter: true,
+			NextType:      currentType,
+		}
+	}
 	parts, detectionThinkingParts, finished, nextType := ParseSSEChunkForContentDetailed(chunk, thinkingEnabled, currentType)
 	parts = filterLeakedContentFilterParts(parts)
 	detectionThinkingParts = filterLeakedContentFilterParts(detectionThinkingParts)

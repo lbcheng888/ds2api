@@ -1,10 +1,6 @@
 package claudecode
 
-import (
-	"strings"
-
-	"ds2api/internal/toolcall"
-)
+import "ds2api/internal/toolcall"
 
 type FinalEvaluationInput struct {
 	FinalPrompt         string
@@ -29,41 +25,44 @@ type FinalEvaluationResult struct {
 }
 
 func EvaluateFinalOutput(in FinalEvaluationInput) FinalEvaluationResult {
-	repair := RepairFinalOutput(FinalOutputInput{
-		FinalPrompt:         in.FinalPrompt,
-		Text:                in.Text,
-		Thinking:            in.Thinking,
-		ToolNames:           in.ToolNames,
-		ToolSchemas:         in.ToolSchemas,
-		AllowMetaAgentTools: in.AllowMetaAgentTools,
-		ContentFilter:       in.ContentFilter,
-		Profile:             in.Profile,
-	})
-	parsed, visibleText := DetectFinalToolCalls(FinalToolCallInput{
-		Text:      repair.Text,
-		Thinking:  in.Thinking,
-		ToolNames: in.ToolNames,
-	})
-	// Fill in schema defaults for missing optional parameters (limit, offset)
-	parsed.Calls = CompleteToolCallsWithSchemaDefaults(parsed.Calls, in.ToolSchemas)
-	var dropped []string
-	parsed.Calls, dropped = FilterInvalidTaskOutputCallsWithReport(parsed.Calls, in.FinalPrompt)
-	if len(dropped) > 0 && len(parsed.Calls) == 0 && strings.TrimSpace(visibleText) == "" {
-		visibleText = InvalidTaskOutputNotice(dropped)
-	}
-	calls := toolcall.NormalizeCallsForSchemasWithMeta(parsed.Calls, in.ToolSchemas, in.AllowMetaAgentTools)
+	transaction := RunFinalToolTransaction(FinalToolTransactionInput(in))
+	recordDedupeReport(in.Profile, transaction.DedupeReport)
 	result := FinalEvaluationResult{
-		Text:                 visibleText,
+		Text:                 transaction.VisibleText,
 		Thinking:             in.Thinking,
-		PreservedThinking:    repair.PreservedThinking,
-		Parsed:               parsed,
-		Calls:                calls,
-		Repair:               repair,
-		DroppedTaskOutputIDs: dropped,
+		PreservedThinking:    transaction.PreservedThinking,
+		Parsed:               transaction.Parsed,
+		Calls:                transaction.Calls,
+		Repair:               transaction.Repair,
+		DroppedTaskOutputIDs: transaction.DroppedTaskOutputIDs,
 	}
-	if len(calls) == 0 {
+	if len(result.Calls) > 0 {
+		if guard := DetectInvalidPlanModeTransition(PlanModeGuardInput{
+			FinalPrompt:         in.FinalPrompt,
+			Calls:               result.Calls,
+			ToolNames:           in.ToolNames,
+			AllowMetaAgentTools: in.AllowMetaAgentTools,
+		}); guard.Blocked {
+			result.Calls = nil
+			result.MissingToolDecision = planModeGuardDecision(in.Profile)
+		}
+	}
+	if len(result.Calls) > 0 {
+		if guard := DetectRepeatedExploration(ExplorationGuardInput{
+			FinalPrompt: in.FinalPrompt,
+			Calls:       result.Calls,
+		}); guard.Blocked {
+			result.Calls = nil
+			result.MissingToolDecision = repeatedExplorationDecision(in.Profile)
+		}
+	}
+	if len(result.Calls) == 0 && len(result.Parsed.Calls) > 0 &&
+		toolcall.AllCallsAreTaskTrackingTools(result.Parsed.Calls) {
+		result.MissingToolDecision = missingToolDecision(in.Profile)
+	}
+	if len(result.Calls) == 0 && !result.MissingToolDecision.Blocked {
 		result.MissingToolDecision = DetectMissingToolCall(MissingToolCallInput{
-			Text:                visibleText,
+			Text:                transaction.VisibleText,
 			FinalPrompt:         in.FinalPrompt,
 			ToolNames:           in.ToolNames,
 			ToolSchemas:         in.ToolSchemas,

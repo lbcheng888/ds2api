@@ -17,7 +17,7 @@ func IsMetaAgentToolName(name string) bool {
 func IsTaskTrackingToolName(name string) bool {
 	key := canonicalToolPolicyName(name)
 	switch key {
-	case "taskcreate", "taskupdate", "todowrite", "todoread":
+	case "taskcreate", "taskupdate", "todowrite", "todoread", "updateplan", "functionsupdateplan":
 		return true
 	default:
 		return false

@@ -7,6 +7,7 @@ import (
 
 	openaifmt "ds2api/internal/format/openai"
 	claudecodeharness "ds2api/internal/harness/claudecode"
+	"ds2api/internal/promptcompat"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
 	"ds2api/internal/textclean"
@@ -33,6 +34,7 @@ type chatStreamRuntime struct {
 
 	firstChunkSent       bool
 	bufferToolContent    bool
+	holdBufferedToolText bool
 	emitEarlyToolDeltas  bool
 	toolCallsEmitted     bool
 	toolCallsDoneEmitted bool
@@ -45,6 +47,8 @@ type chatStreamRuntime struct {
 	toolDetectionThinking strings.Builder
 	rawText               strings.Builder
 	text                  strings.Builder
+	deferredToolText      strings.Builder
+	outputSanitizer       textclean.StreamSanitizer
 	responseMessageID     int
 
 	finalThinking     string
@@ -191,6 +195,9 @@ func (s *chatStreamRuntime) resetStreamToolCallState() {
 }
 
 func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool) bool {
+	if s.finalErrorMessage != "" {
+		return true
+	}
 	s.finalErrorStatus = 0
 	s.finalErrorMessage = ""
 	s.finalErrorCode = ""
@@ -201,6 +208,11 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 	s.finalText = finalText
 	detected := detectAssistantToolCalls(s.rawText.String(), finalText, s.rawThinking.String(), finalToolDetectionThinking, s.toolNames)
 	if len(detected.Calls) > 0 && !s.toolCallsDoneEmitted {
+		if calls, blocked := s.prepareFinalToolCalls(detected.Calls); blocked {
+			return true
+		} else {
+			detected.Calls = calls
+		}
 		finishReason = "tool_calls"
 		s.sendDelta(map[string]any{
 			"tool_calls": formatFinalStreamToolCallsWithStableIDs(detected.Calls, s.streamToolCallIDs, s.toolsRaw),
@@ -212,20 +224,28 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 		for _, evt := range toolstream.Flush(&s.toolSieve, s.toolNames) {
 			if len(evt.ToolCalls) > 0 {
 				batch.flush()
+				calls, blocked := s.prepareFinalToolCalls(evt.ToolCalls)
+				if blocked {
+					return true
+				}
 				finishReason = "tool_calls"
 				s.toolCallsEmitted = true
 				s.toolCallsDoneEmitted = true
 				s.sendDelta(map[string]any{
-					"tool_calls": formatFinalStreamToolCallsWithStableIDs(evt.ToolCalls, s.streamToolCallIDs, s.toolsRaw),
+					"tool_calls": formatFinalStreamToolCallsWithStableIDs(calls, s.streamToolCallIDs, s.toolsRaw),
 				})
 				s.resetStreamToolCallState()
 			}
 			if evt.Content == "" {
 				continue
 			}
-			cleaned := cleanVisibleOutput(evt.Content, s.stripReferenceMarkers)
+			cleaned := cleanVisibleOutput(s.outputSanitizer.Sanitize(evt.Content), s.stripReferenceMarkers)
 			cleaned = textclean.StripDSMLAggressive(evt.Content, cleaned)
 			if cleaned == "" || (s.searchEnabled && sse.IsCitation(cleaned)) {
+				continue
+			}
+			if s.shouldDeferBufferedToolText() {
+				s.deferredToolText.WriteString(cleaned)
 				continue
 			}
 			batch.append("content", cleaned)
@@ -242,6 +262,11 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 		}
 	}
 	if len(detected.Calls) > 0 && !s.toolCallsDoneEmitted {
+		if calls, blocked := s.prepareFinalToolCalls(detected.Calls); blocked {
+			return true
+		} else {
+			detected.Calls = calls
+		}
 		finishReason = "tool_calls"
 		s.sendDelta(map[string]any{
 			"tool_calls": formatFinalStreamToolCallsWithStableIDs(detected.Calls, s.streamToolCallIDs, s.toolsRaw),
@@ -251,6 +276,19 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 	}
 	if len(detected.Calls) > 0 || s.toolCallsEmitted {
 		finishReason = "tool_calls"
+	}
+	if len(detected.Calls) == 0 && !s.toolCallsEmitted && s.bufferToolContent {
+		decision := claudecodeharness.DetectMissingToolCall(claudecodeharness.MissingToolCallInput{
+			Text:                finalText,
+			FinalPrompt:         s.finalPrompt,
+			ToolNames:           s.toolNames,
+			ToolSchemas:         toolcall.ExtractParameterSchemas(s.toolsRaw),
+			AllowMetaAgentTools: true,
+		})
+		if decision.Blocked {
+			s.sendFailedChunk(http.StatusBadGateway, decision.Message, decision.Code)
+			return true
+		}
 	}
 	if len(detected.Calls) == 0 && !s.toolCallsEmitted && strings.TrimSpace(finalText) == "" {
 		status, message, code := upstreamEmptyOutputDetail(finishReason == "content_filter", finalText, finalThinking)
@@ -262,6 +300,9 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 		}
 		s.sendFailedChunk(status, message, code)
 		return true
+	}
+	if len(detected.Calls) == 0 && !s.toolCallsEmitted {
+		s.flushDeferredToolText()
 	}
 	usage := openaifmt.BuildChatUsageForModel(s.model, s.finalPrompt, finalThinking, finalText, s.refFileTokens)
 	s.finalFinishReason = finishReason
@@ -275,6 +316,15 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 	))
 	s.sendDone()
 	return true
+}
+
+func (s *chatStreamRuntime) prepareFinalToolCalls(calls []toolcall.ParsedToolCall) ([]toolcall.ParsedToolCall, bool) {
+	normalized, status, message, code, blocked := prepareOpenAIFinalToolCalls(s.finalPrompt, calls, s.toolsRaw, s.toolNames)
+	if blocked {
+		s.sendFailedChunk(status, message, code)
+		return nil, true
+	}
+	return normalized, false
 }
 
 func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedDecision {
@@ -331,7 +381,7 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 			}
 			s.rawText.WriteString(rawTrimmed)
 			contentSeen = true
-			cleanedText := cleanVisibleOutput(rawTrimmed, s.stripReferenceMarkers)
+			cleanedText := cleanVisibleOutput(s.outputSanitizer.Sanitize(rawTrimmed), s.stripReferenceMarkers)
 			if s.searchEnabled && sse.IsCitation(cleanedText) {
 				continue
 			}
@@ -369,19 +419,30 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 					}
 					if len(evt.ToolCalls) > 0 {
 						batch.flush()
+						calls, blocked := s.prepareFinalToolCalls(evt.ToolCalls)
+						if blocked {
+							return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReasonHandlerRequested}
+						}
 						s.toolCallsEmitted = true
 						s.toolCallsDoneEmitted = true
 						tcDelta := map[string]any{
-							"tool_calls": formatFinalStreamToolCallsWithStableIDs(evt.ToolCalls, s.streamToolCallIDs, s.toolsRaw),
+							"tool_calls": formatFinalStreamToolCallsWithStableIDs(calls, s.streamToolCallIDs, s.toolsRaw),
 						}
 						s.sendDelta(tcDelta)
 						s.resetStreamToolCallState()
 						continue
 					}
 					if evt.Content != "" {
-						cleaned := cleanVisibleOutput(evt.Content, s.stripReferenceMarkers)
+						cleaned := cleanVisibleOutput(s.outputSanitizer.Sanitize(evt.Content), s.stripReferenceMarkers)
 						cleaned = textclean.StripDSMLAggressive(evt.Content, cleaned)
 						if cleaned == "" || (s.searchEnabled && sse.IsCitation(cleaned)) {
+							continue
+						}
+						if s.shouldHoldBufferedToolContent() {
+							continue
+						}
+						if s.shouldDeferBufferedToolText() {
+							s.deferredToolText.WriteString(cleaned)
 							continue
 						}
 						batch.append("content", cleaned)
@@ -392,4 +453,49 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 	}
 	batch.flush()
 	return streamengine.ParsedDecision{ContentSeen: contentSeen}
+}
+
+func (s *chatStreamRuntime) shouldHoldBufferedToolContent() bool {
+	if !s.bufferToolContent || s.toolCallsEmitted {
+		return false
+	}
+	if s.holdBufferedToolText {
+		return true
+	}
+	if claudecodeharness.IsToolRequiredTurn(claudecodeharness.ToolRequiredTurnInput{
+		FinalPrompt:         s.finalPrompt,
+		ToolNames:           s.toolNames,
+		AllowMetaAgentTools: true,
+	}) {
+		s.holdBufferedToolText = true
+		return true
+	}
+	text := s.text.String()
+	if !claudecodeharness.LooksLikeBufferedToolHoldCandidate(text) {
+		return false
+	}
+	decision := claudecodeharness.DetectMissingToolCallNoRecord(claudecodeharness.MissingToolCallInput{
+		Text:                text,
+		FinalPrompt:         s.finalPrompt,
+		ToolNames:           s.toolNames,
+		ToolSchemas:         toolcall.ExtractParameterSchemas(s.toolsRaw),
+		AllowMetaAgentTools: true,
+	})
+	if decision.Blocked {
+		s.holdBufferedToolText = true
+		return true
+	}
+	return false
+}
+
+func (s *chatStreamRuntime) shouldDeferBufferedToolText() bool {
+	return s.bufferToolContent && !s.toolCallsEmitted && strings.Contains(s.finalPrompt, promptcompat.CurrentInputContextFilename)
+}
+
+func (s *chatStreamRuntime) flushDeferredToolText() {
+	if s.deferredToolText.Len() == 0 {
+		return
+	}
+	s.sendDelta(map[string]any{"content": s.deferredToolText.String()})
+	s.deferredToolText.Reset()
 }

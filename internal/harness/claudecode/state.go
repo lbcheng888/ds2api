@@ -72,6 +72,34 @@ func LatestUserPromptBlock(finalPrompt string) string {
 	return tail
 }
 
+func LatestUserTextFromPrompt(finalPrompt string) string {
+	if text := latestAuthoritativeUserRequest(finalPrompt); strings.TrimSpace(text) != "" {
+		return text
+	}
+	return LatestUserPromptBlock(finalPrompt)
+}
+
+func latestAuthoritativeUserRequest(finalPrompt string) string {
+	const marker = "Latest user request, authoritative:"
+	start := strings.LastIndex(finalPrompt, marker)
+	if start < 0 {
+		return ""
+	}
+	tail := finalPrompt[start+len(marker):]
+	for _, endMarker := range []string{
+		"<｜Assistant｜>",
+		"<｜System｜>",
+		"<｜User｜>",
+		"<｜Tool｜>",
+		"<｜end▁of▁sentence｜>",
+	} {
+		if idx := strings.Index(tail, endMarker); idx >= 0 {
+			tail = tail[:idx]
+		}
+	}
+	return strings.TrimSpace(tail)
+}
+
 func ExtractTaskNotificationIDs(text string) []string {
 	seen := map[string]struct{}{}
 	out := []string{}

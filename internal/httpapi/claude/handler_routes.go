@@ -28,17 +28,6 @@ func (h *Handler) compatStripReferenceMarkers() bool {
 	return h.Store.CompatStripReferenceMarkers()
 }
 
-func (h *Handler) compatAllowMetaAgentTools() bool {
-	if h == nil || h.Store == nil {
-		return false
-	}
-	type metaAgentConfig interface {
-		CompatAllowMetaAgentTools() bool
-	}
-	cfg, ok := h.Store.(metaAgentConfig)
-	return ok && cfg.CompatAllowMetaAgentTools()
-}
-
 var (
 	claudeStreamPingInterval    = time.Duration(dsprotocol.KeepAliveTimeout) * time.Second
 	claudeStreamIdleTimeout     = time.Duration(dsprotocol.StreamIdleTimeout) * time.Second

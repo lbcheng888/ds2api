@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"ds2api/internal/toolcall"
 )
 
 func makeSSEHTTPResponse(lines ...string) *http.Response {
@@ -202,6 +204,59 @@ func TestHandleNonStreamPromotesHiddenThinkingDSMLToolCallsWhenTextEmpty(t *test
 	}
 }
 
+func TestHandleNonStreamBlocksRepeatedExplorationToolCall(t *testing.T) {
+	h := &Handler{}
+	finalPrompt := `<｜User｜>请检查这个文件
+<｜Assistant｜><tool_calls><invoke name="Read"><parameter name="file_path">/tmp/app.go</parameter></invoke></tool_calls>`
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"<tool_calls><invoke name=\"Read\"><parameter name=\"file_path\">/tmp/app.go</parameter></invoke></tool_calls>"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+
+	h.handleNonStream(rec, resp, "cid-repeat-read", "deepseek-v4-flash", finalPrompt, 0, false, false, []string{"Read"}, nil, nil)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for repeated exploration, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream_repeated_exploration") {
+		t.Fatalf("expected repeated exploration code, body=%s", rec.Body.String())
+	}
+}
+
+func TestPrepareOpenAIFinalToolCallsBlocksEnterPlanModeForExecutionRequest(t *testing.T) {
+	calls, status, _, code, blocked := prepareOpenAIFinalToolCalls(
+		"<｜User｜>请继续推进并完成实现<｜Assistant｜>",
+		[]toolcall.ParsedToolCall{{Name: "EnterPlanMode", Input: map[string]any{}}},
+		nil,
+		[]string{"EnterPlanMode", "Read", "Bash"},
+	)
+	if !blocked || status != http.StatusBadGateway || code != "upstream_missing_tool_call" {
+		t.Fatalf("expected EnterPlanMode direct tool call to be blocked, calls=%#v status=%d code=%s blocked=%v", calls, status, code, blocked)
+	}
+}
+
+func TestPrepareOpenAIFinalToolCallsSerializesParallelBashCalls(t *testing.T) {
+	calls, status, _, code, blocked := prepareOpenAIFinalToolCalls(
+		"<｜User｜>请继续检查<｜Assistant｜>",
+		[]toolcall.ParsedToolCall{
+			{Name: "Bash", Input: map[string]any{"command": "git diff --stat HEAD"}},
+			{Name: "Bash", Input: map[string]any{"command": "wc -l src/core/lang/parser.cheng"}},
+			{Name: "Read", Input: map[string]any{"file_path": "README.md"}},
+		},
+		nil,
+		[]string{"Bash", "Read"},
+	)
+	if blocked || status != 0 || code != "" {
+		t.Fatalf("did not expect shell serialization to block, status=%d code=%s blocked=%v", status, code, blocked)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected one Bash plus Read after shell serialization, got %#v", calls)
+	}
+	if calls[0].Name != "Bash" || calls[0].Input["command"] != "git diff --stat HEAD" || calls[1].Name != "Read" {
+		t.Fatalf("unexpected serialized calls: %#v", calls)
+	}
+}
+
 func TestHandleStreamToolsPlainTextStreamsBeforeFinish(t *testing.T) {
 	h := &Handler{}
 	resp := makeSSEHTTPResponse(
@@ -237,6 +292,219 @@ func TestHandleStreamToolsPlainTextStreamsBeforeFinish(t *testing.T) {
 	}
 	if streamFinishReason(frames) != "stop" {
 		t.Fatalf("expected finish_reason=stop, body=%s", rec.Body.String())
+	}
+}
+
+func TestHandleStreamToolsBlocksFutureExaminePromiseWithoutToolCall(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"Let me first understand the current state of the codebase by examining the key files that have been modified."}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h.handleStream(rec, req, resp, "cid-stream-examine-no-tool", "deepseek-v4-flash", "prompt", 0, false, false, []string{"Read", "Grep", "Bash"}, nil, nil)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "upstream_missing_tool_call") {
+		t.Fatalf("expected missing-tool error for future examine promise, body=%s", body)
+	}
+	if strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("future examine promise must not finish as stop, body=%s", body)
+	}
+	if strings.Contains(body, `"content":"Let me first understand`) {
+		t.Fatalf("future examine promise should be held instead of streamed as normal content, body=%s", body)
+	}
+}
+
+func TestHandleStreamToolsBlocksConversationContextCodebasePromise(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"Looking at the conversation context, I need to understand the current state of the project before proceeding. Let me examine the codebase first."}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h.handleStream(rec, req, resp, "cid-stream-context-codebase-no-tool", "deepseek-v4-flash", "prompt", 0, false, false, []string{"Read", "Grep", "Bash"}, nil, nil)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "upstream_missing_tool_call") {
+		t.Fatalf("expected missing-tool error for conversation-context examine promise, body=%s", body)
+	}
+	if strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("conversation-context examine promise must not finish as stop, body=%s", body)
+	}
+	if strings.Contains(body, `"content":"Looking at the conversation context`) {
+		t.Fatalf("conversation-context examine promise should be held instead of streamed as normal content, body=%s", body)
+	}
+}
+
+func TestHandleStreamCurrentInputFileSuppressesStalePreambleBeforeToolCall(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"收益最大：先攻 BodyIR CFG / primary object 的通用语句 codegen。\n\n"}`,
+		`data: {"p":"response/content","v":"<tool_calls><invoke name=\"search\"><parameter name=\"q\">BodyIR place field</parameter></invoke></tool_calls>"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	finalPrompt := "Continue from the latest state in the attached DS2API_HISTORY.txt context.\n\nLatest user request, authoritative:\n请继续排查最新问题"
+
+	h.handleStream(rec, req, resp, "cid-current-input-stale-preamble", "deepseek-v4-flash", finalPrompt, 0, false, false, []string{"search"}, nil, nil)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "收益最大") {
+		t.Fatalf("stale preamble must not be streamed before tool call, body=%s", body)
+	}
+	frames, done := parseSSEDataFrames(t, body)
+	if !done {
+		t.Fatalf("expected [DONE], body=%s", body)
+	}
+	if !streamHasToolCallsDelta(frames) {
+		t.Fatalf("expected tool_calls delta, body=%s", body)
+	}
+	if streamFinishReason(frames) != "tool_calls" {
+		t.Fatalf("expected finish_reason=tool_calls, body=%s", body)
+	}
+}
+
+func TestHandleStreamCurrentInputFileFlushesPlainTextAtFinal(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"这是最新问题的答案。"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	finalPrompt := "Continue from the latest state in the attached DS2API_HISTORY.txt context.\n\nLatest user request, authoritative:\n解释最新问题"
+
+	h.handleStream(rec, req, resp, "cid-current-input-plain", "deepseek-v4-flash", finalPrompt, 0, false, false, []string{"search"}, nil, nil)
+
+	frames, done := parseSSEDataFrames(t, rec.Body.String())
+	if !done {
+		t.Fatalf("expected [DONE], body=%s", rec.Body.String())
+	}
+	content := strings.Builder{}
+	for _, frame := range frames {
+		choices, _ := frame["choices"].([]any)
+		for _, item := range choices {
+			choice, _ := item.(map[string]any)
+			delta, _ := choice["delta"].(map[string]any)
+			content.WriteString(asString(delta["content"]))
+		}
+	}
+	if !strings.Contains(content.String(), "这是最新问题的答案。") {
+		t.Fatalf("expected deferred plain text to flush at final, got %q body=%s", content.String(), rec.Body.String())
+	}
+	if streamFinishReason(frames) != "stop" {
+		t.Fatalf("expected finish_reason=stop, body=%s", rec.Body.String())
+	}
+}
+
+func TestHandleStreamSuppressesLeakedHistoryTranscriptToolResult(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"可见前文\n=== 145. TOOL ===\n[tool_call_id=call_abc]\nError editing file\n泄漏正文"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h.handleStream(rec, req, resp, "cid-stream-history-leak", "deepseek-v4-flash", "prompt", 0, false, false, nil, nil, nil)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "TOOL ===") || strings.Contains(body, "tool_call_id") || strings.Contains(body, "Error editing file") {
+		t.Fatalf("expected leaked history transcript to be suppressed, body=%s", body)
+	}
+	if !strings.Contains(body, "可见前文") {
+		t.Fatalf("expected visible prefix to remain, body=%s", body)
+	}
+}
+
+func TestHandleStreamTurnsEditRetryAfterFailureIntoRead(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"<tool_calls><tool_call><tool_name>Update</tool_name><parameters><file_path>src/core/backend/direct_exe_emit.cheng</file_path><old_string>old</old_string><new_string>new</new_string></parameters></tool_call></tool_calls>"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	finalPrompt := `<｜User｜>继续修改<｜Assistant｜>
+<tool_calls>
+<tool_call>
+<tool_name>Update</tool_name>
+<parameters><file_path>src/core/backend/direct_exe_emit.cheng</file_path><old_string>old</old_string><new_string>new</new_string></parameters>
+</tool_call>
+</tool_calls>
+<｜Tool｜>Error editing file<｜end▁of▁toolresults｜><｜Assistant｜>`
+
+	h.handleStream(rec, req, resp, "cid-edit-failure-recovery", "deepseek-v4-flash", finalPrompt, 0, false, false, []string{"Read", "Update"}, nil, nil)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"name":"Read"`) {
+		t.Fatalf("expected failed edit retry to be converted to Read, body=%s", body)
+	}
+	if strings.Contains(body, `"name":"Update"`) {
+		t.Fatalf("did not expect repeated Update after edit failure, body=%s", body)
+	}
+}
+
+func TestHandleStreamBlocksRepeatedExplorationToolCall(t *testing.T) {
+	h := &Handler{}
+	finalPrompt := `<｜User｜>请检查这个文件
+<｜Assistant｜><tool_calls><invoke name="Read"><parameter name="file_path">/tmp/app.go</parameter></invoke></tool_calls>`
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"<tool_calls><invoke name=\"Read\"><parameter name=\"file_path\">/tmp/app.go</parameter></invoke></tool_calls>"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h.handleStream(rec, req, resp, "cid-repeat-read-stream", "deepseek-v4-flash", finalPrompt, 0, false, false, []string{"Read"}, nil, nil)
+	body := rec.Body.String()
+	if !strings.Contains(body, "upstream_repeated_exploration") {
+		t.Fatalf("expected repeated exploration error, body=%s", body)
+	}
+	if strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("repeated exploration must not finish as stop, body=%s", body)
+	}
+}
+
+func TestHandleStreamBlocksRepeatedGitInspectionFromHistoryTranscript(t *testing.T) {
+	h := &Handler{}
+	finalPrompt := `# DS2API_HISTORY.txt
+Prior conversation history and tool progress.
+
+=== 1. USER ===
+继续修复
+
+=== 2. ASSISTANT ===
+<|DSML|tool_calls>
+  <|DSML|invoke name="Bash">
+    <|DSML|parameter name="command"><![CDATA[git status --short && echo "===" && git diff --stat HEAD]]></|DSML|parameter>
+  </|DSML|invoke>
+</|DSML|tool_calls>
+
+=== 3. TOOL ===
+ M internal/harness/claudecode/exploration_guard.go
+
+<｜begin▁of▁sentence｜><｜User｜>Continue from DS2API_HISTORY.txt<｜Assistant｜>`
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"<tool_calls><invoke name=\"Bash\"><parameter name=\"command\">git -C /Users/lbcheng/cheng-lang status --short 2&gt;&amp;1</parameter></invoke></tool_calls>"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h.handleStream(rec, req, resp, "cid-repeat-git-history-stream", "deepseek-v4-flash", finalPrompt, 0, false, false, []string{"Bash"}, nil, nil)
+	body := rec.Body.String()
+	if !strings.Contains(body, "upstream_repeated_exploration") {
+		t.Fatalf("expected repeated git exploration error, body=%s", body)
+	}
+	if strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("repeated git exploration must not emit tool_calls finish, body=%s", body)
 	}
 }
 

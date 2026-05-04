@@ -133,8 +133,8 @@ func TestHandleVercelStreamPrepareAppliesCurrentInputFile(t *testing.T) {
 	if !strings.Contains(promptText, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
 		t.Fatalf("expected continuation prompt, got %s", promptText)
 	}
-	if strings.Contains(promptText, "first user turn") || strings.Contains(promptText, "latest user turn") {
-		t.Fatalf("expected original turns hidden from prompt, got %s", promptText)
+	if strings.Contains(promptText, "first user turn") || !strings.Contains(promptText, "latest user turn") {
+		t.Fatalf("expected prompt to repeat only the latest user turn, got %s", promptText)
 	}
 	refIDs, _ := payload["ref_file_ids"].([]any)
 	if len(refIDs) == 0 || refIDs[0] != "file-inline-1" {

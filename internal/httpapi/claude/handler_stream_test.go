@@ -172,6 +172,32 @@ func TestHandleClaudeStreamRealtimeSkipsThinkingFallbackWhenFinalTextExists(t *t
 	}
 }
 
+func TestHandleClaudeStreamRealtimeBlocksMissingToolPromise(t *testing.T) {
+	h := &Handler{}
+	resp := makeClaudeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"The user is asking about cold bootstrap performance breakdown and wants to explore this in parallel.\n\nLet me examine the current codebase state and then investigate the three phases concurrently."}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "analyze and measure in parallel"}}, false, false, []string{"Read", "Bash", "Agent"}, nil)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "Let me examine") {
+		t.Fatalf("missing-tool promise must not be emitted as text, body=%s", body)
+	}
+	frames := parseClaudeFrames(t, body)
+	errFrames := findClaudeFrames(frames, "error")
+	if len(errFrames) == 0 {
+		t.Fatalf("expected error event for missing tool call, body=%s", body)
+	}
+	errObj, _ := errFrames[0].Payload["error"].(map[string]any)
+	if errObj["code"] != "upstream_missing_tool_call" {
+		t.Fatalf("expected upstream_missing_tool_call, body=%s", body)
+	}
+}
+
 func TestHandleClaudeStreamRealtimeUpstreamErrorEvent(t *testing.T) {
 	h := &Handler{}
 	resp := makeClaudeSSEHTTPResponse(

@@ -7,9 +7,11 @@ import (
 
 	"ds2api/internal/config"
 	openaifmt "ds2api/internal/format/openai"
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/promptcompat"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
+	"ds2api/internal/textclean"
 	"ds2api/internal/toolstream"
 )
 
@@ -32,6 +34,7 @@ type responsesStreamRuntime struct {
 	stripReferenceMarkers bool
 
 	bufferToolContent    bool
+	holdBufferedToolText bool
 	emitEarlyToolDeltas  bool
 	toolCallsEmitted     bool
 	toolCallsDoneEmitted bool
@@ -43,6 +46,8 @@ type responsesStreamRuntime struct {
 	rawText               strings.Builder
 	text                  strings.Builder
 	visibleText           strings.Builder
+	deferredToolText      strings.Builder
+	outputSanitizer       textclean.StreamSanitizer
 	responseMessageID     int
 	streamToolCallIDs     map[int]string
 	functionItemIDs       map[int]string
@@ -147,6 +152,9 @@ func (s *responsesStreamRuntime) markContextCancelled() {
 }
 
 func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput bool) bool {
+	if s.failed && s.finalErrorMessage != "" {
+		return true
+	}
 	s.failed = false
 	s.finalErrorStatus = 0
 	s.finalErrorMessage = ""
@@ -156,27 +164,29 @@ func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput 
 	}
 
 	finalThinking := s.thinking.String()
-	finalToolDetectionThinking := s.toolDetectionThinking.String()
 	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
-	textParsed := detectAssistantToolCalls(s.rawText.String(), finalText, s.rawThinking.String(), finalToolDetectionThinking, s.toolNames)
-	detected := textParsed.Calls
+	evaluationThinking := s.rawThinking.String() + "\n" + s.toolDetectionThinking.String()
+	evaluated := evaluateResponsesFinalOutput(s.finalPrompt, finalText, s.rawText.String(), evaluationThinking, false, s.toolNames, s.toolsRaw)
+	textParsed := evaluated.Parsed
+	detected := evaluated.Calls
 	s.logToolPolicyRejections(textParsed)
 
+	if evaluated.MissingToolDecision.Blocked {
+		s.failResponse(http.StatusBadGateway, evaluated.MissingToolDecision.Message, evaluated.MissingToolDecision.Code)
+		return true
+	}
 	if len(detected) > 0 {
 		s.toolCallsEmitted = true
 		if !s.toolCallsDoneEmitted {
 			s.emitFunctionCallDoneEvents(detected)
 		}
 	}
-
-	s.closeMessageItem()
-
 	if s.toolChoice.IsRequired() && len(detected) == 0 {
 		s.failResponse(http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation")
 		return true
 	}
-	if len(detected) == 0 && strings.TrimSpace(finalText) == "" {
-		status, message, code := upstreamEmptyOutputDetail(finishReason == "content_filter", finalText, finalThinking)
+	if len(detected) == 0 && strings.TrimSpace(evaluated.Text) == "" {
+		status, message, code := upstreamEmptyOutputDetail(finishReason == "content_filter", evaluated.Text, finalThinking)
 		if deferEmptyOutput {
 			s.finalErrorStatus = status
 			s.finalErrorMessage = message
@@ -186,9 +196,14 @@ func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput 
 		s.failResponse(status, message, code)
 		return true
 	}
+	if len(detected) == 0 && !s.toolCallsEmitted {
+		s.flushDeferredToolText()
+	}
+
+	s.closeMessageItem()
 	s.closeIncompleteFunctionItems()
 
-	obj := s.buildCompletedResponseObject(finalThinking, finalText, detected)
+	obj := s.buildCompletedResponseObject(finalThinking, evaluated.Text, detected)
 	if s.persistResponse != nil {
 		s.persistResponse(obj)
 	}
@@ -265,7 +280,7 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 		}
 		s.rawText.WriteString(rawTrimmed)
 		contentSeen = true
-		cleanedText := cleanVisibleOutput(rawTrimmed, s.stripReferenceMarkers)
+		cleanedText := cleanVisibleOutput(s.outputSanitizer.Sanitize(rawTrimmed), s.stripReferenceMarkers)
 		if s.searchEnabled && sse.IsCitation(cleanedText) {
 			continue
 		}
@@ -286,4 +301,53 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 
 	batch.flush()
 	return streamengine.ParsedDecision{ContentSeen: contentSeen}
+}
+
+func (s *responsesStreamRuntime) shouldHoldBufferedToolContent() bool {
+	if !s.bufferToolContent || s.toolCallsEmitted {
+		return false
+	}
+	if s.holdBufferedToolText {
+		return true
+	}
+	if claudecodeharness.IsToolRequiredTurn(claudecodeharness.ToolRequiredTurnInput{
+		FinalPrompt:         s.finalPrompt,
+		ToolNames:           s.toolNames,
+		AllowMetaAgentTools: true,
+	}) {
+		s.holdBufferedToolText = true
+		return true
+	}
+	detectionText := s.text.String()
+	if rawText := strings.TrimSpace(s.rawText.String()); rawText != "" {
+		detectionText = rawText
+	}
+	if !claudecodeharness.LooksLikeBufferedToolHoldCandidate(detectionText) {
+		return false
+	}
+	decision := claudecodeharness.DetectMissingToolCallNoRecord(claudecodeharness.MissingToolCallInput{
+		Text:                detectionText,
+		FinalPrompt:         s.finalPrompt,
+		ToolNames:           s.toolNames,
+		ToolSchemas:         toolcall.ExtractParameterSchemas(s.toolsRaw),
+		AllowMetaAgentTools: true,
+		Profile:             "openai",
+	})
+	if decision.Blocked {
+		s.holdBufferedToolText = true
+		return true
+	}
+	return false
+}
+
+func (s *responsesStreamRuntime) shouldDeferBufferedToolText() bool {
+	return s.bufferToolContent && !s.toolCallsEmitted && strings.Contains(s.finalPrompt, promptcompat.CurrentInputContextFilename)
+}
+
+func (s *responsesStreamRuntime) flushDeferredToolText() {
+	if s.deferredToolText.Len() == 0 {
+		return
+	}
+	s.emitTextDelta(s.deferredToolText.String())
+	s.deferredToolText.Reset()
 }

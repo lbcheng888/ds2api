@@ -1,6 +1,7 @@
 package shared
 
 import (
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/toolcall"
 	"encoding/json"
 	"strings"
@@ -51,6 +52,9 @@ func FilterIncrementalToolCallDeltasByAllowed(deltas []toolstream.ToolCallDelta,
 	out := make([]toolstream.ToolCallDelta, 0, len(deltas))
 	for _, d := range deltas {
 		if d.Name != "" {
+			if toolcall.IsTaskTrackingToolName(d.Name) {
+				continue
+			}
 			if seenNames != nil {
 				seenNames[d.Index] = d.Name
 			}
@@ -74,7 +78,8 @@ func FormatFinalStreamToolCallsWithStableIDs(calls []toolcall.ParsedToolCall, id
 	if len(calls) == 0 {
 		return nil
 	}
-	normalizedCalls := toolcall.NormalizeParsedToolCallsForSchemas(calls, toolsRaw)
+	normalizedCalls, report := toolcall.NormalizeParsedToolCallsForSchemasWithReport(calls, toolsRaw)
+	recordDedupeReport(report)
 	out := make([]map[string]any, 0, len(calls))
 	for i, c := range normalizedCalls {
 		callID := ""
@@ -99,4 +104,9 @@ func FormatFinalStreamToolCallsWithStableIDs(calls []toolcall.ParsedToolCall, id
 		})
 	}
 	return out
+}
+
+func recordDedupeReport(report toolcall.DedupeReport) {
+	claudecodeharness.RecordDeduplication("openai", "tool_calls", report.ToolCallsDropped)
+	claudecodeharness.RecordDeduplication("openai", "todo_items", report.TodoItemsDropped)
 }

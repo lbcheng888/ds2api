@@ -10,9 +10,20 @@ func NormalizeParsedToolCallsForSchemas(calls []ParsedToolCall, toolsRaw any) []
 	if len(calls) == 0 {
 		return calls
 	}
+	out, _ := NormalizeParsedToolCallsForSchemasWithReport(calls, toolsRaw)
+	return out
+}
+
+func NormalizeParsedToolCallsForSchemasWithReport(calls []ParsedToolCall, toolsRaw any) ([]ParsedToolCall, DedupeReport) {
+	if len(calls) == 0 {
+		return calls, DedupeReport{}
+	}
+	calls, report := NormalizeKnownToolCallInputsWithReport(calls)
 	schemas := buildToolSchemaIndex(toolsRaw)
 	if len(schemas) == 0 {
-		return calls
+		out, dedupeReport := DedupeParsedToolCallsWithReport(calls)
+		report.add(dedupeReport)
+		return out, report
 	}
 
 	var changedAny bool
@@ -20,22 +31,28 @@ func NormalizeParsedToolCallsForSchemas(calls []ParsedToolCall, toolsRaw any) []
 	for i, call := range calls {
 		out[i] = call
 		schema, ok := schemas[strings.ToLower(strings.TrimSpace(call.Name))]
-		if !ok || call.Input == nil {
+		if !ok || out[i].Input == nil {
 			continue
 		}
-		normalized, changed := normalizeToolValueWithSchema(call.Input, schema)
+		normalized, changed := normalizeToolValueWithSchema(out[i].Input, schema)
 		if !changed {
 			continue
 		}
 		changedAny = true
 		if input, ok := normalized.(map[string]any); ok {
-			out[i].Input = input
+			var inputReport DedupeReport
+			out[i].Input, inputReport = NormalizeKnownToolCallInputValuesWithReport(call.Name, input)
+			report.add(inputReport)
 		}
 	}
 	if !changedAny {
-		return calls
+		deduped, dedupeReport := DedupeParsedToolCallsWithReport(calls)
+		report.add(dedupeReport)
+		return deduped, report
 	}
-	return out
+	deduped, dedupeReport := DedupeParsedToolCallsWithReport(out)
+	report.add(dedupeReport)
+	return deduped, report
 }
 
 func buildToolSchemaIndex(toolsRaw any) map[string]any {
@@ -113,6 +130,9 @@ func normalizeToolValueWithSchema(value any, schema any) (any, bool) {
 			var fieldChanged bool
 			if propSchema, ok := properties[key]; ok {
 				next, fieldChanged = normalizeToolValueWithSchema(current, propSchema)
+			} else if disallowsAdditionalSchemaValues(additional) {
+				changed = true
+				continue
 			} else if additional != nil {
 				next, fieldChanged = normalizeToolValueWithSchema(current, additional)
 			}
@@ -171,6 +191,11 @@ func normalizeToolValueWithSchema(value any, schema any) (any, bool) {
 		return value, false
 	}
 	return value, false
+}
+
+func disallowsAdditionalSchemaValues(additional any) bool {
+	b, ok := additional.(bool)
+	return ok && !b
 }
 
 func isBooleanSchema(schema map[string]any) (bool, bool) {

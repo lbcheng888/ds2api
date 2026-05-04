@@ -72,10 +72,6 @@ func insideCodeFenceWithState(state *State, text string) bool {
 	)
 }
 
-func insideCodeFence(text string) bool {
-	return toolcall.InsideCodeFence(text)
-}
-
 func updateCodeFenceState(state *State, text string) {
 	if state == nil || !hasMeaningfulText(text) {
 		return

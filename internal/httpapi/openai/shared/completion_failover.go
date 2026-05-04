@@ -209,7 +209,7 @@ func recordTokenUsage(resolver AuthResolver, a *auth.RequestAuth, resp *http.Res
 		return
 	}
 	bodyBytes, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil {
 		return
 	}

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"ds2api/internal/devcapture"
+	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/rawsample"
 )
 
@@ -45,6 +46,8 @@ func TestGetDevDiagnosticsListsFailureSamplesAndCaptures(t *testing.T) {
 		_, _ = io.ReadAll(body)
 		_ = body.Close()
 	}
+	claudecodeharness.RecordDeduplication("diagnostics-test", "tool_calls", 2)
+	claudecodeharness.RecordDeduplication("diagnostics-test", "todo_items", 1)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/admin/dev/diagnostics?limit=10", nil)
@@ -84,5 +87,14 @@ func TestGetDevDiagnosticsListsFailureSamplesAndCaptures(t *testing.T) {
 	}
 	if metrics, _ := out["harness_metrics"].(map[string]any); metrics == nil {
 		t.Fatalf("expected harness metrics, got %#v", out["harness_metrics"])
+	} else {
+		profile, _ := metrics["diagnostics-test"].(map[string]any)
+		dedupes, _ := profile["dedupes"].(map[string]any)
+		if got, _ := dedupes["tool_calls"].(float64); got != 2 {
+			t.Fatalf("expected tool call dedupe diagnostics, got %#v", metrics["diagnostics-test"])
+		}
+		if got, _ := dedupes["todo_items"].(float64); got != 1 {
+			t.Fatalf("expected todo item dedupe diagnostics, got %#v", metrics["diagnostics-test"])
+		}
 	}
 }

@@ -35,13 +35,22 @@ func NormalizeCallsForSchemas(calls []ParsedToolCall, schemas ParameterSchemas) 
 }
 
 func NormalizeCallsForSchemasWithMeta(calls []ParsedToolCall, schemas ParameterSchemas, allowMetaAgentTools bool) []ParsedToolCall {
+	out, _ := NormalizeCallsForSchemasWithMetaReport(calls, schemas, allowMetaAgentTools)
+	return out
+}
+
+func NormalizeCallsForSchemasWithMetaReport(calls []ParsedToolCall, schemas ParameterSchemas, allowMetaAgentTools bool) ([]ParsedToolCall, DedupeReport) {
 	if len(calls) == 0 {
-		return nil
+		return nil, DedupeReport{}
 	}
+	report := DedupeReport{}
 	availableToolNames := toolNamesFromSchemas(schemas)
 	if len(availableToolNames) > 0 {
 		calls = RewriteCallsForAvailableTools(calls, availableToolNames)
 	}
+	var dedupeReport DedupeReport
+	calls, dedupeReport = DedupeParsedToolCallsWithReport(calls)
+	report.add(dedupeReport)
 	out := make([]ParsedToolCall, 0, len(calls))
 	backgroundAgentCalls := 0
 	for _, call := range calls {
@@ -68,6 +77,9 @@ func NormalizeCallsForSchemasWithMeta(calls []ParsedToolCall, schemas ParameterS
 		}
 		input = normalizeToolInputStrings(input)
 		input = normalizeKnownToolInputAliases(name, input)
+		var inputReport DedupeReport
+		input, inputReport = NormalizeKnownToolCallInputValuesWithReport(name, input)
+		report.add(inputReport)
 		for _, expanded := range expandKnownClientToolCalls(ParsedToolCall{Name: name, Input: input}) {
 			expandedInput := expanded.Input
 			if expandedInput == nil {
@@ -80,6 +92,8 @@ func NormalizeCallsForSchemasWithMeta(calls []ParsedToolCall, schemas ParameterS
 				}
 				expandedInput = normalized
 			}
+			expandedInput, inputReport = NormalizeKnownToolCallInputValuesWithReport(name, expandedInput)
+			report.add(inputReport)
 			if !knownToolCallHasRequiredFields(name, expandedInput) {
 				continue
 			}
@@ -89,7 +103,9 @@ func NormalizeCallsForSchemasWithMeta(calls []ParsedToolCall, schemas ParameterS
 			out = append(out, ParsedToolCall{Name: name, Input: expandedInput})
 		}
 	}
-	return out
+	out, dedupeReport = DedupeParsedToolCallsWithReport(out)
+	report.add(dedupeReport)
+	return out, report
 }
 
 func normalizeKnownToolInputAliases(name string, input map[string]any) map[string]any {
@@ -313,6 +329,9 @@ func normalizeObjectForSchema(input map[string]any, schema map[string]any) (map[
 				return nil, false
 			}
 		}
+		if schemaDisallowsAdditionalProperties(schema) {
+			return map[string]any{}, true
+		}
 		return cloneSchemaMap(input), true
 	}
 	input = repairGenericParameterForSchema(input, properties, required)
@@ -344,6 +363,15 @@ func normalizeObjectForSchema(input map[string]any, schema map[string]any) (map[
 		}
 	}
 	return out, true
+}
+
+func schemaDisallowsAdditionalProperties(schema map[string]any) bool {
+	v, ok := schema["additionalProperties"]
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && !b
 }
 
 func repairGenericParameterForSchema(input map[string]any, properties map[string]map[string]any, required map[string]struct{}) map[string]any {

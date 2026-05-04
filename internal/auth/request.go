@@ -76,7 +76,7 @@ type Resolver struct {
 	Pool  *account.Pool
 	Login LoginFunc
 
-	TokenTracker *TokenTracker
+	TokenTracker      *TokenTracker
 	mu                sync.Mutex
 	tokenRefreshedAt  map[string]time.Time
 	accountCooldowns  map[string]time.Time

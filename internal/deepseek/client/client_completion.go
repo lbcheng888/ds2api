@@ -139,7 +139,7 @@ func completionErrorBodyStillGenerating(resp *http.Response) bool {
 		return false
 	}
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		return false

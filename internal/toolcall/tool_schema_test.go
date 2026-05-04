@@ -147,7 +147,7 @@ func TestNormalizeCallsForSchemasLimitsBackgroundAgentConcurrency(t *testing.T) 
 	for i := 0; i < 6; i++ {
 		calls = append(calls, ParsedToolCall{
 			Name:  "Agent",
-			Input: map[string]any{"description": "Explore", "prompt": "Inspect files"},
+			Input: map[string]any{"description": "Explore " + string(rune('A'+i)), "prompt": "Inspect files"},
 		})
 	}
 	calls = append(calls, ParsedToolCall{
@@ -171,6 +171,98 @@ func TestNormalizeCallsForSchemasLimitsBackgroundAgentConcurrency(t *testing.T) 
 	}
 	if taskOutputCount != 1 {
 		t.Fatalf("expected TaskOutput not to be counted as background Agent, got %#v", got)
+	}
+}
+
+func TestNormalizeCallsForSchemasDedupesRepeatedBackgroundAgentsByDescription(t *testing.T) {
+	calls := []ParsedToolCall{
+		{
+			Name: "Agent",
+			Input: map[string]any{
+				"description":   "Analyze current compilation pipeline architecture",
+				"prompt":        "Inspect parser and lowering pipeline.",
+				"subagent_type": "general-purpose",
+			},
+		},
+		{
+			Name: "Agent",
+			Input: map[string]any{
+				"description":   " Analyze   current compilation pipeline architecture ",
+				"prompt":        "Different wording should not create a duplicate visible Agent task.",
+				"subagent_type": "general-purpose",
+			},
+		},
+		{
+			Name: "Agent",
+			Input: map[string]any{
+				"description":   "Analyze and plan cold bootstrap parallelization for 500ms-2s target",
+				"prompt":        "Inspect bootstrap pipeline.",
+				"subagent_type": "general-purpose",
+			},
+		},
+	}
+
+	got := NormalizeCallsForSchemasWithMeta(calls, nil, true)
+	if len(got) != 2 {
+		t.Fatalf("expected duplicate Agent description collapsed, got %#v", got)
+	}
+	if got[0].Input["description"] != "Analyze current compilation pipeline architecture" {
+		t.Fatalf("expected first Agent call to survive, got %#v", got[0])
+	}
+}
+
+func TestNormalizeParsedToolCallsDedupesRepeatedExecutionTools(t *testing.T) {
+	calls := []ParsedToolCall{
+		{Name: "Bash", Input: map[string]any{"command": "ls -la /tmp", "description": "first"}},
+		{Name: "Bash", Input: map[string]any{"command": " ls -la /tmp ", "description": "second"}},
+		{Name: "Bash", Input: map[string]any{"command": "pwd"}},
+	}
+
+	got := NormalizeParsedToolCallsForSchemas(calls, nil)
+	if len(got) != 2 {
+		t.Fatalf("expected duplicate Bash command collapsed, got %#v", got)
+	}
+	if got[0].Input["description"] != "first" {
+		t.Fatalf("expected first duplicate to survive, got %#v", got[0])
+	}
+}
+
+func TestNormalizeParsedToolCallsDedupesTodoWriteItems(t *testing.T) {
+	calls := []ParsedToolCall{{
+		Name: "TodoWrite",
+		Input: map[string]any{
+			"todos": []any{
+				map[string]any{"content": "探索编译器代码库架构与性能关键路径", "status": "pending"},
+				map[string]any{"content": "探索编译器代码库架构与性能关键路径", "status": "pending"},
+				map[string]any{"content": "定位冷启动瓶颈", "status": "pending"},
+			},
+		},
+	}}
+
+	got := NormalizeParsedToolCallsForSchemas(calls, nil)
+	todos, _ := got[0].Input["todos"].([]any)
+	if len(todos) != 2 {
+		t.Fatalf("expected duplicate todo items collapsed, got %#v", got[0].Input["todos"])
+	}
+	first, _ := todos[0].(map[string]any)
+	if first["content"] != "探索编译器代码库架构与性能关键路径" {
+		t.Fatalf("expected first todo preserved, got %#v", todos)
+	}
+}
+
+func TestNormalizeParsedToolCallsDedupesTaskCreateBySubject(t *testing.T) {
+	calls := []ParsedToolCall{
+		{Name: "TaskCreate", Input: map[string]any{"subject": "探索编译器代码库架构与性能关键路径", "description": "A"}},
+		{Name: "TaskCreate", Input: map[string]any{"subject": " 探索编译器代码库架构与性能关键路径 ", "description": "B"}},
+		{Name: "TaskCreate", Input: map[string]any{"subject": "定位冷启动瓶颈", "description": "C"}},
+	}
+
+	got := NormalizeParsedToolCallsForSchemas(calls, nil)
+	if len(got) != 2 {
+		t.Fatalf("expected duplicate TaskCreate calls collapsed, got %#v", got)
+	}
+	if got[0].Input["description"] != "A" {
+		t.Fatalf("expected first duplicate TaskCreate to survive, got %#v", got[0])
 	}
 }
 
@@ -244,6 +336,27 @@ func TestNormalizeCallsForSchemasKeepsOnlyDeclaredFields(t *testing.T) {
 	}
 	if _, ok := got[0].Input["extra"]; ok {
 		t.Fatalf("expected undeclared field to be removed, got %#v", got[0].Input)
+	}
+}
+
+func TestNormalizeCallsForSchemasStripsStrictNoArgToolInput(t *testing.T) {
+	schemas := ParameterSchemas{
+		"TaskList": {
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		},
+	}
+	calls := []ParsedToolCall{{
+		Name:  "TaskList",
+		Input: map[string]any{"timeout": 10000},
+	}}
+	got := NormalizeCallsForSchemas(calls, schemas)
+	if len(got) != 1 {
+		t.Fatalf("expected one valid no-arg call, got %#v", got)
+	}
+	if len(got[0].Input) != 0 {
+		t.Fatalf("expected strict no-arg input to be empty, got %#v", got[0].Input)
 	}
 }
 

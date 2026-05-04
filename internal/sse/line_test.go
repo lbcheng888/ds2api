@@ -46,6 +46,20 @@ func TestParseDeepSeekContentLineContentFilterStatus(t *testing.T) {
 	}
 }
 
+func TestParseDeepSeekContentLineContentFilterRefusalText(t *testing.T) {
+	res := ParseDeepSeekContentLine(
+		[]byte(`data: {"p":"response/content","v":"抱歉，系统检测到您当前输入的信息存在敏感内容，我无法响应您的请求，请尝试更换其他合规话题重新提问。"}`),
+		false,
+		"text",
+	)
+	if !res.Parsed || !res.Stop || !res.ContentFilter {
+		t.Fatalf("expected refusal text to become content-filter stop: %#v", res)
+	}
+	if len(res.Parts) != 0 {
+		t.Fatalf("expected no visible refusal text, got %#v", res.Parts)
+	}
+}
+
 func TestParseDeepSeekContentLineInputExceedsLimitHint(t *testing.T) {
 	res := ParseDeepSeekContentLine(
 		[]byte(`data: {"type":"error","content":"内容超长，请删减后再试","clear_response":true,"finish_reason":"input_exceeds_limit"}`),

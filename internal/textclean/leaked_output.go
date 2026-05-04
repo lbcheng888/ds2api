@@ -9,6 +9,8 @@ var emptyJSONFencePattern = regexp.MustCompile("(?is)```json\\s*```")
 var leakedToolCallArrayPattern = regexp.MustCompile(`(?is)\[\{\s*"function"\s*:\s*\{[\s\S]*?\}\s*,\s*"id"\s*:\s*"call[^"]*"\s*,\s*"type"\s*:\s*"function"\s*}\]`)
 var leakedToolResultBlobPattern = regexp.MustCompile(`(?is)<\s*\|\s*tool\s*\|\s*>\s*\{[\s\S]*?"tool_call_id"\s*:\s*"call[^"]*"\s*}`)
 var leakedDanglingToolTagLinePattern = regexp.MustCompile(`(?im)^\s*/?\s*(?:tool_calls|tool_call|function_calls|function_call|tool_use|invoke)>\s*$\n?`)
+var leakedHistoryTranscriptMarkerPattern = regexp.MustCompile(`(?im)^\s*===\s*\d+\.\s*(?:SYSTEM|USER|ASSISTANT|TOOL)\s*===\s*$`)
+var leakedToolCallIDLinePattern = regexp.MustCompile(`(?im)^\s*\[tool_call_id\s*=\s*call[^\]]*\]\s*$`)
 
 var leakedSystemReminderBlockPattern = regexp.MustCompile(`(?is)<system-reminder\b[^>]*>[\s\S]*?</system-reminder>`)
 var leakedSystemReminderOpenPattern = regexp.MustCompile(`(?is)<system-reminder\b[^>]*>[\s\S]*$`)
@@ -127,6 +129,10 @@ func (s *StreamSanitizer) Sanitize(text string) string {
 	if s.dropRemainder || s.insideSystemReminder || out == "" {
 		return out
 	}
+	if cleaned, leaked := stripLeakedHistoryTranscriptSuffix(out); leaked {
+		s.dropRemainder = true
+		return cleaned
+	}
 	if idx := partialSystemReminderOpenStart(out); idx >= 0 {
 		s.pendingSystemReminderPrefix = out[idx:]
 		return out[:idx]
@@ -142,6 +148,7 @@ func SanitizeLeakedOutput(text string) string {
 	out = leakedToolCallArrayPattern.ReplaceAllString(out, "")
 	out = leakedToolResultBlobPattern.ReplaceAllString(out, "")
 	out = leakedDanglingToolTagLinePattern.ReplaceAllString(out, "")
+	out, _ = stripLeakedHistoryTranscriptSuffix(out)
 	out = sanitizeLeakedSystemInstructions(out)
 	out = stripDanglingThinkSuffix(out)
 	out = leakedThinkTagPattern.ReplaceAllString(out, "")
@@ -149,6 +156,23 @@ func SanitizeLeakedOutput(text string) string {
 	out = leakedMetaMarkerPattern.ReplaceAllString(out, "")
 	out = sanitizeLeakedAgentXMLBlocks(out)
 	return out
+}
+
+func stripLeakedHistoryTranscriptSuffix(text string) (string, bool) {
+	if text == "" {
+		return text, false
+	}
+	idx := -1
+	if loc := leakedHistoryTranscriptMarkerPattern.FindStringIndex(text); loc != nil {
+		idx = loc[0]
+	}
+	if loc := leakedToolCallIDLinePattern.FindStringIndex(text); loc != nil && (idx < 0 || loc[0] < idx) {
+		idx = loc[0]
+	}
+	if idx < 0 {
+		return text, false
+	}
+	return strings.TrimRight(text[:idx], " \t\r"), true
 }
 
 func (s *StreamSanitizer) sanitizeSystemInstructionStream(text string) string {

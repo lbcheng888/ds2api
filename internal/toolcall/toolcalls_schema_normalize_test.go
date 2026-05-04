@@ -89,6 +89,27 @@ func TestNormalizeParsedToolCallsForSchemasSupportsDirectToolSchemaShape(t *test
 	}
 }
 
+func TestNormalizeParsedToolCallsForSchemasStripsStrictNoArgInput(t *testing.T) {
+	toolsRaw := []any{
+		map[string]any{
+			"name": "TaskList",
+			"input_schema": map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+		},
+	}
+	calls := []ParsedToolCall{{Name: "TaskList", Input: map[string]any{"timeout": 10000}}}
+	got := NormalizeParsedToolCallsForSchemas(calls, toolsRaw)
+	if len(got) != 1 {
+		t.Fatalf("expected one normalized call, got %#v", got)
+	}
+	if len(got[0].Input) != 0 {
+		t.Fatalf("expected strict no-arg input to be empty, got %#v", got[0].Input)
+	}
+}
+
 func TestNormalizeParsedToolCallsForSchemasLeavesAmbiguousUnionUnchanged(t *testing.T) {
 	toolsRaw := []any{
 		map[string]any{

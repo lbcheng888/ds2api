@@ -137,6 +137,20 @@ function parseChunkForContent(chunk, thinkingEnabled, currentType, stripReferenc
     };
   }
 
+  if (hasDeepSeekContentFilterRefusal(chunk)) {
+    return {
+      parsed: true,
+      parts: [],
+      finished: true,
+      contentFilter: true,
+      errorMessage: '',
+      errorCode: '',
+      promptTokens,
+      outputTokens,
+      newType: currentType,
+    };
+  }
+
   if (shouldSkipPath(pathValue)) {
     return {
       parsed: true,
@@ -584,6 +598,36 @@ function hasContentFilterStatusValue(v) {
   return false;
 }
 
+function hasDeepSeekContentFilterRefusal(v) {
+  if (typeof v === 'string') {
+    return isDeepSeekContentFilterRefusalText(v);
+  }
+  if (Array.isArray(v)) {
+    for (const item of v) {
+      if (hasDeepSeekContentFilterRefusal(item)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (!v || typeof v !== 'object') {
+    return false;
+  }
+  for (const value of Object.values(v)) {
+    if (hasDeepSeekContentFilterRefusal(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isDeepSeekContentFilterRefusalText(text) {
+  const normalized = asString(text).replace(/\s+/g, '');
+  return normalized.includes('系统检测到您当前输入的信息存在敏感内容') &&
+    normalized.includes('无法响应您的请求') &&
+    normalized.includes('更换其他合规话题');
+}
+
 function extractAccumulatedTokenUsage(chunk) {
   // 临时策略：忽略上游 usage 字段（accumulated_token_usage / token_usage），
   // 统一使用内部估算计数，避免上下文累计口径误差。
@@ -689,6 +733,7 @@ module.exports = {
   extractContentRecursive,
   filterLeakedContentFilterParts,
   hasContentFilterStatus,
+  hasDeepSeekContentFilterRefusal,
   extractAccumulatedTokenUsage,
   shouldSkipPath,
   isFragmentStatusPath,

@@ -37,7 +37,7 @@ func TestCallCompletionRetriesImmediateStillGeneratingSSE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallCompletion returned error: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if calls != 2 {
 		t.Fatalf("expected retry after still-generating SSE, calls=%d", calls)
@@ -64,7 +64,7 @@ func TestCallCompletionPreservesInspectedNormalSSE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallCompletion returned error: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.HasPrefix(string(body), "event: message\ndata:") {
 		t.Fatalf("expected inspected prefix to be replayed, got %s", string(body))
@@ -98,7 +98,7 @@ func TestCallCompletionRetriesStillGeneratingStatusBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallCompletion returned error: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if calls != 2 {
 		t.Fatalf("expected status-body retry, calls=%d", calls)
 	}
@@ -214,7 +214,7 @@ func TestCompletionErrorBodyStillGeneratingLeavesBodyReadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error reading reconstructed body: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if string(after) != originalBody {
 		t.Fatalf("body content mismatch: got %q, want %q", string(after), originalBody)
 	}
@@ -307,7 +307,7 @@ func TestCompletionReplayBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error reading replay body: %v", err)
 	}
-	defer replay.Close()
+	defer func() { _ = replay.Close() }()
 
 	if string(replayed) != fullBody {
 		t.Fatalf("replay body mismatch:\ngot:  %q\nwant: %q", string(replayed), fullBody)

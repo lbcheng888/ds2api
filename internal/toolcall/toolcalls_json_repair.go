@@ -134,6 +134,7 @@ func repairInvalidJSONBackslashes(s string) string {
 }
 
 var unquotedKeyPattern = regexp.MustCompile(`([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:`)
+
 func RepairLooseJSON(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {

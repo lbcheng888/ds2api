@@ -93,7 +93,7 @@ func TestRepairFinalOutputConvertsChineseMultipleSubagentLaunchPromise(t *testin
 	if !got.Changed || got.Reason != "agent_launch_promise" || !got.ToolCall {
 		t.Fatalf("expected Chinese multiple-subagent launch repair, got %#v", got)
 	}
-	const expectAgents = 1 // adaptive launch: 1 file ref, no "implement"/"refactor" keywords
+	const expectAgents = 4
 	if count := strings.Count(got.Text, "<tool_name>Agent</tool_name>"); count != expectAgents {
 		t.Fatalf("expected %d Agent tool calls, got %d in %s", expectAgents, count, got.Text)
 	}
@@ -388,10 +388,10 @@ func TestRepairFinalOutputAgentLaunchExplicit3English(t *testing.T) {
 	if count := strings.Count(got.Text, "<tool_name>Agent</tool_name>"); count != expectAgents {
 		t.Fatalf("expected %d Agent tool calls, got %d in %s", expectAgents, count, got.Text)
 	}
-	if !strings.Contains(got.Text, "implementation route") &&
-		!strings.Contains(got.Text, "code risks") &&
-		!strings.Contains(got.Text, "end-state") {
-		t.Fatalf("expected diverse agent descriptions, got %s", got.Text)
+	for _, want := range []string{"Implement primary slice", "Implement adjacent slice", "Repair integration risks"} {
+		if !strings.Contains(got.Text, want) {
+			t.Fatalf("expected execution agent description %q, got %s", want, got.Text)
+		}
 	}
 }
 
@@ -406,7 +406,7 @@ func TestRepairFinalOutputAgentLaunchExplicit5Subagents(t *testing.T) {
 	if !got.Changed || got.Reason != "agent_launch_promise" || !got.ToolCall {
 		t.Fatalf("expected agent launch repair, got %#v", got)
 	}
-	const expectAgents = 5
+	const expectAgents = 4
 	if count := strings.Count(got.Text, "<tool_name>Agent</tool_name>"); count != expectAgents {
 		t.Fatalf("expected %d Agent tool calls, got %d in %s", expectAgents, count, got.Text)
 	}
@@ -429,7 +429,7 @@ func TestRepairFinalOutputAgentLaunchChineseMultipleWithImplement(t *testing.T) 
 	}
 }
 
-func TestRepairFinalOutputAgentLaunchBoundedToMax8(t *testing.T) {
+func TestRepairFinalOutputAgentLaunchBoundedToMax4(t *testing.T) {
 	got := RepairFinalOutput(FinalOutputInput{
 		FinalPrompt:         "<｜User｜>请使用 Team Agents 一口气完成<｜Assistant｜>",
 		Text:                "Let's launch 15 agents to handle all tasks in parallel.",
@@ -440,7 +440,7 @@ func TestRepairFinalOutputAgentLaunchBoundedToMax8(t *testing.T) {
 	if !got.Changed || got.Reason != "agent_launch_promise" || !got.ToolCall {
 		t.Fatalf("expected agent launch repair, got %#v", got)
 	}
-	const expectAgents = 8 // clamped to max
+	const expectAgents = 4 // clamped to max
 	if count := strings.Count(got.Text, "<tool_name>Agent</tool_name>"); count != expectAgents {
 		t.Fatalf("expected %d Agent tool calls (clamped), got %d in %s", expectAgents, count, got.Text)
 	}

@@ -18,6 +18,14 @@ func TestSanitizeLeakedOutputRemovesLeakedWireToolCallAndResult(t *testing.T) {
 	}
 }
 
+func TestSanitizeLeakedOutputRemovesHistoryTranscriptSuffix(t *testing.T) {
+	raw := "开始\n=== 146. TOOL ===\n[tool_call_id=call_abc]\nError editing file\n结束"
+	got := sanitizeLeakedOutput(raw)
+	if got != "开始\n" {
+		t.Fatalf("unexpected sanitize result for leaked history transcript: %q", got)
+	}
+}
+
 func TestSanitizeLeakedOutputRemovesStandaloneMetaMarkers(t *testing.T) {
 	raw := "A<| end_of_sentence |><| Assistant |>B<| end_of_thinking |>C<｜end▁of▁thinking｜>D<｜end▁of▁sentence｜>E<| end_of_toolresults |>F<｜end▁of▁instructions｜>G"
 	got := sanitizeLeakedOutput(raw)

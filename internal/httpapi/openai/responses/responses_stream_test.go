@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"ds2api/internal/promptcompat"
+	"ds2api/internal/toolcall"
 )
 
 func TestHandleResponsesStreamDoesNotEmitReasoningTextCompatEvents(t *testing.T) {
@@ -233,6 +234,187 @@ func TestHandleResponsesStreamRequiredToolChoiceFailure(t *testing.T) {
 	}
 	if strings.Contains(body, "event: response.completed") {
 		t.Fatalf("did not expect response.completed after failure, body=%s", body)
+	}
+}
+
+func TestHandleResponsesStreamBlocksWorkingTreeCheckPromiseWithoutToolCall(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	rec := httptest.NewRecorder()
+
+	sseLine := func(v string) string {
+		b, _ := json.Marshal(map[string]any{
+			"p": "response/content",
+			"v": v,
+		})
+		return "data: " + string(b) + "\n"
+	}
+
+	streamBody := sseLine("Now let me check the current working tree state and build/test status.") + "data: [DONE]\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+	}
+
+	h.handleResponsesStream(rec, req, resp, "owner-a", "resp_check", "deepseek-v4-pro", "prompt", 0, false, false, []string{"Read", "Bash", "Edit"}, nil, promptcompat.DefaultToolChoicePolicy(), "")
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: response.failed") || !strings.Contains(body, "upstream_missing_tool_call") {
+		t.Fatalf("expected missing-tool failure, body=%s", body)
+	}
+	if strings.Contains(body, "event: response.output_text.delta") || strings.Contains(body, "event: response.completed") {
+		t.Fatalf("working-tree check promise must not stream as completed text, body=%s", body)
+	}
+}
+
+func TestHandleResponsesStreamBlocksTaskTrackingOnlyToolCall(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	rec := httptest.NewRecorder()
+
+	sseLine := func(v string) string {
+		b, _ := json.Marshal(map[string]any{
+			"p": "response/content",
+			"v": v,
+		})
+		return "data: " + string(b) + "\n"
+	}
+
+	streamBody := sseLine(`<tool_calls><invoke name="update_plan"><parameter name="plan">check status</parameter></invoke></tool_calls>`) + "data: [DONE]\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+	}
+
+	h.handleResponsesStream(rec, req, resp, "owner-a", "resp_task_only", "deepseek-v4-pro", "prompt", 0, false, false, []string{"update_plan", "Read", "Bash"}, nil, promptcompat.DefaultToolChoicePolicy(), "")
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: response.failed") || !strings.Contains(body, "upstream_missing_tool_call") {
+		t.Fatalf("expected task-only tool call to fail as missing real work, body=%s", body)
+	}
+	if strings.Contains(body, "response.function_call_arguments.done") || strings.Contains(body, "event: response.completed") {
+		t.Fatalf("task tracking tool must not be emitted as completed work, body=%s", body)
+	}
+}
+
+func TestNormalizeResponsesFinalToolCallsBlocksEnterPlanModeForExecutionRequest(t *testing.T) {
+	calls, status, _, code, blocked := normalizeResponsesFinalToolCalls(
+		"<｜User｜>请继续推进并完成实现<｜Assistant｜>",
+		[]toolcall.ParsedToolCall{{Name: "EnterPlanMode", Input: map[string]any{}}},
+		nil,
+		[]string{"EnterPlanMode", "Read", "Bash"},
+	)
+	if !blocked || status != http.StatusBadGateway || code != "upstream_missing_tool_call" {
+		t.Fatalf("expected EnterPlanMode direct tool call to be blocked, calls=%#v status=%d code=%s blocked=%v", calls, status, code, blocked)
+	}
+}
+
+func TestNormalizeResponsesFinalToolCallsSerializesParallelBashCalls(t *testing.T) {
+	calls, status, _, code, blocked := normalizeResponsesFinalToolCalls(
+		"<｜User｜>请继续检查<｜Assistant｜>",
+		[]toolcall.ParsedToolCall{
+			{Name: "Bash", Input: map[string]any{"command": "git diff --stat HEAD"}},
+			{Name: "Bash", Input: map[string]any{"command": "wc -l src/core/lang/parser.cheng"}},
+			{Name: "Read", Input: map[string]any{"file_path": "README.md"}},
+		},
+		nil,
+		[]string{"Bash", "Read"},
+	)
+	if blocked || status != 0 || code != "" {
+		t.Fatalf("did not expect shell serialization to block, status=%d code=%s blocked=%v", status, code, blocked)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected one Bash plus Read after shell serialization, got %#v", calls)
+	}
+	if calls[0].Name != "Bash" || calls[0].Input["command"] != "git diff --stat HEAD" || calls[1].Name != "Read" {
+		t.Fatalf("unexpected serialized calls: %#v", calls)
+	}
+}
+
+func TestHandleResponsesStreamCurrentInputFileSuppressesStalePreambleBeforeToolCall(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	rec := httptest.NewRecorder()
+
+	sseLine := func(v string) string {
+		b, _ := json.Marshal(map[string]any{
+			"p": "response/content",
+			"v": v,
+		})
+		return "data: " + string(b) + "\n"
+	}
+
+	streamBody := sseLine("收益最大：先攻 BodyIR CFG / primary object 的通用语句 codegen。\n\n") +
+		sseLine(`<tool_calls><invoke name="search"><parameter name="q">BodyIR place field</parameter></invoke></tool_calls>`) +
+		"data: [DONE]\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+	}
+	finalPrompt := "Continue from the latest state in the attached DS2API_HISTORY.txt context.\n\nLatest user request, authoritative:\n请继续排查最新问题"
+
+	h.handleResponsesStream(rec, req, resp, "owner-a", "resp_current_input_tool", "deepseek-v4-flash", finalPrompt, 0, false, false, []string{"search"}, nil, promptcompat.DefaultToolChoicePolicy(), "")
+
+	body := rec.Body.String()
+	if strings.Contains(body, "收益最大") {
+		t.Fatalf("stale preamble must not be streamed before tool call, body=%s", body)
+	}
+	if !strings.Contains(body, "event: response.function_call_arguments.done") || !strings.Contains(body, "event: response.completed") {
+		t.Fatalf("expected tool call and completion events, body=%s", body)
+	}
+}
+
+func TestHandleResponsesStreamCurrentInputFileFlushesPlainTextAtFinal(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	rec := httptest.NewRecorder()
+
+	sseLine := func(v string) string {
+		b, _ := json.Marshal(map[string]any{
+			"p": "response/content",
+			"v": v,
+		})
+		return "data: " + string(b) + "\n"
+	}
+
+	streamBody := sseLine("这是最新问题的答案。") + "data: [DONE]\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+	}
+	finalPrompt := "Continue from the latest state in the attached DS2API_HISTORY.txt context.\n\nLatest user request, authoritative:\n解释最新问题"
+
+	h.handleResponsesStream(rec, req, resp, "owner-a", "resp_current_input_text", "deepseek-v4-flash", finalPrompt, 0, false, false, []string{"search"}, nil, promptcompat.DefaultToolChoicePolicy(), "")
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: response.output_text.delta") || !strings.Contains(body, "这是最新问题的答案。") {
+		t.Fatalf("expected deferred text to flush before completion, body=%s", body)
+	}
+	if !strings.Contains(body, "event: response.completed") {
+		t.Fatalf("expected response.completed, body=%s", body)
+	}
+}
+
+func TestHandleResponsesStreamSuppressesLeakedHistoryTranscriptToolResult(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			`data: {"p":"response/content","v":"可见前文\n=== 146. TOOL ===\n[tool_call_id=call_abc]\nError editing file\n泄漏正文"}` + "\n" +
+				"data: [DONE]\n",
+		)),
+	}
+
+	h.handleResponsesStream(rec, req, resp, "owner-a", "resp_history_leak", "deepseek-v4-flash", "prompt", 0, false, false, nil, nil, promptcompat.DefaultToolChoicePolicy(), "")
+
+	body := rec.Body.String()
+	if strings.Contains(body, "TOOL ===") || strings.Contains(body, "tool_call_id") || strings.Contains(body, "Error editing file") {
+		t.Fatalf("expected leaked history transcript to be suppressed, body=%s", body)
+	}
+	if !strings.Contains(body, "可见前文") {
+		t.Fatalf("expected visible prefix to remain, body=%s", body)
 	}
 }
 

@@ -16,6 +16,18 @@ func TestFormatOpenAIToolCalls(t *testing.T) {
 	}
 }
 
+func TestFormatOpenAIToolCallsDropsDuplicateSameBatchTools(t *testing.T) {
+	calls := []ParsedToolCall{
+		{Name: "Bash", Input: map[string]any{"command": `ls -lo /Users/lbcheng/cheng-lang/*akefile /Users/lbcheng/cheng-lang/*.mk`}},
+		{Name: "Bash", Input: map[string]any{"command": `ls -lo /Users/lbcheng/cheng-lang/*akefile /Users/lbcheng/cheng-lang/*.mk`}},
+	}
+
+	formatted := FormatOpenAIToolCalls(calls, nil)
+	if len(formatted) != 1 {
+		t.Fatalf("expected duplicate Bash calls to collapse, got %#v", formatted)
+	}
+}
+
 func TestParseToolCallsSupportsToolCallsWrapper(t *testing.T) {
 	text := `<tool_calls><invoke name="Bash"><parameter name="command">pwd</parameter><parameter name="description">show cwd</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"bash"})

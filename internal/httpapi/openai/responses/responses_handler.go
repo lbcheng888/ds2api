@@ -136,19 +136,25 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	if searchEnabled {
 		sanitizedText = replaceCitationMarkersWithLinks(sanitizedText, result.CitationLinks)
 	}
-	textParsed := detectAssistantToolCalls(result.Text, sanitizedText, result.Thinking, result.ToolDetectionThinking, toolNames)
-	if len(textParsed.Calls) == 0 && writeUpstreamEmptyOutputError(w, sanitizedText, sanitizedThinking, result.ContentFilter) {
+	evaluated := evaluateResponsesFinalOutput(finalPrompt, sanitizedText, result.Text, result.Thinking+"\n"+result.ToolDetectionThinking, result.ContentFilter, toolNames, toolsRaw)
+	if evaluated.MissingToolDecision.Blocked {
+		writeOpenAIErrorWithCode(w, http.StatusBadGateway, evaluated.MissingToolDecision.Message, evaluated.MissingToolDecision.Code)
+		return
+	}
+	sanitizedText = evaluated.Text
+	textParsed := evaluated.Parsed
+	if len(evaluated.Calls) == 0 && writeUpstreamEmptyOutputError(w, sanitizedText, sanitizedThinking, result.ContentFilter) {
 		return
 	}
 	logResponsesToolPolicyRejection(traceID, toolChoice, textParsed, "text")
 
-	callCount := len(textParsed.Calls)
+	callCount := len(evaluated.Calls)
 	if toolChoice.IsRequired() && callCount == 0 {
 		writeOpenAIErrorWithCode(w, http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation")
 		return
 	}
 
-	responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, sanitizedThinking, sanitizedText, textParsed.Calls, toolsRaw)
+	responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, sanitizedThinking, sanitizedText, evaluated.Calls, toolsRaw)
 	if refFileTokens > 0 {
 		addRefFileTokensToUsage(responseObj, refFileTokens)
 	}

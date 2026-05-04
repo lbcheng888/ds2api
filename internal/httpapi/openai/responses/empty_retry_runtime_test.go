@@ -68,3 +68,20 @@ func TestConsumeResponsesStreamAttemptMarksContextCancelledState(t *testing.T) {
 		t.Fatalf("expected cancelled final error message to be preserved")
 	}
 }
+
+func TestHandleResponsesNonStreamWithRetryBlocksWorkingTreeCheckPromise(t *testing.T) {
+	h := &Handler{}
+	resp := makeResponsesOpenAISSEHTTPResponse(
+		`data: {"p":"response/content","v":"Now let me check the current working tree state and build/test status."}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+
+	h.handleResponsesNonStreamWithRetry(rec, context.Background(), nil, resp, nil, "", "owner-a", "resp_check_nonstream", "deepseek-v4-pro", "prompt", 0, false, false, []string{"Read", "Bash", "Edit"}, nil, promptcompat.DefaultToolChoicePolicy(), "")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 missing-tool failure, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream_missing_tool_call") {
+		t.Fatalf("expected missing-tool code, body=%s", rec.Body.String())
+	}
+}

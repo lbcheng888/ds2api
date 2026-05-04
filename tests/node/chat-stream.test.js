@@ -359,6 +359,17 @@ test('vercel stream emits content_filter failure when upstream filters empty out
   assert.equal(frames[1], '[DONE]');
 });
 
+test('vercel stream emits content_filter failure for DeepSeek Web refusal text', async () => {
+  const { frames } = await runMockVercelStream([
+    'data: {"p":"response/content","v":"抱歉，系统检测到您当前输入的信息存在敏感内容，我无法响应您的请求，请尝试更换其他合规话题重新提问。"}\n\n',
+  ]);
+  assert.equal(frames.length, 2);
+  const failed = JSON.parse(frames[0]);
+  assert.equal(failed.status_code, 400);
+  assert.equal(failed.error.code, 'content_filter');
+  assert.equal(frames[1], '[DONE]');
+});
+
 test('vercel stream emits input_exceeds_limit failure without empty retry', async () => {
   const { frames, fetchURLs } = await runMockVercelStream([
     'event: hint\n',
@@ -658,6 +669,21 @@ test('parseChunkForContent detects content_filter status and ignores upstream ou
   assert.equal(parsed.finished, true);
   assert.equal(parsed.contentFilter, true);
   assert.equal(parsed.outputTokens, 0);
+  assert.deepEqual(parsed.parts, []);
+});
+
+test('parseChunkForContent treats DeepSeek Web refusal text as content_filter', () => {
+  const parsed = parseChunkForContent(
+    {
+      p: 'response/content',
+      v: '抱歉，系统检测到您当前输入的信息存在敏感内容，我无法响应您的请求，请尝试更换其他合规话题重新提问。',
+    },
+    false,
+    'text',
+  );
+  assert.equal(parsed.parsed, true);
+  assert.equal(parsed.finished, true);
+  assert.equal(parsed.contentFilter, true);
   assert.deepEqual(parsed.parts, []);
 });
 

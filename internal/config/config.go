@@ -8,24 +8,24 @@ import (
 )
 
 type Config struct {
-	Keys              []string                `json:"keys,omitempty"`
-	APIKeys           []APIKey                `json:"api_keys,omitempty"`
-	Accounts          []Account               `json:"accounts,omitempty"`
-	Proxies           []Proxy                 `json:"proxies,omitempty"`
-	ModelAliases      map[string]string       `json:"model_aliases,omitempty"`
-	Admin             AdminConfig             `json:"admin,omitempty"`
-	Runtime           RuntimeConfig           `json:"runtime,omitempty"`
-	AccountTokenThreshold int64              `json:"account_token_threshold,omitempty"`
-	Compat            CompatConfig            `json:"compat,omitempty"`
-	Responses         ResponsesConfig         `json:"responses,omitempty"`
-	Embeddings        EmbeddingsConfig        `json:"embeddings,omitempty"`
-	AutoDelete        AutoDeleteConfig        `json:"auto_delete"`
-	HistorySplit      HistorySplitConfig      `json:"history_split"`
-	CurrentInputFile  CurrentInputFileConfig  `json:"current_input_file,omitempty"`
-	ThinkingInjection ThinkingInjectionConfig `json:"thinking_injection,omitempty"`
-	VercelSyncHash    string                  `json:"_vercel_sync_hash,omitempty"`
-	VercelSyncTime    int64                   `json:"_vercel_sync_time,omitempty"`
-	AdditionalFields  map[string]any          `json:"-"`
+	Keys                  []string                `json:"keys,omitempty"`
+	APIKeys               []APIKey                `json:"api_keys,omitempty"`
+	Accounts              []Account               `json:"accounts,omitempty"`
+	Proxies               []Proxy                 `json:"proxies,omitempty"`
+	ModelAliases          map[string]string       `json:"model_aliases,omitempty"`
+	Admin                 AdminConfig             `json:"admin,omitempty"`
+	Runtime               RuntimeConfig           `json:"runtime,omitempty"`
+	AccountTokenThreshold int64                   `json:"account_token_threshold,omitempty"`
+	Compat                CompatConfig            `json:"compat,omitempty"`
+	Responses             ResponsesConfig         `json:"responses,omitempty"`
+	Embeddings            EmbeddingsConfig        `json:"embeddings,omitempty"`
+	AutoDelete            AutoDeleteConfig        `json:"auto_delete"`
+	HistorySplit          HistorySplitConfig      `json:"history_split"`
+	CurrentInputFile      CurrentInputFileConfig  `json:"current_input_file,omitempty"`
+	ThinkingInjection     ThinkingInjectionConfig `json:"thinking_injection,omitempty"`
+	VercelSyncHash        string                  `json:"_vercel_sync_hash,omitempty"`
+	VercelSyncTime        int64                   `json:"_vercel_sync_time,omitempty"`
+	AdditionalFields      map[string]any          `json:"-"`
 }
 
 type Account struct {

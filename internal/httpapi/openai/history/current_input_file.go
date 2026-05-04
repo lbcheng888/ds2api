@@ -58,7 +58,7 @@ func (s Service) ApplyCurrentInputFile(ctx context.Context, a *auth.RequestAuth,
 	messages := []any{
 		map[string]any{
 			"role":    "user",
-			"content": currentInputFilePrompt(),
+			"content": currentInputFilePrompt(latestUserRequestForLivePrompt(text, s.Store)),
 		},
 	}
 
@@ -92,6 +92,32 @@ func latestUserInputForFile(messages []any) (int, string) {
 	return -1, ""
 }
 
-func currentInputFilePrompt() string {
-	return "Continue from the latest state in the attached DS2API_HISTORY.txt context. Treat it as the current working state and answer the latest user request directly."
+func currentInputFilePrompt(latestUserText string) string {
+	latestUserText = strings.TrimSpace(latestUserText)
+	prompt := "Continue from the latest state in the attached DS2API_HISTORY.txt context. Treat it as the current working state and answer the latest user request directly. Do not repeat an earlier assistant answer unless the latest user request explicitly asks for that."
+	if latestUserText == "" {
+		return prompt
+	}
+	return prompt + "\n\nLatest user request, authoritative:\n" + latestUserText
+}
+
+func latestUserRequestForLivePrompt(text string, store shared.ConfigReader) string {
+	out := strings.TrimSpace(text)
+	candidates := []string{}
+	if store != nil {
+		if prompt := strings.TrimSpace(store.ThinkingInjectionPrompt()); prompt != "" {
+			candidates = append(candidates, prompt)
+		}
+	}
+	candidates = append(candidates, promptcompat.DefaultThinkingInjectionPrompt)
+	for _, candidate := range candidates {
+		if candidate == "" || !strings.HasSuffix(out, candidate) {
+			continue
+		}
+		out = strings.TrimSpace(strings.TrimSuffix(out, candidate))
+	}
+	if idx := strings.Index(out, "\n\n"+promptcompat.ThinkingInjectionMarker); idx >= 0 {
+		out = strings.TrimSpace(out[:idx])
+	}
+	return out
 }

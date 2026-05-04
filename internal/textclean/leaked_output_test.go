@@ -25,6 +25,24 @@ func TestStreamSanitizerRemovesCodexCorePrinciplesToEnd(t *testing.T) {
 	}
 }
 
+func TestStreamSanitizerStopsAtLeakedHistoryTranscript(t *testing.T) {
+	var s StreamSanitizer
+	got := s.Sanitize("前文\n=== 145. TOOL ===\n") +
+		s.Sanitize("[tool_call_id=call_abc]\nError editing file\n") +
+		s.Sanitize("后文")
+	if got != "前文\n" {
+		t.Fatalf("unexpected history transcript sanitize result: %q", got)
+	}
+}
+
+func TestSanitizeLeakedOutputRemovesHistoryTranscriptSuffix(t *testing.T) {
+	raw := "可见\n=== 145. TOOL ===\n[tool_call_id=call_abc]\nError editing file\n后续"
+	got := SanitizeLeakedOutput(raw)
+	if got != "可见\n" {
+		t.Fatalf("unexpected history transcript sanitize result: %q", got)
+	}
+}
+
 func TestStripDSMLContentRemovesFullBlock(t *testing.T) {
 	input := "可见内容\n<|DSML|tool_calls>\n<|DSML|invoke name=\"Bash\">\n<|DSML|parameter name=\"command\" string=\"true\">echo hi</|DSML|parameter>\n</|DSML|invoke>\n</|DSML|tool_calls>"
 	got := StripDSMLContent(input)

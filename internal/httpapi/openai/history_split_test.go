@@ -300,8 +300,11 @@ func TestApplyCurrentInputFileUploadsFirstTurnWithNumberedHistoryTranscript(t *t
 		t.Fatalf("expected thinking injection in current input file, got %q", uploadedText)
 	}
 
-	if strings.Contains(out.FinalPrompt, "first turn content that is long enough") {
-		t.Fatalf("expected current input text to be replaced in live prompt, got %s", out.FinalPrompt)
+	if !strings.Contains(out.FinalPrompt, "Latest user request, authoritative:") || !strings.Contains(out.FinalPrompt, "first turn content that is long enough") {
+		t.Fatalf("expected latest user request to stay live, got %s", out.FinalPrompt)
+	}
+	if strings.Contains(out.FinalPrompt, promptcompat.ThinkingInjectionMarker) {
+		t.Fatalf("expected live latest request to omit thinking injection, got %s", out.FinalPrompt)
 	}
 	if strings.Contains(out.FinalPrompt, "CURRENT_USER_INPUT.txt") || strings.Contains(out.FinalPrompt, "Read that file") {
 		t.Fatalf("expected live prompt not to instruct file reads, got %s", out.FinalPrompt)
@@ -347,8 +350,8 @@ func TestApplyCurrentInputFilePreservesFullContextPromptForTokenCounting(t *test
 	if out.FinalPrompt == stdReq.FinalPrompt {
 		t.Fatalf("expected live prompt to be rewritten after current input file")
 	}
-	// PromptTokenText must include the uploaded file content (which contains the full context)
-	// plus the neutral live prompt — reflecting the actual downstream token cost.
+	// PromptTokenText must include the uploaded file content plus the anchored
+	// live prompt — reflecting the actual downstream token cost.
 	if !strings.Contains(out.PromptTokenText, "first user turn") || !strings.Contains(out.PromptTokenText, "latest user turn") {
 		t.Fatalf("expected prompt token text to contain file context with full conversation, got %q", out.PromptTokenText)
 	}
@@ -361,8 +364,8 @@ func TestApplyCurrentInputFilePreservesFullContextPromptForTokenCounting(t *test
 	if !strings.Contains(out.PromptTokenText, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
 		t.Fatalf("expected prompt token text to also include continuation prompt, got %q", out.PromptTokenText)
 	}
-	if strings.Contains(out.FinalPrompt, "first user turn") || strings.Contains(out.FinalPrompt, "latest user turn") {
-		t.Fatalf("expected live prompt to hide original turns, got %q", out.FinalPrompt)
+	if strings.Contains(out.FinalPrompt, "first user turn") || !strings.Contains(out.FinalPrompt, "latest user turn") {
+		t.Fatalf("expected live prompt to repeat only the latest user turn, got %q", out.FinalPrompt)
 	}
 }
 
@@ -409,8 +412,8 @@ func TestApplyCurrentInputFileUploadsFullContextFile(t *testing.T) {
 			t.Fatalf("expected full context file to contain %q, got %q", want, uploadedText)
 		}
 	}
-	if strings.Contains(out.FinalPrompt, "first user turn") || strings.Contains(out.FinalPrompt, "latest user turn") || strings.Contains(out.FinalPrompt, "CURRENT_USER_INPUT.txt") || strings.Contains(out.FinalPrompt, "Read that file") {
-		t.Fatalf("expected live prompt to use only a continuation instruction, got %s", out.FinalPrompt)
+	if strings.Contains(out.FinalPrompt, "first user turn") || !strings.Contains(out.FinalPrompt, "latest user turn") || strings.Contains(out.FinalPrompt, "CURRENT_USER_INPUT.txt") || strings.Contains(out.FinalPrompt, "Read that file") {
+		t.Fatalf("expected live prompt to repeat only the latest user turn, got %s", out.FinalPrompt)
 	}
 	if !strings.Contains(out.FinalPrompt, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
 		t.Fatalf("expected continuation-oriented prompt in live prompt, got %s", out.FinalPrompt)
@@ -450,7 +453,7 @@ func TestApplyCurrentInputFileCarriesHistoryText(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsCurrentInputFileUploadsContextAndKeepsNeutralPrompt(t *testing.T) {
+func TestChatCompletionsCurrentInputFileUploadsContextAndRepeatsLatestRequest(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
@@ -502,8 +505,8 @@ func TestChatCompletionsCurrentInputFileUploadsContextAndKeepsNeutralPrompt(t *t
 	if !strings.Contains(promptText, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
 		t.Fatalf("expected continuation-oriented prompt, got %s", promptText)
 	}
-	if strings.Contains(promptText, "first user turn") || strings.Contains(promptText, "latest user turn") {
-		t.Fatalf("expected prompt to hide original turns, got %s", promptText)
+	if strings.Contains(promptText, "first user turn") || !strings.Contains(promptText, "latest user turn") {
+		t.Fatalf("expected prompt to repeat only the latest user turn, got %s", promptText)
 	}
 	refIDs, _ := ds.completionReq["ref_file_ids"].([]any)
 	if len(refIDs) == 0 || refIDs[0] != "file-inline-1" {
@@ -515,13 +518,13 @@ func TestChatCompletionsCurrentInputFileUploadsContextAndKeepsNeutralPrompt(t *t
 	}
 	usage, _ := body["usage"].(map[string]any)
 	promptTokens := int(usage["prompt_tokens"].(float64))
-	neutralCount := util.CountPromptTokens(promptText, "deepseek-v4-flash")
-	if promptTokens <= neutralCount {
-		t.Fatalf("expected prompt_tokens to exceed neutral live prompt count (includes file context), got=%d neutral=%d", promptTokens, neutralCount)
+	liveCount := util.CountPromptTokens(promptText, "deepseek-v4-flash")
+	if promptTokens <= liveCount {
+		t.Fatalf("expected prompt_tokens to exceed live prompt count (includes file context), got=%d live=%d", promptTokens, liveCount)
 	}
 }
 
-func TestResponsesCurrentInputFileUploadsContextAndKeepsNeutralPrompt(t *testing.T) {
+func TestResponsesCurrentInputFileUploadsContextAndRepeatsLatestRequest(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
@@ -562,8 +565,8 @@ func TestResponsesCurrentInputFileUploadsContextAndKeepsNeutralPrompt(t *testing
 	if !strings.Contains(promptText, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
 		t.Fatalf("expected continuation-oriented prompt, got %s", promptText)
 	}
-	if strings.Contains(promptText, "first user turn") || strings.Contains(promptText, "latest user turn") {
-		t.Fatalf("expected prompt to hide original turns, got %s", promptText)
+	if strings.Contains(promptText, "first user turn") || !strings.Contains(promptText, "latest user turn") {
+		t.Fatalf("expected prompt to repeat only the latest user turn, got %s", promptText)
 	}
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -571,9 +574,9 @@ func TestResponsesCurrentInputFileUploadsContextAndKeepsNeutralPrompt(t *testing
 	}
 	usage, _ := body["usage"].(map[string]any)
 	inputTokens := int(usage["input_tokens"].(float64))
-	neutralCount := util.CountPromptTokens(promptText, "deepseek-v4-flash")
-	if inputTokens <= neutralCount {
-		t.Fatalf("expected input_tokens to exceed neutral live prompt count (includes file context), got=%d neutral=%d", inputTokens, neutralCount)
+	liveCount := util.CountPromptTokens(promptText, "deepseek-v4-flash")
+	if inputTokens <= liveCount {
+		t.Fatalf("expected input_tokens to exceed live prompt count (includes file context), got=%d live=%d", inputTokens, liveCount)
 	}
 }
 
@@ -709,7 +712,7 @@ func TestCurrentInputFileWorksAcrossAutoDeleteModes(t *testing.T) {
 				t.Fatalf("expected completion payload for mode=%s", mode)
 			}
 			promptText, _ := ds.completionReq["prompt"].(string)
-			if !strings.Contains(promptText, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") || strings.Contains(promptText, "first user turn") || strings.Contains(promptText, "latest user turn") {
+			if !strings.Contains(promptText, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") || strings.Contains(promptText, "first user turn") || !strings.Contains(promptText, "latest user turn") {
 				t.Fatalf("unexpected prompt for mode=%s: %s", mode, promptText)
 			}
 		})

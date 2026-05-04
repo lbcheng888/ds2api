@@ -25,6 +25,9 @@ type responsesNonStreamResult struct {
 	text                  string
 	contentFilter         bool
 	parsed                toolcall.ToolCallParseResult
+	finalErrorStatus      int
+	finalErrorMessage     string
+	finalErrorCode        string
 	body                  map[string]any
 	responseMessageID     int
 }
@@ -47,10 +50,18 @@ func (h *Handler) handleResponsesNonStreamWithRetry(w http.ResponseWriter, ctx c
 		result.thinking = accumulatedThinking
 		result.rawThinking = accumulatedRawThinking
 		result.toolDetectionThinking = accumulatedToolDetectionThinking
-		result.parsed = detectAssistantToolCalls(result.rawText, result.text, result.rawThinking, result.toolDetectionThinking, toolNames)
-		result.body = openaifmt.BuildResponseObjectWithToolCalls(responseID, model, usagePrompt, result.thinking, result.text, result.parsed.Calls, toolsRaw)
-		if refFileTokens > 0 {
-			addRefFileTokensToUsage(result.body, refFileTokens)
+		evaluated := evaluateResponsesFinalOutput(usagePrompt, result.text, result.rawText, result.rawThinking+"\n"+result.toolDetectionThinking, result.contentFilter, toolNames, toolsRaw)
+		result.parsed = evaluated.Parsed
+		if evaluated.MissingToolDecision.Blocked {
+			result.finalErrorStatus = http.StatusBadGateway
+			result.finalErrorMessage = evaluated.MissingToolDecision.Message
+			result.finalErrorCode = evaluated.MissingToolDecision.Code
+		} else {
+			result.text = evaluated.Text
+			result.body = openaifmt.BuildResponseObjectWithToolCalls(responseID, model, usagePrompt, result.thinking, result.text, evaluated.Calls, toolsRaw)
+			if refFileTokens > 0 {
+				addRefFileTokensToUsage(result.body, refFileTokens)
+			}
 		}
 
 		if !shouldRetryResponsesNonStream(result, attempts) {
@@ -91,7 +102,13 @@ func (h *Handler) collectResponsesNonStreamAttempt(w http.ResponseWriter, resp *
 		sanitizedText = replaceCitationMarkersWithLinks(sanitizedText, result.CitationLinks)
 	}
 	textParsed := detectAssistantToolCalls(result.Text, sanitizedText, result.Thinking, result.ToolDetectionThinking, toolNames)
-	responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, model, usagePrompt, sanitizedThinking, sanitizedText, textParsed.Calls, toolsRaw)
+	evaluated := evaluateResponsesFinalOutput(usagePrompt, sanitizedText, result.Text, result.Thinking+"\n"+result.ToolDetectionThinking, result.ContentFilter, toolNames, toolsRaw)
+	responseObj := map[string]any(nil)
+	if !evaluated.MissingToolDecision.Blocked {
+		sanitizedText = evaluated.Text
+		textParsed = evaluated.Parsed
+		responseObj = openaifmt.BuildResponseObjectWithToolCalls(responseID, model, usagePrompt, sanitizedThinking, sanitizedText, evaluated.Calls, toolsRaw)
+	}
 	return responsesNonStreamResult{
 		rawThinking:           result.Thinking,
 		rawText:               result.Text,
@@ -100,12 +117,20 @@ func (h *Handler) collectResponsesNonStreamAttempt(w http.ResponseWriter, resp *
 		text:                  sanitizedText,
 		contentFilter:         result.ContentFilter,
 		parsed:                textParsed,
+		finalErrorStatus:      http.StatusBadGateway,
+		finalErrorMessage:     evaluated.MissingToolDecision.Message,
+		finalErrorCode:        evaluated.MissingToolDecision.Code,
 		body:                  responseObj,
 		responseMessageID:     result.ResponseMessageID,
 	}, true
 }
 
 func (h *Handler) finishResponsesNonStreamResult(w http.ResponseWriter, result responsesNonStreamResult, attempts int, owner, responseID string, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
+	if result.finalErrorMessage != "" {
+		writeOpenAIErrorWithCode(w, result.finalErrorStatus, result.finalErrorMessage, result.finalErrorCode)
+		config.Logger.Info("[openai_empty_retry] terminal protocol guard", "surface", "responses", "stream", false, "retry_attempts", attempts, "error_code", result.finalErrorCode)
+		return
+	}
 	if len(result.parsed.Calls) == 0 && writeUpstreamEmptyOutputError(w, result.text, result.thinking, result.contentFilter) {
 		config.Logger.Info("[openai_empty_retry] terminal empty output", "surface", "responses", "stream", false, "retry_attempts", attempts, "success_source", "none", "content_filter", result.contentFilter)
 		return
@@ -127,6 +152,7 @@ func (h *Handler) finishResponsesNonStreamResult(w http.ResponseWriter, result r
 func shouldRetryResponsesNonStream(result responsesNonStreamResult, attempts int) bool {
 	return emptyOutputRetryEnabled() &&
 		attempts < emptyOutputRetryMaxAttempts() &&
+		result.finalErrorMessage == "" &&
 		!result.contentFilter &&
 		len(result.parsed.Calls) == 0 &&
 		strings.TrimSpace(result.text) == ""
@@ -169,6 +195,10 @@ func (h *Handler) handleResponsesStreamWithRetry(w http.ResponseWriter, r *http.
 			streamRuntime.failResponse(nextResp.StatusCode, strings.TrimSpace(string(body)), "error")
 			return
 		}
+		streamRuntime.failed = false
+		streamRuntime.finalErrorStatus = 0
+		streamRuntime.finalErrorMessage = ""
+		streamRuntime.finalErrorCode = ""
 		streamRuntime.finalPrompt = usagePromptWithEmptyOutputRetry(finalPrompt, attempts)
 		currentResp = nextResp
 	}

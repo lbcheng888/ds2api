@@ -9,6 +9,7 @@ import (
 
 const MissingToolCallCode = "upstream_missing_tool_call"
 const InvalidToolCallCode = "upstream_invalid_tool_call"
+const RepeatedExplorationCode = "upstream_repeated_exploration"
 
 type MissingToolCallInput struct {
 	Text                string
@@ -25,7 +26,45 @@ type MissingToolCallDecision struct {
 	Code    string
 }
 
+type ToolExecutionRequirementReason string
+
+const (
+	ToolExecutionRequirementAgentLaunch     ToolExecutionRequirementReason = "agent_launch_promise"
+	ToolExecutionRequirementFilePlan        ToolExecutionRequirementReason = "file_tool_plan"
+	ToolExecutionRequirementCodingAction    ToolExecutionRequirementReason = "coding_action_promise"
+	ToolExecutionRequirementCompletionClaim ToolExecutionRequirementReason = "completion_claim_without_tool"
+	ToolExecutionRequirementToolCommitment  ToolExecutionRequirementReason = "tool_commitment"
+	ToolExecutionRequirementFutureAction    ToolExecutionRequirementReason = "future_tool_action"
+	ToolExecutionRequirementRequiredTurn    ToolExecutionRequirementReason = "tool_required_turn"
+)
+
+type CurrentTurnToolRequirementInput struct {
+	Text                string
+	FinalPrompt         string
+	ToolNames           []string
+	AllowMetaAgentTools bool
+}
+
+type CurrentTurnToolRequirement struct {
+	Required bool
+	Reason   ToolExecutionRequirementReason
+}
+
+type ToolRequiredTurnInput struct {
+	FinalPrompt         string
+	ToolNames           []string
+	AllowMetaAgentTools bool
+}
+
 func DetectMissingToolCall(in MissingToolCallInput) MissingToolCallDecision {
+	return detectMissingToolCall(in, true)
+}
+
+func DetectMissingToolCallNoRecord(in MissingToolCallInput) MissingToolCallDecision {
+	return detectMissingToolCall(in, false)
+}
+
+func detectMissingToolCall(in MissingToolCallInput, record bool) MissingToolCallDecision {
 	finalText := strings.TrimSpace(in.Text)
 	if stripped, changed := StripEmptyToolCallContainerNoise(finalText); changed {
 		finalText = strings.TrimSpace(stripped)
@@ -33,44 +72,147 @@ func DetectMissingToolCall(in MissingToolCallInput) MissingToolCallDecision {
 	if finalText == "" {
 		return MissingToolCallDecision{}
 	}
-	if IsBackgroundAgentAcknowledgement(in.FinalPrompt, finalText, in.AllowMetaAgentTools) {
-		return MissingToolCallDecision{}
-	}
 	parsed := toolcall.ParseStandaloneToolCallsDetailed(finalText, in.ToolNames)
 	if len(toolcall.NormalizeCallsForSchemasWithMeta(parsed.Calls, in.ToolSchemas, in.AllowMetaAgentTools)) > 0 {
 		return MissingToolCallDecision{}
 	}
 	if len(parsed.Calls) > 0 && toolcall.AllCallsAreTaskTrackingTools(parsed.Calls) {
-		return missingToolDecision(in.Profile)
+		return missingToolDecisionWithRecord(in.Profile, record)
 	}
 	if looksLikeFencedJSONToolCall(finalText, in.ToolNames) {
-		return missingToolDecision(in.Profile)
+		return missingToolDecisionWithRecord(in.Profile, record)
 	}
 	if parsed.SawToolCallSyntax {
-		return invalidToolSyntaxDecision(in.Profile)
+		return invalidToolSyntaxDecisionWithRecord(in.Profile, record)
 	}
 	if looksLikeInvalidLegacyToolCallSyntax(finalText) {
-		return invalidToolSyntaxDecision(in.Profile)
+		return invalidToolSyntaxDecisionWithRecord(in.Profile, record)
 	}
+	requirement := ClassifyCurrentTurnToolRequirement(CurrentTurnToolRequirementInput{
+		Text:                finalText,
+		FinalPrompt:         in.FinalPrompt,
+		ToolNames:           in.ToolNames,
+		AllowMetaAgentTools: in.AllowMetaAgentTools,
+	})
+	if requirement.Required {
+		return missingToolDecisionWithRecord(in.Profile, record)
+	}
+	return MissingToolCallDecision{}
+}
+
+func ClassifyCurrentTurnToolRequirement(in CurrentTurnToolRequirementInput) CurrentTurnToolRequirement {
+	finalText := normalizeToolRequirementText(in.Text)
+	if finalText == "" {
+		return CurrentTurnToolRequirement{}
+	}
+	if IsBackgroundAgentAcknowledgement(in.FinalPrompt, finalText, in.AllowMetaAgentTools) {
+		return CurrentTurnToolRequirement{}
+	}
+	ledger := BuildExecutionLedger(ExecutionLedgerInput{FinalPrompt: in.FinalPrompt})
+	intent := CompileRequestIntent(RequestIntentInput{
+		FinalText:            finalText,
+		FinalPrompt:          in.FinalPrompt,
+		AvailableToolNames:   in.ToolNames,
+		CurrentTurnToolNames: ledger.RecentToolNames,
+		AllowMetaAgentTools:  in.AllowMetaAgentTools,
+	})
 	if LooksLikeUnexecutedAgentLaunch(finalText, in.FinalPrompt, in.AllowMetaAgentTools) {
-		return missingToolDecision(in.Profile)
+		return requiredToolExecution(ToolExecutionRequirementAgentLaunch)
 	}
 	if !HasCallableTools(in.ToolNames) {
-		return MissingToolCallDecision{}
+		return CurrentTurnToolRequirement{}
 	}
-	if looksLikeExplicitUnexecutedFileToolPlan(finalText) {
-		return missingToolDecision(in.Profile)
+	if intent.ToolRequiredTurn {
+		return requiredToolExecution(ToolExecutionRequirementRequiredTurn)
 	}
-	if looksLikeUnexecutedCodingAction(finalText, in.FinalPrompt) {
-		return missingToolDecision(in.Profile)
+	checks := []struct {
+		reason ToolExecutionRequirementReason
+		match  func() bool
+	}{
+		{ToolExecutionRequirementFilePlan, func() bool {
+			return looksLikeExplicitUnexecutedFileToolPlan(finalText)
+		}},
+		{ToolExecutionRequirementCodingAction, func() bool {
+			return looksLikeUnexecutedCodingAction(finalText, in.FinalPrompt)
+		}},
+		{ToolExecutionRequirementCompletionClaim, func() bool {
+			return looksLikeUnsupportedCompletionClaim(finalText, in.FinalPrompt)
+		}},
+		{ToolExecutionRequirementToolCommitment, func() bool {
+			return looksLikeUnexecutedToolCommitment(finalText, in.ToolNames)
+		}},
 	}
-	if looksLikeUnsupportedCompletionClaim(finalText, in.FinalPrompt) {
-		return missingToolDecision(in.Profile)
+	for _, check := range checks {
+		if check.match() {
+			return requiredToolExecution(check.reason)
+		}
 	}
-	if !looksLikeFutureToolAction(finalText) {
-		return MissingToolCallDecision{}
+	proof := EvaluateExecutionProof(ExecutionProofInput{
+		FinalText: finalText,
+		ToolNames: ledger.RecentToolNames,
+	})
+	if proof.MissingEvidence {
+		return requiredToolExecution(toolRequirementReasonFromExecutionProof(proof.Reason))
 	}
-	return missingToolDecision(in.Profile)
+	if intent.ClaimsWithoutTools.Any {
+		return requiredToolExecution(ToolExecutionRequirementCompletionClaim)
+	}
+	if intent.TextPromises.LaunchAgent {
+		return requiredToolExecution(ToolExecutionRequirementAgentLaunch)
+	}
+	if looksLikePlanModeToolPromise(finalText) {
+		return requiredToolExecution(ToolExecutionRequirementFutureAction)
+	}
+	if looksLikeFutureToolAction(finalText) {
+		return requiredToolExecution(ToolExecutionRequirementFutureAction)
+	}
+	if intent.TextPromises.Edit || intent.TextPromises.WriteFile || intent.TextPromises.RunCommand ||
+		intent.TextPromises.Read || intent.TextPromises.Inspect || intent.TextPromises.Search {
+		return requiredToolExecution(ToolExecutionRequirementFutureAction)
+	}
+	return CurrentTurnToolRequirement{}
+}
+
+func IsToolRequiredTurn(in ToolRequiredTurnInput) bool {
+	if !HasCallableTools(in.ToolNames) {
+		return false
+	}
+	ledger := BuildExecutionLedger(ExecutionLedgerInput{FinalPrompt: in.FinalPrompt})
+	intent := CompileRequestIntent(RequestIntentInput{
+		FinalPrompt:          in.FinalPrompt,
+		AvailableToolNames:   in.ToolNames,
+		CurrentTurnToolNames: ledger.RecentToolNames,
+		AllowMetaAgentTools:  in.AllowMetaAgentTools,
+	})
+	return intent.ToolRequiredTurn
+}
+
+func normalizeToolRequirementText(text string) string {
+	finalText := strings.TrimSpace(text)
+	if stripped, changed := StripEmptyToolCallContainerNoise(finalText); changed {
+		finalText = strings.TrimSpace(stripped)
+	}
+	return finalText
+}
+
+func requiredToolExecution(reason ToolExecutionRequirementReason) CurrentTurnToolRequirement {
+	return CurrentTurnToolRequirement{
+		Required: true,
+		Reason:   reason,
+	}
+}
+
+func toolRequirementReasonFromExecutionProof(reason ExecutionProofReason) ToolExecutionRequirementReason {
+	switch reason {
+	case ExecutionProofReasonAgentClaimWithoutEvidence:
+		return ToolExecutionRequirementAgentLaunch
+	case ExecutionProofReasonWriteClaimWithoutEvidence, ExecutionProofReasonRunClaimWithoutEvidence:
+		return ToolExecutionRequirementCompletionClaim
+	case ExecutionProofReasonUnexecutedCommitment:
+		return ToolExecutionRequirementFutureAction
+	default:
+		return ToolExecutionRequirementFutureAction
+	}
 }
 
 func looksLikeInvalidLegacyToolCallSyntax(text string) bool {
@@ -87,7 +229,10 @@ func HasCallableTools(toolNames []string) bool {
 	return false
 }
 
-var fencedCodeBlockPattern = regexp.MustCompile("(?is)```\\s*([a-zA-Z0-9_-]*)\\s*\\n(.*?)```")
+var (
+	fencedCodeBlockPattern = regexp.MustCompile("(?is)```\\s*([a-zA-Z0-9_-]*)\\s*\\n(.*?)```")
+	taskListItemPattern    = regexp.MustCompile(`^\d+[.)、]\s+`)
+)
 
 func looksLikeFencedJSONToolCall(text string, toolNames []string) bool {
 	for _, match := range fencedCodeBlockPattern.FindAllStringSubmatch(text, -1) {
@@ -150,7 +295,13 @@ func IsBackgroundAgentAcknowledgement(finalPrompt, finalText string, allowMetaAg
 }
 
 func missingToolDecision(profile string) MissingToolCallDecision {
-	recordFailureDecision(profile, MissingToolCallCode)
+	return missingToolDecisionWithRecord(profile, true)
+}
+
+func missingToolDecisionWithRecord(profile string, record bool) MissingToolCallDecision {
+	if record {
+		recordFailureDecision(profile, MissingToolCallCode)
+	}
 	return MissingToolCallDecision{
 		Blocked: true,
 		Message: "Upstream model promised tool work but emitted no tool call.",
@@ -158,12 +309,23 @@ func missingToolDecision(profile string) MissingToolCallDecision {
 	}
 }
 
-func invalidToolSyntaxDecision(profile string) MissingToolCallDecision {
-	recordFailureDecision(profile, InvalidToolCallCode)
+func invalidToolSyntaxDecisionWithRecord(profile string, record bool) MissingToolCallDecision {
+	if record {
+		recordFailureDecision(profile, InvalidToolCallCode)
+	}
 	return MissingToolCallDecision{
 		Blocked: true,
 		Message: "Upstream model emitted invalid tool call syntax.",
 		Code:    InvalidToolCallCode,
+	}
+}
+
+func repeatedExplorationDecision(profile string) MissingToolCallDecision {
+	recordFailureDecision(profile, RepeatedExplorationCode)
+	return MissingToolCallDecision{
+		Blocked: true,
+		Message: "Upstream model repeated the same exploration tool call instead of advancing.",
+		Code:    RepeatedExplorationCode,
 	}
 }
 
@@ -379,7 +541,7 @@ func looksLikeExplicitUnexecutedFileToolPlan(text string) bool {
 }
 
 func latestUserRequestedExecution(finalPrompt string) bool {
-	latest := strings.ToLower(LatestUserPromptBlock(finalPrompt))
+	latest := strings.ToLower(LatestUserTextFromPrompt(finalPrompt))
 	if strings.TrimSpace(latest) == "" {
 		return false
 	}
@@ -405,6 +567,142 @@ func latestUserRequestedExecution(finalPrompt string) bool {
 	})
 }
 
+func looksLikeUnexecutedToolCommitment(text string, toolNames []string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || len([]rune(trimmed)) > 2400 || strings.Count(trimmed, "\n") > 40 {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if !looksLikeTaskOrToolCommitmentText(lower) {
+		return false
+	}
+	if !mentionsCallableWorkTool(lower, toolNames) {
+		return false
+	}
+	return containsAny(lower, toolCommitmentActionWords()) || containsAny(lower, futureActionPrefixes())
+}
+
+func looksLikeTaskOrToolCommitmentText(lower string) bool {
+	if containsAny(lower, []string{
+		"任务列表",
+		"任务清单",
+		"待办",
+		"执行列表",
+		"工具计划",
+		"工具调用",
+		"调用工具",
+		"使用工具",
+		"task list",
+		"todo list",
+		"checklist",
+		"tool plan",
+		"tool call",
+		"use the tools",
+		"use tools",
+		"execute these steps",
+	}) {
+		return true
+	}
+	lines := strings.Split(lower, "\n")
+	listItems := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") || taskListItemPattern.MatchString(line) {
+			listItems++
+		}
+	}
+	return listItems >= 2
+}
+
+func mentionsCallableWorkTool(lower string, toolNames []string) bool {
+	for _, name := range toolNames {
+		name = strings.TrimSpace(name)
+		if name == "" || isTaskTrackingToolName(name) {
+			continue
+		}
+		if containsToolNameToken(lower, strings.ToLower(name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsToolNameToken(text, name string) bool {
+	if name == "" {
+		return false
+	}
+	start := 0
+	for {
+		idx := strings.Index(text[start:], name)
+		if idx < 0 {
+			return false
+		}
+		idx += start
+		beforeOK := idx == 0 || !isASCIITokenByte(text[idx-1])
+		afterIdx := idx + len(name)
+		afterOK := afterIdx >= len(text) || !isASCIITokenByte(text[afterIdx])
+		if beforeOK && afterOK {
+			return true
+		}
+		start = idx + len(name)
+	}
+}
+
+func isASCIITokenByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
+}
+
+func isTaskTrackingToolName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "taskcreate", "taskupdate", "todowrite", "todoread", "update_todo_list", "todo_write", "todo_read":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolCommitmentActionWords() []string {
+	return []string{
+		"使用 read",
+		"使用 edit",
+		"使用 bash",
+		"使用 grep",
+		"调用 read",
+		"调用 edit",
+		"调用 bash",
+		"用 read",
+		"用 edit",
+		"用 bash",
+		"读取",
+		"修改",
+		"编辑",
+		"运行",
+		"执行",
+		"验证",
+		"测试",
+		"搜索",
+		"查找",
+		"定位",
+		"use read",
+		"use edit",
+		"use bash",
+		"use grep",
+		"use glob",
+		"run bash",
+		"call read",
+		"call edit",
+		"call bash",
+		"inspect",
+		"read",
+		"edit",
+		"run",
+		"execute",
+		"verify",
+		"test",
+		"search",
+	}
+}
+
 func looksLikeFutureToolAction(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -418,6 +716,16 @@ func looksLikeFutureToolAction(text string) bool {
 		"继续推进剩余",
 		"正在并行处理",
 		"并行处理",
+		"现在直接动手",
+		"直接动手",
+		"把代码写到位",
+		"代码写到位",
+		"分三路把代码",
+		"分路把代码",
+		"现在实现",
+		"现在修改",
+		"现在写",
+		"开始实现",
 		"先并行读取",
 		"并行读取需修改",
 		"先读",
@@ -438,6 +746,11 @@ func looksLikeFutureToolAction(text string) bool {
 		"先搜索",
 		"先组织",
 		"先规划",
+		"先整体扫",
+		"先扫一遍",
+		"整体扫一遍",
+		"扫一遍当前",
+		"扫一下当前",
 		"需要读取",
 		"需要理解",
 		"需要检查",
@@ -467,6 +780,97 @@ func looksLikeFutureToolAction(text string) bool {
 		}
 	}
 	return containsAny(lower, futureActionPrefixes()) && containsAny(lower, futureActionVerbs())
+}
+
+func looksLikePlanModeToolPromise(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || len([]rune(trimmed)) > 1800 || strings.Count(trimmed, "\n") > 12 {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if !containsAny(lower, []string{
+		"in plan mode",
+		"before writing any code",
+		"recap:",
+		"下一步",
+	}) {
+		return false
+	}
+	if !containsAny(lower, []string{
+		"i first need to",
+		"i need to",
+		"i will also",
+		"i will",
+		"let me",
+		"need to understand",
+		"need to inspect",
+		"need to read",
+		"consult",
+		"read",
+		"inspect",
+		"examine",
+		"understand",
+		"inventory",
+		"读完",
+		"读取",
+		"阅读",
+		"理解",
+		"检查",
+		"确认",
+		"写",
+	}) {
+		return false
+	}
+	return containsAny(lower, []string{
+		".cheng",
+		".go",
+		".md",
+		"lessons",
+		"primary_object_plan",
+		"bodyir",
+		"codegen",
+		"plan file",
+		"plan 文件",
+		"文件",
+		"源码",
+		"发射器",
+		"pipeline",
+	})
+}
+
+func LooksLikeBufferedToolHoldCandidate(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "<tool") ||
+		strings.Contains(lower, "tool_call") ||
+		strings.Contains(lower, "```") ||
+		strings.Contains(lower, "let me") ||
+		strings.Contains(lower, "i need") ||
+		strings.Contains(lower, "i will") ||
+		strings.Contains(lower, "i'll") ||
+		strings.Contains(lower, "now ") ||
+		strings.Contains(lower, "in plan mode") ||
+		strings.Contains(lower, "before writing") ||
+		strings.Contains(lower, "recap:") ||
+		strings.Contains(lower, "下一步") ||
+		strings.Contains(lower, "我先") ||
+		strings.Contains(lower, "我将") ||
+		strings.Contains(lower, "我会") ||
+		strings.Contains(lower, "正在") ||
+		strings.Contains(lower, "现在") ||
+		strings.Contains(lower, "先读") ||
+		strings.Contains(lower, "先理解") ||
+		strings.Contains(lower, "先检查") ||
+		strings.Contains(lower, "先确认") ||
+		strings.Contains(lower, "先整体扫") ||
+		strings.Contains(lower, "先扫一遍") ||
+		strings.Contains(lower, "整体扫一遍") ||
+		strings.Contains(lower, "扫一遍当前") ||
+		strings.Contains(lower, "扫一下当前") ||
+		strings.Contains(lower, "读取") ||
+		strings.Contains(lower, "读完")
 }
 
 func futureActionPrefixes() []string {
@@ -512,6 +916,8 @@ func futureActionVerbs() []string {
 		" reading",
 		" inspect",
 		" inspecting",
+		" examine",
+		" examining",
 		" explore",
 		" exploring",
 		" check",
@@ -569,6 +975,10 @@ func futureActionVerbs() []string {
 		"了解",
 		"查询",
 		"确认",
+		"扫描",
+		"扫一遍",
+		"扫一下",
+		"梳理",
 		"提交",
 		" wait",
 		" plan",

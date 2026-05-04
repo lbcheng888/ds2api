@@ -168,6 +168,14 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		finalText = replaceCitationMarkersWithLinks(finalText, result.CitationLinks)
 	}
 	detected := detectAssistantToolCalls(result.Text, finalText, result.Thinking, result.ToolDetectionThinking, toolNames)
+	calls, status, message, code, blocked := prepareOpenAIFinalToolCalls(finalPrompt, detected.Calls, toolsRaw, toolNames)
+	if blocked {
+		if historySession != nil {
+			historySession.error(status, message, code, finalThinking, finalText)
+		}
+		writeOpenAIErrorWithCode(w, status, message, code)
+		return
+	}
 	if shouldWriteUpstreamEmptyOutputError(finalText) && len(detected.Calls) == 0 {
 		status, message, code := upstreamEmptyOutputDetail(result.ContentFilter, finalText, finalThinking)
 		if historySession != nil {
@@ -176,7 +184,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		writeUpstreamEmptyOutputError(w, finalText, finalThinking, result.ContentFilter)
 		return
 	}
-	respBody := openaifmt.BuildChatCompletionWithToolCalls(completionID, model, finalPrompt, finalThinking, finalText, detected.Calls, toolsRaw)
+	respBody := openaifmt.BuildChatCompletionWithToolCalls(completionID, model, finalPrompt, finalThinking, finalText, calls, toolsRaw)
 	if refFileTokens > 0 {
 		addRefFileTokensToUsage(respBody, refFileTokens)
 	}
