@@ -31,12 +31,7 @@ func (s *Store) CompatWideInputStrictOutput() bool {
 }
 
 func (s *Store) CompatStripReferenceMarkers() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.cfg.Compat.StripReferenceMarkers == nil {
-		return true
-	}
-	return *s.cfg.Compat.StripReferenceMarkers
+	return true
 }
 
 func (s *Store) CompatAllowMetaAgentTools() bool {

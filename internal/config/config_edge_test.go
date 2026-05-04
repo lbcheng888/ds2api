@@ -163,8 +163,6 @@ func TestLowerFunction(t *testing.T) {
 // ─── Config.MarshalJSON / UnmarshalJSON roundtrip ────────────────────
 
 func TestConfigJSONRoundtrip(t *testing.T) {
-	trueVal := true
-	falseVal := false
 	cfg := Config{
 		Keys:         []string{"key1", "key2"},
 		Accounts:     []Account{{Email: "user@example.com", Password: "pass", Token: "tok"}},
@@ -172,16 +170,8 @@ func TestConfigJSONRoundtrip(t *testing.T) {
 		AutoDelete: AutoDeleteConfig{
 			Mode: "single",
 		},
-		HistorySplit: HistorySplitConfig{
-			Enabled:           &trueVal,
-			TriggerAfterTurns: func() *int { v := 2; return &v }(),
-		},
 		Runtime: RuntimeConfig{
 			TokenRefreshIntervalHours: 12,
-		},
-		Compat: CompatConfig{
-			WideInputStrictOutput: &trueVal,
-			StripReferenceMarkers: &falseVal,
 		},
 		VercelSyncHash: "hash123",
 		VercelSyncTime: 1234567890,
@@ -214,18 +204,6 @@ func TestConfigJSONRoundtrip(t *testing.T) {
 	}
 	if decoded.AutoDelete.Mode != "single" {
 		t.Fatalf("unexpected auto delete mode: %#v", decoded.AutoDelete.Mode)
-	}
-	if decoded.HistorySplit.Enabled == nil || !*decoded.HistorySplit.Enabled {
-		t.Fatalf("unexpected history split enabled: %#v", decoded.HistorySplit.Enabled)
-	}
-	if decoded.HistorySplit.TriggerAfterTurns == nil || *decoded.HistorySplit.TriggerAfterTurns != 2 {
-		t.Fatalf("unexpected history split trigger_after_turns: %#v", decoded.HistorySplit.TriggerAfterTurns)
-	}
-	if decoded.Compat.WideInputStrictOutput == nil || !*decoded.Compat.WideInputStrictOutput {
-		t.Fatalf("unexpected compat wide_input_strict_output: %#v", decoded.Compat.WideInputStrictOutput)
-	}
-	if decoded.Compat.StripReferenceMarkers == nil || *decoded.Compat.StripReferenceMarkers {
-		t.Fatalf("unexpected compat strip_reference_markers: %#v", decoded.Compat.StripReferenceMarkers)
 	}
 	if decoded.VercelSyncHash != "hash123" {
 		t.Fatalf("unexpected vercel sync hash: %q", decoded.VercelSyncHash)
@@ -290,23 +268,31 @@ func TestConfigUnmarshalJSONIgnoresRemovedLegacyModelMappings(t *testing.T) {
 	}
 }
 
+func TestConfigUnmarshalJSONIgnoresRemovedHistorySplit(t *testing.T) {
+	raw := `{"keys":["k1"],"history_split":{"enabled":true,"trigger_after_turns":2}}`
+	var cfg Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if _, ok := cfg.AdditionalFields["history_split"]; ok {
+		t.Fatalf("expected removed legacy field not to persist in additional fields: %#v", cfg.AdditionalFields)
+	}
+	out, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	if strings.Contains(string(out), "history_split") {
+		t.Fatalf("expected removed history_split field not to marshal, got %s", out)
+	}
+}
+
 // ─── Config.Clone ────────────────────────────────────────────────────
 
 func TestConfigCloneIsDeepCopy(t *testing.T) {
-	falseVal := false
-	trueVal := true
-	turns := 2
 	cfg := Config{
-		Keys:         []string{"key1"},
-		Accounts:     []Account{{Email: "user@test.com", Token: "token"}},
-		ModelAliases: map[string]string{"claude-sonnet-4-6": "deepseek-v4-flash"},
-		Compat: CompatConfig{
-			StripReferenceMarkers: &falseVal,
-		},
-		HistorySplit: HistorySplitConfig{
-			Enabled:           &trueVal,
-			TriggerAfterTurns: &turns,
-		},
+		Keys:             []string{"key1"},
+		Accounts:         []Account{{Email: "user@test.com", Token: "token"}},
+		ModelAliases:     map[string]string{"claude-sonnet-4-6": "deepseek-v4-flash"},
 		AdditionalFields: map[string]any{"custom": "value"},
 	}
 
@@ -316,15 +302,6 @@ func TestConfigCloneIsDeepCopy(t *testing.T) {
 	cfg.Keys[0] = "modified"
 	cfg.Accounts[0].Email = "modified@test.com"
 	cfg.ModelAliases["claude-sonnet-4-6"] = "modified-model"
-	if cfg.Compat.StripReferenceMarkers != nil {
-		*cfg.Compat.StripReferenceMarkers = true
-	}
-	if cfg.HistorySplit.Enabled != nil {
-		*cfg.HistorySplit.Enabled = false
-	}
-	if cfg.HistorySplit.TriggerAfterTurns != nil {
-		*cfg.HistorySplit.TriggerAfterTurns = 5
-	}
 
 	// Cloned should not be affected
 	if cloned.Keys[0] != "key1" {
@@ -335,15 +312,6 @@ func TestConfigCloneIsDeepCopy(t *testing.T) {
 	}
 	if cloned.ModelAliases["claude-sonnet-4-6"] != "deepseek-v4-flash" {
 		t.Fatalf("clone model aliases was affected: %#v", cloned.ModelAliases)
-	}
-	if cloned.Compat.StripReferenceMarkers == nil || *cloned.Compat.StripReferenceMarkers {
-		t.Fatalf("clone compat was affected: %#v", cloned.Compat.StripReferenceMarkers)
-	}
-	if cloned.HistorySplit.Enabled == nil || !*cloned.HistorySplit.Enabled {
-		t.Fatalf("clone history split enabled was affected: %#v", cloned.HistorySplit.Enabled)
-	}
-	if cloned.HistorySplit.TriggerAfterTurns == nil || *cloned.HistorySplit.TriggerAfterTurns != 2 {
-		t.Fatalf("clone history split trigger was affected: %#v", cloned.HistorySplit.TriggerAfterTurns)
 	}
 }
 
@@ -483,53 +451,9 @@ func TestStoreFindAccountNotFound(t *testing.T) {
 	}
 }
 
-func TestStoreCompatWideInputStrictOutputDefaultTrue(t *testing.T) {
-	t.Setenv("DS2API_CONFIG_JSON", `{"keys":["k1"],"accounts":[]}`)
-	store := LoadStore()
-	if !store.CompatWideInputStrictOutput() {
-		t.Fatal("expected default wide_input_strict_output=true when unset")
-	}
-}
-
-func TestStoreCompatWideInputStrictOutputCanDisable(t *testing.T) {
-	t.Setenv("DS2API_CONFIG_JSON", `{"keys":["k1"],"accounts":[],"compat":{"wide_input_strict_output":false}}`)
-	store := LoadStore()
-	if store.CompatWideInputStrictOutput() {
-		t.Fatal("expected wide_input_strict_output=false when explicitly configured")
-	}
-
-	snap := store.Snapshot()
-	data, err := snap.MarshalJSON()
-	if err != nil {
-		t.Fatalf("marshal failed: %v", err)
-	}
-	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	rawCompat, ok := out["compat"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected compat in marshaled output, got %#v", out)
-	}
-	if rawCompat["wide_input_strict_output"] != false {
-		t.Fatalf("expected explicit false in compat, got %#v", rawCompat)
-	}
-}
-
-func TestStoreCompatStripReferenceMarkersDefaultTrue(t *testing.T) {
-	t.Setenv("DS2API_CONFIG_JSON", `{"keys":["k1"],"accounts":[]}`)
-	store := LoadStore()
-	if !store.CompatStripReferenceMarkers() {
-		t.Fatal("expected default strip_reference_markers=true when unset")
-	}
-}
-
-func TestStoreCompatStripReferenceMarkersCanDisable(t *testing.T) {
+func TestStoreIgnoresRemovedCompatConfig(t *testing.T) {
 	t.Setenv("DS2API_CONFIG_JSON", `{"keys":["k1"],"accounts":[],"compat":{"strip_reference_markers":false}}`)
 	store := LoadStore()
-	if store.CompatStripReferenceMarkers() {
-		t.Fatal("expected strip_reference_markers=false when explicitly configured")
-	}
 
 	snap := store.Snapshot()
 	data, err := snap.MarshalJSON()
@@ -540,12 +464,8 @@ func TestStoreCompatStripReferenceMarkersCanDisable(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
-	rawCompat, ok := out["compat"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected compat in marshaled output, got %#v", out)
-	}
-	if rawCompat["strip_reference_markers"] != false {
-		t.Fatalf("expected explicit false in compat, got %#v", rawCompat)
+	if _, ok := out["compat"]; ok {
+		t.Fatalf("expected removed compat field not to marshal, got %#v", out)
 	}
 }
 

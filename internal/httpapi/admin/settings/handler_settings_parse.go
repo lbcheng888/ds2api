@@ -123,10 +123,6 @@ func parseSettingsUpdateRequest(req map[string]any) (*config.AdminConfig, *confi
 			b := boolFrom(v)
 			cfg.WideInputStrictOutput = &b
 		}
-		if v, exists := raw["strip_reference_markers"]; exists {
-			b := boolFrom(v)
-			cfg.StripReferenceMarkers = &b
-		}
 		if v, exists := raw["allow_meta_agent_tools"]; exists {
 			b := boolFrom(v)
 			cfg.AllowMetaAgentTools = &b

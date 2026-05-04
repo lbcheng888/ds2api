@@ -208,9 +208,6 @@ func TestUpdateSettingsCurrentInputFile(t *testing.T) {
 	if !h.Store.CurrentInputFileEnabled() {
 		t.Fatal("expected current input file accessor to stay enabled")
 	}
-	if h.Store.HistorySplitEnabled() {
-		t.Fatal("expected history split accessor to stay disabled")
-	}
 }
 
 func TestUpdateSettingsCurrentInputFilePartialUpdatePreservesEnabled(t *testing.T) {

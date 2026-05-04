@@ -62,8 +62,7 @@ func (streamStatusManagedAuthStub) DetermineCaller(_ *http.Request) (*auth.Reque
 func (streamStatusManagedAuthStub) Release(_ *auth.RequestAuth) {}
 
 func TestBuildOpenAICurrentInputContextTranscriptUsesNumberedHistorySections(t *testing.T) {
-	_, historyMessages := splitOpenAIHistoryMessages(historySplitTestMessages(), 1)
-	transcript := buildOpenAICurrentInputContextTranscript(historyMessages)
+	transcript := buildOpenAICurrentInputContextTranscript(historySplitTestMessages())
 
 	if strings.Contains(transcript, "[file content end]") || strings.Contains(transcript, "[file content begin]") || strings.Contains(transcript, "[file name]:") {
 		t.Fatalf("expected transcript without file wrapper tags, got %q", transcript)
@@ -75,11 +74,14 @@ func TestBuildOpenAICurrentInputContextTranscriptUsesNumberedHistorySections(t *
 		t.Fatalf("expected history transcript description, got %q", transcript)
 	}
 	for _, want := range []string{
-		"=== 1. USER ===",
-		"=== 2. ASSISTANT ===",
-		"=== 3. TOOL ===",
+		"=== 1. SYSTEM ===",
+		"=== 2. USER ===",
+		"=== 3. ASSISTANT ===",
+		"=== 4. TOOL ===",
+		"=== 5. USER ===",
 		"first user turn",
 		"tool result",
+		"latest user turn",
 		"[reasoning_content]",
 		"hidden reasoning",
 		"<|DSML|tool_calls>",
@@ -90,43 +92,10 @@ func TestBuildOpenAICurrentInputContextTranscriptUsesNumberedHistorySections(t *
 	}
 }
 
-func TestSplitOpenAIHistoryMessagesUsesLatestUserTurn(t *testing.T) {
-	messages := []any{
-		map[string]any{"role": "system", "content": "system instructions"},
-		map[string]any{"role": "user", "content": "first user turn"},
-		map[string]any{"role": "assistant", "content": "first assistant turn"},
-		map[string]any{"role": "user", "content": "middle user turn"},
-		map[string]any{"role": "assistant", "content": "middle assistant turn"},
-		map[string]any{"role": "user", "content": "latest user turn"},
-	}
-
-	promptMessages, historyMessages := splitOpenAIHistoryMessages(messages, 1)
-	if len(promptMessages) == 0 || len(historyMessages) == 0 {
-		t.Fatalf("expected both prompt and history messages, got prompt=%d history=%d", len(promptMessages), len(historyMessages))
-	}
-
-	promptText, _ := promptcompat.BuildOpenAIPrompt(promptMessages, nil, "", defaultToolChoicePolicy(), true)
-	if !strings.Contains(promptText, "latest user turn") {
-		t.Fatalf("expected latest user turn in prompt, got %s", promptText)
-	}
-	if strings.Contains(promptText, "middle user turn") {
-		t.Fatalf("expected middle user turn to be moved into history, got %s", promptText)
-	}
-
-	historyText := buildOpenAICurrentInputContextTranscript(historyMessages)
-	if !strings.Contains(historyText, "middle user turn") {
-		t.Fatalf("expected middle user turn in split history, got %s", historyText)
-	}
-	if strings.Contains(historyText, "latest user turn") {
-		t.Fatalf("expected latest user turn to remain live, got %s", historyText)
-	}
-}
-
 func TestApplyCurrentInputFileSkipsShortInputWhenThresholdNotReached(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 			currentInputMin:     10,
 		},
@@ -159,7 +128,6 @@ func TestApplyThinkingInjectionAppendsLatestUserPrompt(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:         true,
 			thinkingInjection: boolPtr(true),
 		},
 		DS: ds,
@@ -191,7 +159,6 @@ func TestApplyThinkingInjectionUsesCustomPrompt(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:         true,
 			thinkingInjection: boolPtr(true),
 			thinkingPrompt:    "custom thinking format",
 		},
@@ -221,7 +188,6 @@ func TestApplyCurrentInputFileDisabledPassThrough(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: false,
 		},
 		DS: ds,
@@ -254,7 +220,6 @@ func TestApplyCurrentInputFileUploadsFirstTurnWithNumberedHistoryTranscript(t *t
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 			currentInputMin:     10,
 			thinkingInjection:   boolPtr(true),
@@ -327,7 +292,6 @@ func TestApplyCurrentInputFilePreservesFullContextPromptForTokenCounting(t *test
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 			currentInputMin:     0,
 			thinkingInjection:   boolPtr(true),
@@ -373,7 +337,6 @@ func TestApplyCurrentInputFileUploadsFullContextFile(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 			currentInputMin:     0,
 			thinkingInjection:   boolPtr(true),
@@ -424,7 +387,6 @@ func TestApplyCurrentInputFileCarriesHistoryText(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 		},
 		DS: ds,
@@ -457,7 +419,6 @@ func TestChatCompletionsCurrentInputFileUploadsContextAndRepeatsLatestRequest(t 
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 		},
 		Auth: streamStatusAuthStub{},
@@ -528,7 +489,6 @@ func TestResponsesCurrentInputFileUploadsContextAndRepeatsLatestRequest(t *testi
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 		},
 		Auth: streamStatusAuthStub{},
@@ -586,7 +546,6 @@ func TestChatCompletionsCurrentInputFileMapsManagedAuthFailureTo401(t *testing.T
 	}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 		},
 		Auth: streamStatusManagedAuthStub{},
@@ -618,7 +577,6 @@ func TestResponsesCurrentInputFileMapsDirectAuthFailureTo401(t *testing.T) {
 	}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 		},
 		Auth: streamStatusAuthStub{},
@@ -650,7 +608,6 @@ func TestChatCompletionsCurrentInputFileUploadFailureReturnsInternalServerError(
 	ds := &inlineUploadDSStub{uploadErr: errors.New("boom")}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 		},
 		Auth: streamStatusAuthStub{},
@@ -679,7 +636,6 @@ func TestCurrentInputFileWorksAcrossAutoDeleteModes(t *testing.T) {
 			ds := &inlineUploadDSStub{}
 			h := &openAITestSurface{
 				Store: mockOpenAIConfig{
-					wideInput:           true,
 					autoDeleteMode:      mode,
 					currentInputEnabled: true,
 				},
@@ -717,10 +673,6 @@ func TestCurrentInputFileWorksAcrossAutoDeleteModes(t *testing.T) {
 			}
 		})
 	}
-}
-
-func defaultToolChoicePolicy() promptcompat.ToolChoicePolicy {
-	return promptcompat.DefaultToolChoicePolicy()
 }
 
 func boolPtr(v bool) *bool {

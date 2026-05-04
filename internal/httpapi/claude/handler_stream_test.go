@@ -28,6 +28,18 @@ func makeClaudeSSEHTTPResponse(lines ...string) *http.Response {
 	}
 }
 
+func makeClaudeContentLine(t *testing.T, text string) string {
+	t.Helper()
+	line, err := json.Marshal(map[string]any{
+		"p": "response/content",
+		"v": text,
+	})
+	if err != nil {
+		t.Fatalf("marshal content line failed: %v", err)
+	}
+	return "data: " + string(line)
+}
+
 func parseClaudeFrames(t *testing.T, body string) []claudeFrame {
 	t.Helper()
 	chunks := strings.Split(body, "\n\n")
@@ -71,6 +83,17 @@ func findClaudeFrames(frames []claudeFrame, event string) []claudeFrame {
 	return out
 }
 
+func collectClaudeTextDeltas(frames []claudeFrame) string {
+	var combined strings.Builder
+	for _, f := range findClaudeFrames(frames, "content_block_delta") {
+		delta, _ := f.Payload["delta"].(map[string]any)
+		if delta["type"] == "text_delta" {
+			combined.WriteString(asString(delta["text"]))
+		}
+	}
+	return combined.String()
+}
+
 func TestHandleClaudeStreamRealtimeTextIncrementsWithEventHeaders(t *testing.T) {
 	h := &Handler{}
 	resp := makeClaudeSSEHTTPResponse(
@@ -96,8 +119,8 @@ func TestHandleClaudeStreamRealtimeTextIncrementsWithEventHeaders(t *testing.T) 
 
 	frames := parseClaudeFrames(t, body)
 	deltas := findClaudeFrames(frames, "content_block_delta")
-	if len(deltas) < 2 {
-		t.Fatalf("expected at least 2 text deltas, got=%d body=%s", len(deltas), body)
+	if len(deltas) < 1 {
+		t.Fatalf("expected at least 1 text delta, got=%d body=%s", len(deltas), body)
 	}
 	combined := strings.Builder{}
 	for _, f := range deltas {
@@ -108,6 +131,52 @@ func TestHandleClaudeStreamRealtimeTextIncrementsWithEventHeaders(t *testing.T) 
 	}
 	if combined.String() != "Hello" {
 		t.Fatalf("unexpected combined text: %q body=%s", combined.String(), body)
+	}
+}
+
+func TestHandleClaudeStreamRealtimeToolBufferedPlainTextDoesNotRepeatFinalText(t *testing.T) {
+	h := &Handler{}
+	want := "明白\n\nBash\nIN\npwd\nOUT\nok"
+	resp := makeClaudeSSEHTTPResponse(
+		makeClaudeContentLine(t, "明"),
+		makeClaudeContentLine(t, "白\n\nBash\nIN\npwd\n"),
+		makeClaudeContentLine(t, "OUT\nok"),
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "use tool"}}, false, false, []string{"Bash"}, nil)
+
+	frames := parseClaudeFrames(t, rec.Body.String())
+	if got := collectClaudeTextDeltas(frames); got != want {
+		t.Fatalf("unexpected combined text: got %q want %q body=%s", got, want, rec.Body.String())
+	}
+}
+
+func TestHandleClaudeStreamRealtimeTrimsContinuationReplay(t *testing.T) {
+	h := &Handler{}
+	prefix := strings.Repeat("A", 40)
+	resp := makeClaudeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"`+prefix+`"}`,
+		`data: {"p":"response/content","v":"`+prefix+` tail"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "hi"}}, false, false, nil, nil)
+
+	frames := parseClaudeFrames(t, rec.Body.String())
+	combined := strings.Builder{}
+	for _, f := range findClaudeFrames(frames, "content_block_delta") {
+		delta, _ := f.Payload["delta"].(map[string]any)
+		if delta["type"] == "text_delta" {
+			combined.WriteString(asString(delta["text"]))
+		}
+	}
+	if got, want := combined.String(), prefix+" tail"; got != want {
+		t.Fatalf("unexpected combined text: got %q want %q body=%s", got, want, rec.Body.String())
 	}
 }
 

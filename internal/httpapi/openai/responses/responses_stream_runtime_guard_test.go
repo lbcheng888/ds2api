@@ -24,6 +24,7 @@ func TestResponsesShouldHoldBufferedToolContentCachesPlanModePromise(t *testing.
 		promptcompat.DefaultToolChoicePolicy(),
 		"trace-test",
 		nil,
+		nil,
 	)
 	runtime.text.WriteString("In plan mode - before writing any code - I first need to understand primary_object_plan.cheng. I will also consult your lessons file.")
 
@@ -57,6 +58,7 @@ func TestResponsesShouldHoldBufferedToolContentIgnoresPlainAnswer(t *testing.T) 
 		promptcompat.DefaultToolChoicePolicy(),
 		"trace-test",
 		nil,
+		nil,
 	)
 	runtime.text.WriteString("这是一个普通说明，不需要调用工具。")
 
@@ -85,6 +87,7 @@ func TestResponsesShouldHoldBufferedToolContentHoldsToolRequiredTurnWithoutCandi
 		false,
 		promptcompat.DefaultToolChoicePolicy(),
 		"trace-test",
+		nil,
 		nil,
 	)
 	runtime.text.WriteString("好的。")

@@ -39,24 +39,9 @@ type DeepSeekCaller interface {
 
 type ConfigReader interface {
 	ModelAliases() map[string]string
-	CompatWideInputStrictOutput() bool
-	CompatStripReferenceMarkers() bool
-	CompatAllowMetaAgentTools() bool
-	CompatDefaultReasoningEffort() string
-	ToolcallMode() string
-	ToolcallEarlyEmitConfidence() string
 	ResponsesStoreTTLSeconds() int
 	EmbeddingsProvider() string
 	AutoDeleteMode() string
-	AutoDeleteSessions() bool
-	RuntimeAccountFailureCooldownSeconds() int
-	RuntimeAccountAffinityTTLSeconds() int
-	RuntimeStreamMaxDurationSeconds() int
-	RuntimeReasoningOnlyTimeoutSeconds() int
-	RuntimeBufferedToolContentMaxBytes() int
-	RuntimeAccountTokenThreshold() int64
-	HistorySplitEnabled() bool
-	HistorySplitTriggerAfterTurns() int
 	CurrentInputFileEnabled() bool
 	CurrentInputFileMinChars() int
 	ThinkingInjectionEnabled() bool
@@ -74,7 +59,10 @@ func CompatStripReferenceMarkers(store ConfigReader) bool {
 	if store == nil {
 		return true
 	}
-	return store.CompatStripReferenceMarkers()
+	if compatStore, ok := store.(interface{ CompatStripReferenceMarkers() bool }); ok {
+		return compatStore.CompatStripReferenceMarkers()
+	}
+	return true
 }
 
 var WriteJSON = util.WriteJSON

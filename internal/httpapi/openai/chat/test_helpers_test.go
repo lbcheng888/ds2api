@@ -12,45 +12,30 @@ import (
 
 type mockOpenAIConfig struct {
 	aliases             map[string]string
-	wideInput           bool
 	autoDeleteMode      string
 	toolMode            string
 	earlyEmit           string
 	responsesTTL        int
 	embedProv           string
-	historySplitEnabled bool
-	historySplitTurns   int
 	currentInputEnabled bool
 	currentInputMin     int
 	thinkingInjection   *bool
 	thinkingPrompt      string
 }
 
-func (m mockOpenAIConfig) ModelAliases() map[string]string { return m.aliases }
-func (m mockOpenAIConfig) CompatWideInputStrictOutput() bool {
-	return m.wideInput
-}
-func (m mockOpenAIConfig) CompatStripReferenceMarkers() bool    { return true }
-func (m mockOpenAIConfig) CompatAllowMetaAgentTools() bool      { return false }
-func (m mockOpenAIConfig) CompatDefaultReasoningEffort() string { return "" }
-func (m mockOpenAIConfig) ToolcallMode() string                 { return m.toolMode }
-func (m mockOpenAIConfig) ToolcallEarlyEmitConfidence() string  { return m.earlyEmit }
-func (m mockOpenAIConfig) ResponsesStoreTTLSeconds() int        { return m.responsesTTL }
-func (m mockOpenAIConfig) EmbeddingsProvider() string           { return m.embedProv }
+func (m mockOpenAIConfig) ModelAliases() map[string]string     { return m.aliases }
+func (m mockOpenAIConfig) CompatWideInputStrictOutput() bool   { return true }
+func (m mockOpenAIConfig) ToolcallMode() string                { return m.toolMode }
+func (m mockOpenAIConfig) ToolcallEarlyEmitConfidence() string { return m.earlyEmit }
+func (m mockOpenAIConfig) ResponsesStoreTTLSeconds() int       { return m.responsesTTL }
+func (m mockOpenAIConfig) EmbeddingsProvider() string          { return m.embedProv }
 func (m mockOpenAIConfig) AutoDeleteMode() string {
 	if m.autoDeleteMode == "" {
 		return "none"
 	}
 	return m.autoDeleteMode
 }
-func (m mockOpenAIConfig) AutoDeleteSessions() bool  { return false }
-func (m mockOpenAIConfig) HistorySplitEnabled() bool { return m.historySplitEnabled }
-func (m mockOpenAIConfig) HistorySplitTriggerAfterTurns() int {
-	if m.historySplitTurns <= 0 {
-		return 1
-	}
-	return m.historySplitTurns
-}
+func (m mockOpenAIConfig) AutoDeleteSessions() bool      { return false }
 func (m mockOpenAIConfig) CurrentInputFileEnabled() bool { return m.currentInputEnabled }
 func (m mockOpenAIConfig) CurrentInputFileMinChars() int {
 	return m.currentInputMin
@@ -62,24 +47,6 @@ func (m mockOpenAIConfig) ThinkingInjectionEnabled() bool {
 	return *m.thinkingInjection
 }
 func (m mockOpenAIConfig) ThinkingInjectionPrompt() string { return m.thinkingPrompt }
-func (m mockOpenAIConfig) RuntimeAccountFailureCooldownSeconds() int {
-	return 0
-}
-func (m mockOpenAIConfig) RuntimeAccountAffinityTTLSeconds() int {
-	return 3600
-}
-func (m mockOpenAIConfig) RuntimeStreamMaxDurationSeconds() int {
-	return 0
-}
-func (m mockOpenAIConfig) RuntimeReasoningOnlyTimeoutSeconds() int {
-	return 0
-}
-func (m mockOpenAIConfig) RuntimeBufferedToolContentMaxBytes() int {
-	return 0
-}
-func (m mockOpenAIConfig) RuntimeAccountTokenThreshold() int64 {
-	return 0
-}
 
 type streamStatusAuthStub struct{}
 

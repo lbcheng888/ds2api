@@ -197,7 +197,7 @@ This repo includes a `zeabur.yaml` template for one-click deployment on Zeabur:
 Notes:
 
 - **Port**: DS2API listens on `5001` by default; the template sets `PORT=5001`.
-- **Persistent config**: the template mounts `/data` and sets `DS2API_CONFIG_PATH=/data/config.json`. After importing config in Admin UI, it will be written and persisted to this path.
+- **Persistent config**: the template mounts `/data` and sets `DS2API_CONFIG_PATH=/data/config.json`. On a fresh volume, DS2API starts with an empty file-backed config; after importing config in Admin UI, it will be written and persisted to this path.
 - **`open /app/config.json: permission denied`**: this means the instance is trying to persist runtime tokens to a read-only path (commonly `/app` inside the image).  
   Recommended handling:
   1. Set a writable path explicitly: `DS2API_CONFIG_PATH=/data/config.json` (and mount a persistent volume at `/data`);
@@ -205,6 +205,37 @@ Notes:
   3. In current versions, login/session tests continue even if persistence fails; Admin API returns a warning that token persistence failed and token is memory-only until restart.
 - **Build version**: Zeabur / regular `docker build` does not require `BUILD_VERSION` by default. The image prefers that build arg when provided, and automatically falls back to the repo-root `VERSION` file when it is absent.
 - **First login**: after deployment, open `/admin` and login with `DS2API_ADMIN_KEY` shown in Zeabur env/template instructions (recommended: rotate to a strong secret after first login).
+
+#### Manual Deployment Without The Template
+
+If you do not want to use the `zeabur.yaml` one-click template, deploy directly from the repo root with Zeabur's GitHub integration:
+
+1. Fork this repo, or push the code to your own GitHub repository.
+2. In Zeabur Dashboard, create a Project, add a Service, then choose a GitHub/Git repository source.
+3. Select the repository and branch. Keep Root Directory as `/`.
+4. Use the Dockerfile build path. Zeabur auto-detects the repo-root `Dockerfile`; do not set `ZBPACK_IGNORE_DOCKERFILE=true`. If the UI asks for a Dockerfile name, enter `Dockerfile`.
+5. Add a persistent volume in the Service settings and mount it at `/data`.
+6. Configure environment variables:
+
+| Variable | Recommended value | Description |
+| --- | --- | --- |
+| `PORT` | `5001` | Service listen port; keep it aligned with the exposed Zeabur HTTP port. |
+| `DS2API_ADMIN_KEY` | Strong random string | Required admin login key. |
+| `DS2API_CONFIG_PATH` | `/data/config.json` | Recommended persistent config path. |
+| `LOG_LEVEL` | `INFO` | Optional log level. |
+| `DS2API_CONFIG_JSON` | Raw JSON or Base64 JSON | Optional config bootstrap from env. |
+| `DS2API_ENV_WRITEBACK` | `1` | Optional; enable only when using `DS2API_CONFIG_JSON` and you want the initial config written to `/data/config.json`. |
+
+7. Expose HTTP port `5001`. The health check path can be `/healthz`.
+8. After deployment, open `/admin`, login with `DS2API_ADMIN_KEY`, then import or edit config in Admin UI. A fresh volume does not need `/data/config.json` up front; the service boots first and creates the file on the first save.
+
+Troubleshooting:
+
+- **Startup log says `open /data/config.json: no such file or directory`**: make sure you deployed a version that includes the fresh-volume bootstrap fix, then redeploy the latest code.
+- **`open /app/config.json: permission denied`**: the config path still points at the read-only image directory; mount `/data` and set `DS2API_CONFIG_PATH=/data/config.json`.
+- **Config disappears after restart**: check that the `/data` persistent volume is mounted on this service. If you use `DS2API_CONFIG_JSON` but want Admin UI saves persisted, enable `DS2API_ENV_WRITEBACK=1`.
+
+References: Zeabur's official [GitHub/Git integration](https://zeabur.com/docs/en-US/deploy/github), [Dockerfile deployment](https://zeabur.com/docs/en-US/deploy/dockerfile), and [Volumes](https://zeabur.com/docs/data-management/volumes) docs.
 
 ---
 

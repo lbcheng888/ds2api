@@ -7,17 +7,25 @@ import (
 	"strings"
 	"time"
 
+	"ds2api/internal/assistantturn"
 	dsprotocol "ds2api/internal/deepseek/protocol"
+	"ds2api/internal/responsehistory"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
-	textclean "ds2api/internal/textclean"
 )
 
 //nolint:unused // retained for native Gemini stream handling path.
-func (h *Handler) handleStreamGenerateContent(w http.ResponseWriter, r *http.Request, resp *http.Response, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string) {
+func (h *Handler) handleStreamGenerateContent(w http.ResponseWriter, r *http.Request, resp *http.Response, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, historySessions ...*responsehistory.Session) {
+	var historySession *responsehistory.Session
+	if len(historySessions) > 0 {
+		historySession = historySessions[0]
+	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		if historySession != nil {
+			historySession.Error(resp.StatusCode, strings.TrimSpace(string(body)), "error", "", "")
+		}
 		writeGeminiError(w, resp.StatusCode, strings.TrimSpace(string(body)))
 		return
 	}
@@ -29,7 +37,7 @@ func (h *Handler) handleStreamGenerateContent(w http.ResponseWriter, r *http.Req
 
 	rc := http.NewResponseController(w)
 	_, canFlush := w.(http.Flusher)
-	runtime := newGeminiStreamRuntime(w, rc, canFlush, model, finalPrompt, thinkingEnabled, searchEnabled, h.compatStripReferenceMarkers(), toolNames)
+	runtime := newGeminiStreamRuntime(w, rc, canFlush, model, finalPrompt, thinkingEnabled, searchEnabled, stripReferenceMarkersEnabled(), toolNames, toolsRaw, historySession)
 
 	initialType := "text"
 	if thinkingEnabled {
@@ -65,10 +73,12 @@ type geminiStreamRuntime struct {
 	bufferContent         bool
 	stripReferenceMarkers bool
 	toolNames             []string
+	toolsRaw              any
 
-	outputSanitizer textclean.StreamSanitizer
-	thinking        strings.Builder
-	text            strings.Builder
+	accumulator       *assistantturn.Accumulator
+	contentFilter     bool
+	responseMessageID int
+	history           *responsehistory.Session
 }
 
 //nolint:unused // retained for native Gemini stream handling path.
@@ -82,6 +92,8 @@ func newGeminiStreamRuntime(
 	searchEnabled bool,
 	stripReferenceMarkers bool,
 	toolNames []string,
+	toolsRaw any,
+	history *responsehistory.Session,
 ) *geminiStreamRuntime {
 	return &geminiStreamRuntime{
 		w:                     w,
@@ -94,6 +106,13 @@ func newGeminiStreamRuntime(
 		bufferContent:         len(toolNames) > 0,
 		stripReferenceMarkers: stripReferenceMarkers,
 		toolNames:             toolNames,
+		toolsRaw:              toolsRaw,
+		history:               history,
+		accumulator: assistantturn.NewAccumulator(assistantturn.AccumulatorOptions{
+			ThinkingEnabled:       thinkingEnabled,
+			SearchEnabled:         searchEnabled,
+			StripReferenceMarkers: stripReferenceMarkers,
+		}),
 	}
 }
 
@@ -113,35 +132,39 @@ func (s *geminiStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 	if !parsed.Parsed {
 		return streamengine.ParsedDecision{}
 	}
+	if parsed.ResponseMessageID > 0 {
+		s.responseMessageID = parsed.ResponseMessageID
+	}
 	if parsed.ContentFilter || parsed.ErrorMessage != "" || parsed.Stop {
+		if parsed.ContentFilter {
+			s.contentFilter = true
+		}
 		return streamengine.ParsedDecision{Stop: true}
 	}
 
-	contentSeen := false
-	for _, p := range parsed.Parts {
-		cleanedText := cleanVisibleOutput(s.outputSanitizer.Sanitize(p.Text), s.stripReferenceMarkers)
-		if cleanedText == "" {
-			continue
-		}
-		if p.Type != "thinking" && s.searchEnabled && sse.IsCitation(cleanedText) {
-			continue
-		}
-		contentSeen = true
+	accumulated := s.accumulator.Apply(parsed)
+	for _, p := range accumulated.Parts {
 		if p.Type == "thinking" {
-			if s.thinkingEnabled {
-				trimmed := sse.TrimContinuationOverlap(s.thinking.String(), cleanedText)
-				if trimmed == "" {
-					continue
-				}
-				s.thinking.WriteString(trimmed)
+			if p.VisibleText == "" || s.bufferContent {
+				continue
 			}
+			s.sendChunk(map[string]any{
+				"candidates": []map[string]any{
+					{
+						"index": 0,
+						"content": map[string]any{
+							"role":  "model",
+							"parts": []map[string]any{{"text": p.VisibleText, "thought": true}},
+						},
+					},
+				},
+				"modelVersion": s.model,
+			})
 			continue
 		}
-		trimmed := sse.TrimContinuationOverlap(s.text.String(), cleanedText)
-		if trimmed == "" {
+		if p.RawText == "" || p.CitationOnly || p.VisibleText == "" {
 			continue
 		}
-		s.text.WriteString(trimmed)
 		if s.bufferContent {
 			continue
 		}
@@ -151,23 +174,55 @@ func (s *geminiStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 					"index": 0,
 					"content": map[string]any{
 						"role":  "model",
-						"parts": []map[string]any{{"text": trimmed}},
+						"parts": []map[string]any{{"text": p.VisibleText}},
 					},
 				},
 			},
 			"modelVersion": s.model,
 		})
 	}
-	return streamengine.ParsedDecision{ContentSeen: contentSeen}
+	if s.history != nil {
+		rawText, text, rawThinking, thinking, detectionThinking := s.accumulator.Snapshot()
+		s.history.Progress(
+			responsehistory.ThinkingForArchive(rawThinking, detectionThinking, thinking),
+			responsehistory.TextForArchive(rawText, text),
+		)
+	}
+	return streamengine.ParsedDecision{ContentSeen: accumulated.ContentSeen}
 }
 
 //nolint:unused // retained for native Gemini stream handling path.
 func (s *geminiStreamRuntime) finalize() {
-	finalThinking := s.thinking.String()
-	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
+	rawText, text, rawThinking, thinking, detectionThinking := s.accumulator.Snapshot()
+	turn := assistantturn.BuildTurnFromStreamSnapshot(assistantturn.StreamSnapshot{
+		RawText:           rawText,
+		VisibleText:       text,
+		RawThinking:       rawThinking,
+		VisibleThinking:   thinking,
+		DetectionThinking: detectionThinking,
+		ContentFilter:     s.contentFilter,
+		ResponseMessageID: s.responseMessageID,
+	}, assistantturn.BuildOptions{
+		Model:                 s.model,
+		Prompt:                s.finalPrompt,
+		SearchEnabled:         s.searchEnabled,
+		StripReferenceMarkers: s.stripReferenceMarkers,
+		ToolNames:             s.toolNames,
+		ToolsRaw:              s.toolsRaw,
+	})
+	outcome := assistantturn.FinalizeTurn(turn, assistantturn.FinalizeOptions{})
+	if s.history != nil {
+		s.history.Success(
+			http.StatusOK,
+			responsehistory.ThinkingForArchive(turn.RawThinking, turn.DetectionThinking, turn.Thinking),
+			responsehistory.TextForArchive(turn.RawText, turn.Text),
+			assistantturn.FinishReason(turn),
+			responsehistory.GenericUsage(turn),
+		)
+	}
 
 	if s.bufferContent {
-		parts := buildGeminiPartsFromFinal(finalText, finalThinking, s.toolNames)
+		parts := buildGeminiPartsFromTurn(turn)
 		s.sendChunk(map[string]any{
 			"candidates": []map[string]any{
 				{
@@ -195,7 +250,11 @@ func (s *geminiStreamRuntime) finalize() {
 				"finishReason": "STOP",
 			},
 		},
-		"modelVersion":  s.model,
-		"usageMetadata": buildGeminiUsage(s.model, s.finalPrompt, finalThinking, finalText),
+		"modelVersion": s.model,
+		"usageMetadata": map[string]any{
+			"promptTokenCount":     outcome.Usage.InputTokens,
+			"candidatesTokenCount": outcome.Usage.OutputTokens,
+			"totalTokenCount":      outcome.Usage.TotalTokens,
+		},
 	})
 }

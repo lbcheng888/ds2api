@@ -17,12 +17,14 @@ type AuthResolver interface {
 type DeepSeekCaller interface {
 	CreateSession(ctx context.Context, a *auth.RequestAuth, maxAttempts int) (string, error)
 	GetPow(ctx context.Context, a *auth.RequestAuth, maxAttempts int) (string, error)
+	UploadFile(ctx context.Context, a *auth.RequestAuth, req dsclient.UploadFileRequest, maxAttempts int) (*dsclient.UploadFileResult, error)
 	CallCompletion(ctx context.Context, a *auth.RequestAuth, payload map[string]any, powResp string, maxAttempts int) (*http.Response, error)
 }
 
 type ConfigReader interface {
 	ModelAliases() map[string]string
-	CompatStripReferenceMarkers() bool
+	CurrentInputFileEnabled() bool
+	CurrentInputFileMinChars() int
 }
 
 type OpenAIChatRunner interface {

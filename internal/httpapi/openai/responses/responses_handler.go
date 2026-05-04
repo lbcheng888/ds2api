@@ -11,11 +11,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"ds2api/internal/assistantturn"
 	"ds2api/internal/auth"
+	"ds2api/internal/completionruntime"
 	"ds2api/internal/config"
 	dsprotocol "ds2api/internal/deepseek/protocol"
 	openaifmt "ds2api/internal/format/openai"
 	"ds2api/internal/promptcompat"
+	"ds2api/internal/responsehistory"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
 )
@@ -92,34 +95,50 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID, err := h.DS.CreateSession(r.Context(), a, 3)
-	if err != nil {
-		if a.UseConfigToken {
-			writeOpenAIError(w, http.StatusUnauthorized, "Account token is invalid. Please re-login the account in admin.")
-		} else {
-			writeOpenAIError(w, http.StatusUnauthorized, "Invalid token. If this should be a DS2API key, add it to config.keys first.")
+	responseID := "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	historySession := responsehistory.Start(responsehistory.StartParams{
+		Store:    h.ChatHistory,
+		Request:  r,
+		Auth:     a,
+		Surface:  "openai.responses",
+		Standard: stdReq,
+	})
+	if !stdReq.Stream {
+		result, outErr := completionruntime.ExecuteNonStreamWithRetry(r.Context(), h.DS, a, stdReq, completionruntime.Options{
+			RetryEnabled:     true,
+			CurrentInputFile: h.Store,
+		})
+		if outErr != nil {
+			if historySession != nil {
+				historySession.ErrorTurn(outErr.Status, outErr.Message, outErr.Code, result.Turn)
+			}
+			writeOpenAIErrorWithCode(w, outErr.Status, outErr.Message, outErr.Code)
+			return
 		}
-		return
-	}
-	pow, err := h.DS.GetPow(r.Context(), a, 3)
-	if err != nil {
-		writeOpenAIError(w, http.StatusUnauthorized, "Failed to get PoW (invalid token or unknown error).")
-		return
-	}
-	payload := stdReq.CompletionPayload(sessionID)
-	resp, err := h.DS.CallCompletion(r.Context(), a, payload, pow, 3)
-	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "Failed to get completion.")
+		if historySession != nil {
+			historySession.SuccessTurn(http.StatusOK, result.Turn, assistantturn.OpenAIResponsesUsage(result.Turn))
+		}
+		responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, stdReq.ResponseModel, result.Turn.Prompt, result.Turn.Thinking, result.Turn.Text, result.Turn.ToolCalls, stdReq.ToolsRaw)
+		responseObj["usage"] = assistantturn.OpenAIResponsesUsage(result.Turn)
+		h.getResponseStore().put(owner, responseID, responseObj)
+		writeJSON(w, http.StatusOK, responseObj)
 		return
 	}
 
-	responseID := "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	refFileTokens := stdReq.RefFileTokens
-	if stdReq.Stream {
-		h.handleResponsesStreamWithRetry(w, r, a, resp, payload, pow, owner, responseID, stdReq.ResponseModel, stdReq.PromptTokenText, refFileTokens, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolsRaw, stdReq.ToolChoice, traceID)
+	start, outErr := completionruntime.StartCompletion(r.Context(), h.DS, a, stdReq, completionruntime.Options{
+		CurrentInputFile: h.Store,
+	})
+	if outErr != nil {
+		if historySession != nil {
+			historySession.Error(outErr.Status, outErr.Message, outErr.Code, "", "")
+		}
+		writeOpenAIErrorWithCode(w, outErr.Status, outErr.Message, outErr.Code)
 		return
 	}
-	h.handleResponsesNonStreamWithRetry(w, r.Context(), a, resp, payload, pow, owner, responseID, stdReq.ResponseModel, stdReq.PromptTokenText, refFileTokens, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolsRaw, stdReq.ToolChoice, traceID)
+
+	streamReq := start.Request
+	refFileTokens := streamReq.RefFileTokens
+	h.handleResponsesStreamWithRetry(w, r, a, start.Response, start.Payload, start.Pow, owner, responseID, streamReq.ResponseModel, streamReq.PromptTokenText, refFileTokens, streamReq.Thinking, streamReq.Search, streamReq.ToolNames, streamReq.ToolsRaw, streamReq.ToolChoice, traceID, historySession)
 }
 
 func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, refFileTokens int, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
@@ -130,34 +149,25 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 		return
 	}
 	result := sse.CollectStream(resp, thinkingEnabled, true)
-	stripReferenceMarkers := h.compatStripReferenceMarkers()
-	sanitizedThinking := cleanVisibleOutput(result.Thinking, stripReferenceMarkers)
-	sanitizedText := cleanVisibleOutput(result.Text, stripReferenceMarkers)
-	if searchEnabled {
-		sanitizedText = replaceCitationMarkersWithLinks(sanitizedText, result.CitationLinks)
-	}
-	evaluated := evaluateResponsesFinalOutput(finalPrompt, sanitizedText, result.Text, result.Thinking+"\n"+result.ToolDetectionThinking, result.ContentFilter, toolNames, toolsRaw)
-	if evaluated.MissingToolDecision.Blocked {
-		writeOpenAIErrorWithCode(w, http.StatusBadGateway, evaluated.MissingToolDecision.Message, evaluated.MissingToolDecision.Code)
-		return
-	}
-	sanitizedText = evaluated.Text
-	textParsed := evaluated.Parsed
-	if len(evaluated.Calls) == 0 && writeUpstreamEmptyOutputError(w, sanitizedText, sanitizedThinking, result.ContentFilter) {
-		return
-	}
-	logResponsesToolPolicyRejection(traceID, toolChoice, textParsed, "text")
 
-	callCount := len(evaluated.Calls)
-	if toolChoice.IsRequired() && callCount == 0 {
-		writeOpenAIErrorWithCode(w, http.StatusUnprocessableEntity, "tool_choice requires at least one valid tool call.", "tool_choice_violation")
+	turn := assistantturn.BuildTurnFromCollected(result, assistantturn.BuildOptions{
+		Model:         model,
+		Prompt:        finalPrompt,
+		RefFileTokens: refFileTokens,
+		SearchEnabled: searchEnabled,
+		ToolNames:     toolNames,
+		ToolsRaw:      toolsRaw,
+		ToolChoice:    toolChoice,
+	})
+	logResponsesToolPolicyRejection(traceID, toolChoice, turn.ParsedToolCalls, "text")
+	outcome := assistantturn.FinalizeTurn(turn, assistantturn.FinalizeOptions{})
+	if outcome.ShouldFail {
+		writeOpenAIErrorWithCode(w, outcome.Error.Status, outcome.Error.Message, outcome.Error.Code)
 		return
 	}
 
-	responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, sanitizedThinking, sanitizedText, evaluated.Calls, toolsRaw)
-	if refFileTokens > 0 {
-		addRefFileTokensToUsage(responseObj, refFileTokens)
-	}
+	responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, turn.Thinking, turn.Text, turn.ToolCalls, toolsRaw)
+	responseObj["usage"] = assistantturn.OpenAIResponsesUsage(turn)
 	h.getResponseStore().put(owner, responseID, responseObj)
 	writeJSON(w, http.StatusOK, responseObj)
 }
@@ -182,7 +192,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	}
 	bufferToolContent := len(toolNames) > 0
 	emitEarlyToolDeltas := h.toolcallFeatureMatchEnabled() && h.toolcallEarlyEmitHighConfidence()
-	stripReferenceMarkers := h.compatStripReferenceMarkers()
+	stripReferenceMarkers := stripReferenceMarkersEnabled()
 
 	streamRuntime := newResponsesStreamRuntime(
 		w,
@@ -203,6 +213,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		func(obj map[string]any) {
 			h.getResponseStore().put(owner, responseID, obj)
 		},
+		nil,
 	)
 	streamRuntime.refFileTokens = refFileTokens
 	streamRuntime.sendCreated()

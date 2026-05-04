@@ -197,7 +197,7 @@ healthcheck:
 部署要点：
 
 - **端口**：服务默认监听 `5001`，模板会固定设置 `PORT=5001`。
-- **配置持久化**：模板挂载卷 `/data`，并设置 `DS2API_CONFIG_PATH=/data/config.json`；在管理台导入配置后，会写入并持久化到该路径。
+- **配置持久化**：模板挂载卷 `/data`，并设置 `DS2API_CONFIG_PATH=/data/config.json`；首次空卷启动时会先使用空的文件模式配置，在管理台导入配置后，会写入并持久化到该路径。
 - **`open /app/config.json: permission denied`**：说明当前实例在尝试把运行时 token 持久化到只读路径（常见于镜像内 `/app`）。  
   处理建议：
   1. 显式设置可写路径：`DS2API_CONFIG_PATH=/data/config.json`（并挂载持久卷到 `/data`）；  
@@ -205,6 +205,37 @@ healthcheck:
   3. 最新版本中，即使持久化失败，登录/会话测试仍会继续，仅提示“token 未持久化（重启后丢失）”。
 - **构建版本号**：Zeabur / 普通 `docker build` 默认不需要传 `BUILD_VERSION`；镜像会优先使用该构建参数，未提供时自动回退到仓库根目录的 `VERSION` 文件。
 - **首次登录**：部署完成后访问 `/admin`，使用 Zeabur 环境变量/模板指引中的 `DS2API_ADMIN_KEY` 登录（建议首次登录后自行更换为强密码）。
+
+#### 不使用模板手动部署
+
+如果你不想使用 `zeabur.yaml` 一键模板，可以直接用 Zeabur 的 GitHub 集成从仓库根目录构建：
+
+1. Fork 本仓库，或把代码推送到你自己的 GitHub 仓库。
+2. 在 Zeabur Dashboard 中创建 Project，然后添加 Service，选择 GitHub/Git 仓库来源。
+3. 选择仓库与分支，Root Directory 保持 `/`。
+4. 构建方式使用 Dockerfile。Zeabur 会自动检测仓库根目录的 `Dockerfile`；不要设置 `ZBPACK_IGNORE_DOCKERFILE=true`。如果界面要求填写 Dockerfile 名称，填写 `Dockerfile`。
+5. 在 Service 配置中添加持久卷，挂载目录填写 `/data`。
+6. 配置环境变量：
+
+| 变量 | 推荐值 | 说明 |
+| --- | --- | --- |
+| `PORT` | `5001` | 服务监听端口，需要和 Zeabur 暴露的 HTTP 端口一致。 |
+| `DS2API_ADMIN_KEY` | 强随机字符串 | 管理台登录密钥，必填。 |
+| `DS2API_CONFIG_PATH` | `/data/config.json` | 配置持久化路径，建议必填。 |
+| `LOG_LEVEL` | `INFO` | 可选，日志级别。 |
+| `DS2API_CONFIG_JSON` | 原始 JSON 或 Base64 JSON | 可选，用于用环境变量初始化配置。 |
+| `DS2API_ENV_WRITEBACK` | `1` | 可选；当设置了 `DS2API_CONFIG_JSON` 且希望首次启动后写入 `/data/config.json` 时再启用。 |
+
+7. 暴露 HTTP 端口 `5001`，健康检查路径可填 `/healthz`。
+8. 部署完成后访问 `/admin`，用 `DS2API_ADMIN_KEY` 登录，然后在管理台导入或编辑配置。首次空卷可以没有 `/data/config.json`，服务会先启动，第一次保存时自动创建该文件。
+
+常见问题：
+
+- **启动日志出现 `open /data/config.json: no such file or directory`**：请确认已经部署包含“首次空卷启动”修复的版本，并重新部署最新代码。
+- **出现 `open /app/config.json: permission denied`**：说明配置路径仍指向镜像内只读目录；设置持久卷 `/data`，并确认 `DS2API_CONFIG_PATH=/data/config.json`。
+- **管理台保存后重启配置丢失**：检查 `/data` 持久卷是否已挂载到当前服务；如果使用了 `DS2API_CONFIG_JSON`，但想让管理台保存落盘，请启用 `DS2API_ENV_WRITEBACK=1`。
+
+参考：Zeabur 官方文档的 [GitHub/Git 集成](https://zeabur.com/docs/en-US/deploy/github)、[Dockerfile 部署](https://zeabur.com/docs/zh-CN/deploy/dockerfile) 与 [Volumes](https://zeabur.com/docs/data-management/volumes)。
 
 ---
 

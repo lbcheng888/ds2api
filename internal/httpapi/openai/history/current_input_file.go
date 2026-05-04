@@ -19,8 +19,22 @@ const (
 	currentInputPurpose     = "assistants"
 )
 
+type CurrentInputConfigReader interface {
+	CurrentInputFileEnabled() bool
+	CurrentInputFileMinChars() int
+}
+
+type CurrentInputUploader interface {
+	UploadFile(ctx context.Context, a *auth.RequestAuth, req dsclient.UploadFileRequest, maxAttempts int) (*dsclient.UploadFileResult, error)
+}
+
+type Service struct {
+	Store CurrentInputConfigReader
+	DS    CurrentInputUploader
+}
+
 func (s Service) ApplyCurrentInputFile(ctx context.Context, a *auth.RequestAuth, stdReq promptcompat.StandardRequest) (promptcompat.StandardRequest, error) {
-	if s.DS == nil || s.Store == nil || a == nil || !s.Store.CurrentInputFileEnabled() {
+	if stdReq.CurrentInputFileApplied || s.DS == nil || s.Store == nil || a == nil || !s.Store.CurrentInputFileEnabled() {
 		return stdReq, nil
 	}
 	threshold := s.Store.CurrentInputFileMinChars()
@@ -101,11 +115,11 @@ func currentInputFilePrompt(latestUserText string) string {
 	return prompt + "\n\nLatest user request, authoritative:\n" + latestUserText
 }
 
-func latestUserRequestForLivePrompt(text string, store shared.ConfigReader) string {
+func latestUserRequestForLivePrompt(text string, store CurrentInputConfigReader) string {
 	out := strings.TrimSpace(text)
 	candidates := []string{}
-	if store != nil {
-		if prompt := strings.TrimSpace(store.ThinkingInjectionPrompt()); prompt != "" {
+	if promptReader, ok := store.(interface{ ThinkingInjectionPrompt() string }); ok {
+		if prompt := strings.TrimSpace(promptReader.ThinkingInjectionPrompt()); prompt != "" {
 			candidates = append(candidates, prompt)
 		}
 	}
@@ -118,6 +132,23 @@ func latestUserRequestForLivePrompt(text string, store shared.ConfigReader) stri
 	}
 	if idx := strings.Index(out, "\n\n"+promptcompat.ThinkingInjectionMarker); idx >= 0 {
 		out = strings.TrimSpace(out[:idx])
+	}
+	return out
+}
+
+func prependUniqueRefFileID(existing []string, fileID string) []string {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return existing
+	}
+	out := make([]string, 0, len(existing)+1)
+	out = append(out, fileID)
+	for _, id := range existing {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" || strings.EqualFold(trimmed, fileID) {
+			continue
+		}
+		out = append(out, trimmed)
 	}
 	return out
 }

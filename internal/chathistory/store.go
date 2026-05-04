@@ -43,6 +43,7 @@ type Entry struct {
 	Status           string         `json:"status"`
 	CallerID         string         `json:"caller_id,omitempty"`
 	AccountID        string         `json:"account_id,omitempty"`
+	Surface          string         `json:"surface,omitempty"`
 	Model            string         `json:"model,omitempty"`
 	Stream           bool           `json:"stream"`
 	UserInput        string         `json:"user_input,omitempty"`
@@ -72,6 +73,7 @@ type SummaryEntry struct {
 	Status         string `json:"status"`
 	CallerID       string `json:"caller_id,omitempty"`
 	AccountID      string `json:"account_id,omitempty"`
+	Surface        string `json:"surface,omitempty"`
 	Model          string `json:"model,omitempty"`
 	Stream         bool   `json:"stream"`
 	UserInput      string `json:"user_input,omitempty"`
@@ -92,6 +94,7 @@ type File struct {
 type StartParams struct {
 	CallerID    string
 	AccountID   string
+	Surface     string
 	Model       string
 	Stream      bool
 	UserInput   string
@@ -271,6 +274,7 @@ func (s *Store) Start(params StartParams) (Entry, error) {
 		Status:      "streaming",
 		CallerID:    strings.TrimSpace(params.CallerID),
 		AccountID:   strings.TrimSpace(params.AccountID),
+		Surface:     strings.TrimSpace(params.Surface),
 		Model:       strings.TrimSpace(params.Model),
 		Stream:      params.Stream,
 		UserInput:   strings.TrimSpace(params.UserInput),
@@ -546,10 +550,13 @@ func (s *Store) rebuildIndexLocked() {
 		summaries = append(summaries, summaryFromEntry(item))
 	}
 	sort.Slice(summaries, func(i, j int) bool {
-		if summaries[i].UpdatedAt == summaries[j].UpdatedAt {
-			return summaries[i].CreatedAt > summaries[j].CreatedAt
+		if summaries[i].CreatedAt == summaries[j].CreatedAt {
+			if summaries[i].Revision == summaries[j].Revision {
+				return summaries[i].UpdatedAt > summaries[j].UpdatedAt
+			}
+			return summaries[i].Revision > summaries[j].Revision
 		}
-		return summaries[i].UpdatedAt > summaries[j].UpdatedAt
+		return summaries[i].CreatedAt > summaries[j].CreatedAt
 	})
 	if s.state.Limit < DisabledLimit || !isAllowedLimit(s.state.Limit) {
 		s.state.Limit = DefaultLimit
@@ -593,6 +600,7 @@ func summaryFromEntry(item Entry) SummaryEntry {
 		Status:         item.Status,
 		CallerID:       item.CallerID,
 		AccountID:      item.AccountID,
+		Surface:        item.Surface,
 		Model:          item.Model,
 		Stream:         item.Stream,
 		UserInput:      item.UserInput,

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ds2api/internal/chathistory"
+	"ds2api/internal/promptcompat"
 	"ds2api/internal/stream"
 )
 
@@ -48,6 +49,7 @@ func TestConsumeChatStreamAttemptMarksContextCancelledState(t *testing.T) {
 		true,
 		nil,
 		nil,
+		promptcompat.DefaultToolChoicePolicy(),
 		false,
 		false,
 	)

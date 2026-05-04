@@ -111,6 +111,7 @@ Gemini-compatible clients can also send `x-goog-api-key`, `?key=`, or `?api_key=
 | GET | `/v1/responses/{response_id}` | Business | Query stored response (in-memory TTL) |
 | POST | `/v1/embeddings` | Business | OpenAI Embeddings API |
 | POST | `/v1/files` | Business | OpenAI Files upload (multipart/form-data) |
+| GET | `/v1/files/{file_id}` | Business | Retrieve uploaded file status |
 | GET | `/anthropic/v1/models` | None | Claude model list |
 | POST | `/anthropic/v1/messages` | Business | Claude messages |
 | POST | `/anthropic/v1/messages/count_tokens` | Business | Claude token counting |
@@ -167,7 +168,7 @@ Gemini-compatible clients can also send `x-goog-api-key`, `?key=`, or `?api_key=
 | PUT | `/admin/chat-history/settings` | Admin | Update conversation history retention limit |
 | GET | `/admin/version` | Admin | Check current version and latest Release |
 
-OpenAI `/v1/*` paths are canonical. For clients configured with the bare DS2API service URL, the same OpenAI handlers are also exposed through root shortcuts: `/models`, `/models/{id}`, `/chat/completions`, `/responses`, `/responses/{response_id}`, `/embeddings`, and `/files`.
+OpenAI `/v1/*` paths are canonical. For clients configured with the bare DS2API service URL, the same OpenAI handlers are also exposed through root shortcuts: `/models`, `/models/{id}`, `/chat/completions`, `/responses`, `/responses/{response_id}`, `/embeddings`, `/files`, and `/files/{file_id}`.
 
 ---
 
@@ -440,6 +441,10 @@ Constraints and behavior:
 - Total request size limit is **100 MiB** (over-limit returns `413`).
 - Success returns an OpenAI `file` object (`id/object/bytes/filename/purpose/status`, etc.) and includes `account_id` for source-account tracing.
 
+### `GET /v1/files/{file_id}`
+
+Business auth required. Retrieves the current DeepSeek upload status for a file and returns an OpenAI `file` object. Returns `404` when no matching file is found.
+
 ---
 
 ## Claude-Compatible API
@@ -550,7 +555,7 @@ data: {"type":"message_stop"}
 
 **Notes**:
 
-- Models whose names contain `opus` / `reasoner` / `slow` stream `thinking_delta`
+- Models that support thinking emit `thinking` blocks / `thinking_delta` by default; explicit thinking disablement or `-nothinking` models suppress them
 - `signature_delta` is not emitted (DeepSeek does not provide verifiable thinking signatures)
 - In `tools` mode, the stream avoids leaking raw tool JSON and does not force `input_json_delta`
 
@@ -596,6 +601,7 @@ Request body accepts Gemini-style `contents` / `tools`. Model names can use alia
 Response uses Gemini-compatible fields, including:
 
 - `candidates[].content.parts[].text`
+- `candidates[].content.parts[].thought=true` for thinking output
 - `candidates[].content.parts[].functionCall` (when tool call is produced)
 - `usageMetadata` (`promptTokenCount` / `candidatesTokenCount` / `totalTokenCount`)
 
@@ -604,6 +610,7 @@ Response uses Gemini-compatible fields, including:
 Returns SSE (`text/event-stream`), each chunk as `data: <json>`:
 
 - regular text: incremental text chunks
+- thinking: incremental chunks with `parts[].thought=true`
 - `tools` mode: buffered and emitted as `functionCall` at finalize phase
 - final chunk: includes `finishReason: "STOP"` and `usageMetadata`
 - Token counting prefers pass-through from upstream DeepSeek SSE (`accumulated_token_usage` / `token_usage`), and only falls back to local estimation when upstream usage is absent
@@ -726,7 +733,6 @@ Reads runtime settings and status, including:
 - `success`
 - `admin` (`has_password_hash`, `jwt_expire_hours`, `jwt_valid_after_unix`, `default_password_warning`)
 - `runtime` (`account_max_inflight`, `account_max_queue`, `global_max_inflight`, `token_refresh_interval_hours`)
-- `compat` (`wide_input_strict_output`, `strip_reference_markers`)
 - `responses` / `embeddings`
 - `auto_delete` (`mode`: `none` / `single` / `all`; legacy `sessions=true` is still treated as `all`)
 - `current_input_file` (`enabled` defaults to `true`, plus `min_chars`)
@@ -740,13 +746,11 @@ Hot-updates runtime settings. Supported fields:
 
 - `admin.jwt_expire_hours`
 - `runtime.account_max_inflight` / `runtime.account_max_queue` / `runtime.global_max_inflight` / `runtime.token_refresh_interval_hours`
-- `compat.wide_input_strict_output` / `compat.strip_reference_markers`
 - `responses.store_ttl_seconds`
 - `embeddings.provider`
 - `auto_delete.mode`
 - `current_input_file.enabled` / `current_input_file.min_chars`
 - `model_aliases`
-- `history_split` is retained only for legacy config compatibility and no longer affects requests
 - `toolcall` policy is fixed and is no longer writable through settings
 
 ### `POST /admin/settings/password`
@@ -770,9 +774,9 @@ Imports full config with:
 
 The request can send config directly, or wrapped as `{"config": {...}, "mode":"merge"}`.
 Query params `?mode=merge` / `?mode=replace` are also supported.
-`replace` mode replaces the full config shape while preserving Vercel sync metadata. `merge` mode merges `keys`, `api_keys`, `accounts`, and `model_aliases`, and overwrites non-empty fields under `admin`, `runtime`, `responses`, and `embeddings`. Manage `compat`, `auto_delete`, and `current_input_file` via `/admin/settings` or the config file; `history_split` remains only for legacy compatibility; legacy `toolcall` fields are ignored.
+`replace` mode replaces the full config shape while preserving Vercel sync metadata. `merge` mode merges `keys`, `api_keys`, `accounts`, and `model_aliases`, and overwrites non-empty fields under `admin`, `runtime`, `responses`, and `embeddings`. Manage `auto_delete` and `current_input_file` via `/admin/settings` or the config file; legacy `compat` and `toolcall` fields are ignored.
 
-> Note: `merge` mode does not update `compat`, `auto_delete`, or `current_input_file`.
+> Note: `merge` mode does not update `auto_delete` or `current_input_file`.
 
 ### `GET /admin/config/export`
 

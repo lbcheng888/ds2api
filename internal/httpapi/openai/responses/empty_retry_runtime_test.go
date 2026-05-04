@@ -47,6 +47,7 @@ func TestConsumeResponsesStreamAttemptMarksContextCancelledState(t *testing.T) {
 		promptcompat.DefaultToolChoicePolicy(),
 		"",
 		nil,
+		nil,
 	)
 	resp := makeResponsesOpenAISSEHTTPResponse(
 		`data: {"p":"response/content","v":"hello"}`,

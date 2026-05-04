@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"ds2api/internal/assistantturn"
 	"ds2api/internal/auth"
+	"ds2api/internal/completionruntime"
 	"ds2api/internal/config"
 	dsprotocol "ds2api/internal/deepseek/protocol"
 	openaifmt "ds2api/internal/format/openai"
@@ -76,44 +78,43 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	historySession := startChatHistory(h.ChatHistory, r, a, stdReq)
 
-	sessionID, err = h.DS.CreateSession(r.Context(), a, 3)
-	if err != nil {
-		if a.UseConfigToken {
+	if !stdReq.Stream {
+		result, outErr := completionruntime.ExecuteNonStreamWithRetry(r.Context(), h.DS, a, stdReq, completionruntime.Options{
+			RetryEnabled:     true,
+			CurrentInputFile: h.Store,
+		})
+		sessionID = result.SessionID
+		if outErr != nil {
 			if historySession != nil {
-				historySession.error(http.StatusUnauthorized, "Account token is invalid. Please re-login the account in admin.", "error", "", "")
+				historySession.error(outErr.Status, outErr.Message, outErr.Code, historyThinkingForArchive(result.Turn.RawThinking, result.Turn.DetectionThinking, result.Turn.Thinking), historyTextForArchive(result.Turn.RawText, result.Turn.Text))
 			}
-			writeOpenAIError(w, http.StatusUnauthorized, "Account token is invalid. Please re-login the account in admin.")
-		} else {
-			if historySession != nil {
-				historySession.error(http.StatusUnauthorized, "Invalid token. If this should be a DS2API key, add it to config.keys first.", "error", "", "")
-			}
-			writeOpenAIError(w, http.StatusUnauthorized, "Invalid token. If this should be a DS2API key, add it to config.keys first.")
+			writeOpenAIErrorWithCode(w, outErr.Status, outErr.Message, outErr.Code)
+			return
 		}
-		return
-	}
-	pow, err := h.DS.GetPow(r.Context(), a, 3)
-	if err != nil {
+		respBody := openaifmt.BuildChatCompletionWithToolCalls(result.SessionID, stdReq.ResponseModel, result.Turn.Prompt, result.Turn.Thinking, result.Turn.Text, result.Turn.ToolCalls, stdReq.ToolsRaw)
+		respBody["usage"] = assistantturn.OpenAIChatUsage(result.Turn)
+		finishReason := assistantturn.FinalizeTurn(result.Turn, assistantturn.FinalizeOptions{}).FinishReason
 		if historySession != nil {
-			historySession.error(http.StatusUnauthorized, "Failed to get PoW (invalid token or unknown error).", "error", "", "")
+			historySession.success(http.StatusOK, historyThinkingForArchive(result.Turn.RawThinking, result.Turn.DetectionThinking, result.Turn.Thinking), historyTextForArchive(result.Turn.RawText, result.Turn.Text), finishReason, assistantturn.OpenAIChatUsage(result.Turn))
 		}
-		writeOpenAIError(w, http.StatusUnauthorized, "Failed to get PoW (invalid token or unknown error).")
+		writeJSON(w, http.StatusOK, respBody)
 		return
 	}
-	payload := stdReq.CompletionPayload(sessionID)
-	resp, err := h.DS.CallCompletion(r.Context(), a, payload, pow, 3)
-	if err != nil {
+
+	start, outErr := completionruntime.StartCompletion(r.Context(), h.DS, a, stdReq, completionruntime.Options{
+		CurrentInputFile: h.Store,
+	})
+	sessionID = start.SessionID
+	if outErr != nil {
 		if historySession != nil {
-			historySession.error(http.StatusInternalServerError, "Failed to get completion.", "error", "", "")
+			historySession.error(outErr.Status, outErr.Message, outErr.Code, "", "")
 		}
-		writeOpenAIError(w, http.StatusInternalServerError, "Failed to get completion.")
+		writeOpenAIErrorWithCode(w, outErr.Status, outErr.Message, outErr.Code)
 		return
 	}
-	refFileTokens := stdReq.RefFileTokens
-	if stdReq.Stream {
-		h.handleStreamWithRetry(w, r, a, resp, payload, pow, sessionID, stdReq.ResponseModel, stdReq.PromptTokenText, refFileTokens, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolsRaw, historySession)
-		return
-	}
-	h.handleNonStreamWithRetry(w, r.Context(), a, resp, payload, pow, sessionID, stdReq.ResponseModel, stdReq.PromptTokenText, refFileTokens, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolsRaw, historySession)
+	streamReq := start.Request
+	refFileTokens := streamReq.RefFileTokens
+	h.handleStreamWithRetry(w, r, a, start.Response, start.Payload, start.Pow, sessionID, streamReq.ResponseModel, streamReq.PromptTokenText, refFileTokens, streamReq.Thinking, streamReq.Search, streamReq.ToolNames, streamReq.ToolsRaw, streamReq.ToolChoice, historySession)
 }
 
 func (h *Handler) autoDeleteRemoteSession(ctx context.Context, a *auth.RequestAuth, sessionID string) {
@@ -161,41 +162,28 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 	}
 	result := sse.CollectStream(resp, thinkingEnabled, true)
 
-	stripReferenceMarkers := h.compatStripReferenceMarkers()
-	finalThinking := cleanVisibleOutput(result.Thinking, stripReferenceMarkers)
-	finalText := cleanVisibleOutput(result.Text, stripReferenceMarkers)
-	if searchEnabled {
-		finalText = replaceCitationMarkersWithLinks(finalText, result.CitationLinks)
-	}
-	detected := detectAssistantToolCalls(result.Text, finalText, result.Thinking, result.ToolDetectionThinking, toolNames)
-	calls, status, message, code, blocked := prepareOpenAIFinalToolCalls(finalPrompt, detected.Calls, toolsRaw, toolNames)
-	if blocked {
+	turn := assistantturn.BuildTurnFromCollected(result, assistantturn.BuildOptions{
+		Model:         model,
+		Prompt:        finalPrompt,
+		RefFileTokens: refFileTokens,
+		SearchEnabled: searchEnabled,
+		ToolNames:     toolNames,
+		ToolsRaw:      toolsRaw,
+		ToolChoice:    promptcompat.DefaultToolChoicePolicy(),
+	})
+	outcome := assistantturn.FinalizeTurn(turn, assistantturn.FinalizeOptions{})
+	if outcome.ShouldFail {
+		status, message, code := outcome.Error.Status, outcome.Error.Message, outcome.Error.Code
 		if historySession != nil {
-			historySession.error(status, message, code, finalThinking, finalText)
+			historySession.error(status, message, code, historyThinkingForArchive(turn.RawThinking, turn.DetectionThinking, turn.Thinking), historyTextForArchive(turn.RawText, turn.Text))
 		}
 		writeOpenAIErrorWithCode(w, status, message, code)
 		return
 	}
-	if shouldWriteUpstreamEmptyOutputError(finalText) && len(detected.Calls) == 0 {
-		status, message, code := upstreamEmptyOutputDetail(result.ContentFilter, finalText, finalThinking)
-		if historySession != nil {
-			historySession.error(status, message, code, finalThinking, finalText)
-		}
-		writeUpstreamEmptyOutputError(w, finalText, finalThinking, result.ContentFilter)
-		return
-	}
-	respBody := openaifmt.BuildChatCompletionWithToolCalls(completionID, model, finalPrompt, finalThinking, finalText, calls, toolsRaw)
-	if refFileTokens > 0 {
-		addRefFileTokensToUsage(respBody, refFileTokens)
-	}
-	finishReason := "stop"
-	if choices, ok := respBody["choices"].([]map[string]any); ok && len(choices) > 0 {
-		if fr, _ := choices[0]["finish_reason"].(string); strings.TrimSpace(fr) != "" {
-			finishReason = fr
-		}
-	}
+	respBody := openaifmt.BuildChatCompletionWithToolCalls(completionID, model, finalPrompt, turn.Thinking, turn.Text, turn.ToolCalls, toolsRaw)
+	respBody["usage"] = assistantturn.OpenAIChatUsage(turn)
 	if historySession != nil {
-		historySession.success(http.StatusOK, finalThinking, finalText, finishReason, openaifmt.BuildChatUsageForModel(model, finalPrompt, finalThinking, finalText, refFileTokens))
+		historySession.success(http.StatusOK, historyThinkingForArchive(turn.RawThinking, turn.DetectionThinking, turn.Thinking), historyTextForArchive(turn.RawText, turn.Text), outcome.FinishReason, assistantturn.OpenAIChatUsage(turn))
 	}
 	writeJSON(w, http.StatusOK, respBody)
 }
@@ -223,7 +211,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 	created := time.Now().Unix()
 	bufferToolContent := len(toolNames) > 0
 	emitEarlyToolDeltas := h.toolcallFeatureMatchEnabled() && h.toolcallEarlyEmitHighConfidence()
-	stripReferenceMarkers := h.compatStripReferenceMarkers()
+	stripReferenceMarkers := stripReferenceMarkersEnabled()
 	initialType := "text"
 	if thinkingEnabled {
 		initialType = "thinking"
@@ -242,6 +230,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 		stripReferenceMarkers,
 		toolNames,
 		toolsRaw,
+		promptcompat.DefaultToolChoicePolicy(),
 		bufferToolContent,
 		emitEarlyToolDeltas,
 	)
@@ -262,7 +251,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 		OnParsed: func(parsed sse.LineResult) streamengine.ParsedDecision {
 			decision := streamRuntime.onParsed(parsed)
 			if historySession != nil {
-				historySession.progress(streamRuntime.thinking.String(), streamRuntime.text.String())
+				historySession.progress(streamRuntime.historyThinking(), streamRuntime.historyText())
 			}
 			return decision
 		},
@@ -276,14 +265,15 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 				return
 			}
 			if streamRuntime.finalErrorMessage != "" {
-				historySession.error(streamRuntime.finalErrorStatus, streamRuntime.finalErrorMessage, streamRuntime.finalErrorCode, streamRuntime.thinking.String(), streamRuntime.text.String())
+				historySession.error(streamRuntime.finalErrorStatus, streamRuntime.finalErrorMessage, streamRuntime.finalErrorCode, streamRuntime.historyThinking(), streamRuntime.historyText())
 				return
 			}
-			historySession.success(http.StatusOK, streamRuntime.finalThinking, streamRuntime.finalText, streamRuntime.finalFinishReason, streamRuntime.finalUsage)
+			historySession.success(http.StatusOK, streamRuntime.historyThinking(), streamRuntime.historyText(), streamRuntime.finalFinishReason, streamRuntime.finalUsage)
 		},
 		OnContextDone: func() {
+			streamRuntime.markContextCancelled()
 			if historySession != nil {
-				historySession.stopped(streamRuntime.thinking.String(), streamRuntime.text.String(), string(streamengine.StopReasonContextCancelled))
+				historySession.stopped(streamRuntime.historyThinking(), streamRuntime.historyText(), string(streamengine.StopReasonContextCancelled))
 			}
 		},
 	})

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -491,6 +492,36 @@ func TestStoreWritesOnlyChangedDetailFiles(t *testing.T) {
 	}
 	if !bytes.Equal(beforeSecond, afterSecond) {
 		t.Fatalf("expected untouched detail file to remain byte-identical")
+	}
+}
+
+func TestStoreOrdersByCreationTimeNotStreamingUpdates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat_history.json")
+	store := New(path)
+
+	first, err := store.Start(StartParams{UserInput: "first"})
+	if err != nil {
+		t.Fatalf("start first failed: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	second, err := store.Start(StartParams{UserInput: "second"})
+	if err != nil {
+		t.Fatalf("start second failed: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if _, err := store.Update(first.ID, UpdateParams{Status: "streaming", Content: "still running"}); err != nil {
+		t.Fatalf("update first failed: %v", err)
+	}
+
+	snapshot, err := store.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot failed: %v", err)
+	}
+	if len(snapshot.Items) != 2 {
+		t.Fatalf("expected two items, got %#v", snapshot.Items)
+	}
+	if snapshot.Items[0].ID != second.ID || snapshot.Items[1].ID != first.ID {
+		t.Fatalf("expected creation-time order to stay stable, got %#v", snapshot.Items)
 	}
 }
 

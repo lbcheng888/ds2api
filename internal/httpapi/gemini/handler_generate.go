@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,7 +12,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"ds2api/internal/assistantturn"
+	"ds2api/internal/auth"
+	"ds2api/internal/completionruntime"
+	"ds2api/internal/httpapi/openai/history"
 	"ds2api/internal/httpapi/requestbody"
+	"ds2api/internal/promptcompat"
+	"ds2api/internal/responsehistory"
 	"ds2api/internal/sse"
 	"ds2api/internal/toolcall"
 	"ds2api/internal/translatorcliproxy"
@@ -21,14 +28,116 @@ import (
 )
 
 func (h *Handler) handleGenerateContent(w http.ResponseWriter, r *http.Request, stream bool) {
-	if h.OpenAI == nil {
-		writeGeminiError(w, http.StatusInternalServerError, "OpenAI proxy backend unavailable.")
+	if isGeminiVercelProxyRequest(r) && h.proxyViaOpenAI(w, r, stream) {
 		return
 	}
-	if h.proxyViaOpenAI(w, r, stream) {
+	if h.Auth == nil || h.DS == nil {
+		if h.OpenAI != nil && h.proxyViaOpenAI(w, r, stream) {
+			return
+		}
+		writeGeminiError(w, http.StatusInternalServerError, "Gemini runtime backend unavailable.")
 		return
 	}
-	writeGeminiError(w, http.StatusBadGateway, "Failed to proxy Gemini request.")
+	if h.handleGeminiDirect(w, r, stream) {
+		return
+	}
+	writeGeminiError(w, http.StatusBadGateway, "Failed to handle Gemini request.")
+}
+
+func isGeminiVercelProxyRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	return strings.TrimSpace(r.URL.Query().Get("__stream_prepare")) == "1" ||
+		strings.TrimSpace(r.URL.Query().Get("__stream_release")) == "1"
+}
+
+func (h *Handler) handleGeminiDirect(w http.ResponseWriter, r *http.Request, stream bool) bool {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		if errors.Is(err, requestbody.ErrInvalidUTF8Body) {
+			writeGeminiError(w, http.StatusBadRequest, "invalid json")
+		} else {
+			writeGeminiError(w, http.StatusBadRequest, "invalid body")
+		}
+		return true
+	}
+	routeModel := strings.TrimSpace(chi.URLParam(r, "model"))
+	var req map[string]any
+	if err := json.Unmarshal(raw, &req); err != nil {
+		writeGeminiError(w, http.StatusBadRequest, "invalid json")
+		return true
+	}
+	stdReq, err := normalizeGeminiRequest(h.Store, routeModel, req, stream)
+	if err != nil {
+		writeGeminiError(w, http.StatusBadRequest, err.Error())
+		return true
+	}
+	a, err := h.Auth.Determine(r)
+	if err != nil {
+		writeGeminiError(w, http.StatusUnauthorized, err.Error())
+		return true
+	}
+	defer h.Auth.Release(a)
+	stdReq, err = h.applyCurrentInputFile(r.Context(), a, stdReq)
+	if err != nil {
+		status, message := mapCurrentInputFileError(err)
+		writeGeminiError(w, status, message)
+		return true
+	}
+	historySession := responsehistory.Start(responsehistory.StartParams{
+		Store:    h.ChatHistory,
+		Request:  r,
+		Auth:     a,
+		Surface:  "gemini.generate_content",
+		Standard: stdReq,
+	})
+	if stream {
+		h.handleGeminiDirectStream(w, r, a, stdReq, historySession)
+		return true
+	}
+	result, outErr := completionruntime.ExecuteNonStreamWithRetry(r.Context(), h.DS, a, stdReq, completionruntime.Options{
+		RetryEnabled:     true,
+		CurrentInputFile: h.Store,
+	})
+	if outErr != nil {
+		if historySession != nil {
+			historySession.ErrorTurn(outErr.Status, outErr.Message, outErr.Code, result.Turn)
+		}
+		writeGeminiError(w, outErr.Status, outErr.Message)
+		return true
+	}
+	if historySession != nil {
+		historySession.SuccessTurn(http.StatusOK, result.Turn, responsehistory.GenericUsage(result.Turn))
+	}
+	writeJSON(w, http.StatusOK, buildGeminiGenerateContentResponseFromTurn(result.Turn))
+	return true
+}
+
+func (h *Handler) applyCurrentInputFile(ctx context.Context, a *auth.RequestAuth, stdReq promptcompat.StandardRequest) (promptcompat.StandardRequest, error) {
+	if h == nil {
+		return stdReq, nil
+	}
+	return (history.Service{Store: h.Store, DS: h.DS}).ApplyCurrentInputFile(ctx, a, stdReq)
+}
+
+func mapCurrentInputFileError(err error) (int, string) {
+	return history.MapError(err)
+}
+
+func (h *Handler) handleGeminiDirectStream(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, stdReq promptcompat.StandardRequest, historySession *responsehistory.Session) {
+	start, outErr := completionruntime.StartCompletion(r.Context(), h.DS, a, stdReq, completionruntime.Options{
+		CurrentInputFile: h.Store,
+	})
+	if outErr != nil {
+		if historySession != nil {
+			historySession.Error(outErr.Status, outErr.Message, outErr.Code, "", "")
+		}
+		writeGeminiError(w, outErr.Status, outErr.Message)
+		return
+	}
+	streamReq := start.Request
+	h.handleStreamGenerateContent(w, r, start.Response, streamReq.ResponseModel, streamReq.PromptTokenText, streamReq.Thinking, streamReq.Search, streamReq.ToolNames, streamReq.ToolsRaw, historySession)
 }
 
 func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, stream bool) bool {
@@ -220,16 +329,11 @@ func (h *Handler) handleNonStreamGenerateContent(w http.ResponseWriter, resp *ht
 	}
 
 	result := sse.CollectStream(resp, thinkingEnabled, true)
-	if result.ErrorMessage != "" {
-		writeGeminiError(w, http.StatusBadGateway, result.ErrorMessage)
-		return
-	}
-	stripReferenceMarkers := h.compatStripReferenceMarkers()
 	writeJSON(w, http.StatusOK, buildGeminiGenerateContentResponse(
 		model,
 		finalPrompt,
-		cleanVisibleOutput(result.Thinking, stripReferenceMarkers),
-		cleanVisibleOutput(result.Text, stripReferenceMarkers),
+		cleanVisibleOutput(result.Thinking, false),
+		cleanVisibleOutput(result.Text, false),
 		toolNames,
 	))
 }
@@ -254,6 +358,60 @@ func buildGeminiGenerateContentResponse(model, finalPrompt, finalThinking, final
 	}
 }
 
+func buildGeminiGenerateContentResponseFromTurn(turn assistantturn.Turn) map[string]any {
+	parts := buildGeminiPartsFromTurn(turn)
+	return map[string]any{
+		"candidates": []map[string]any{
+			{
+				"index": 0,
+				"content": map[string]any{
+					"role":  "model",
+					"parts": parts,
+				},
+				"finishReason": "STOP",
+			},
+		},
+		"modelVersion": turn.Model,
+		"usageMetadata": map[string]any{
+			"promptTokenCount":     turn.Usage.InputTokens,
+			"candidatesTokenCount": turn.Usage.OutputTokens,
+			"totalTokenCount":      turn.Usage.TotalTokens,
+		},
+	}
+}
+
+func buildGeminiPartsFromTurn(turn assistantturn.Turn) []map[string]any {
+	thinkingPart := func() []map[string]any {
+		if turn.Thinking == "" {
+			return nil
+		}
+		return []map[string]any{{"text": turn.Thinking, "thought": true}}
+	}
+	if len(turn.ToolCalls) > 0 {
+		parts := thinkingPart()
+		if parts == nil {
+			parts = make([]map[string]any, 0, len(turn.ToolCalls))
+		}
+		for _, tc := range turn.ToolCalls {
+			parts = append(parts, map[string]any{
+				"functionCall": map[string]any{
+					"name": tc.Name,
+					"args": tc.Input,
+				},
+			})
+		}
+		return parts
+	}
+	parts := thinkingPart()
+	if turn.Text != "" {
+		parts = append(parts, map[string]any{"text": turn.Text})
+	}
+	if len(parts) == 0 {
+		parts = append(parts, map[string]any{"text": ""})
+	}
+	return parts
+}
+
 //nolint:unused // retained for native Gemini non-stream handling path.
 func buildGeminiUsage(model, finalPrompt, finalThinking, finalText string) map[string]any {
 	promptTokens := util.CountPromptTokens(finalPrompt, model)
@@ -272,8 +430,17 @@ func buildGeminiPartsFromFinal(finalText, finalThinking string, toolNames []stri
 	if len(detected) == 0 && finalThinking != "" {
 		detected = toolcall.ParseToolCalls(finalThinking, toolNames)
 	}
+	thinkingPart := func() []map[string]any {
+		if finalThinking == "" {
+			return nil
+		}
+		return []map[string]any{{"text": finalThinking, "thought": true}}
+	}
 	if len(detected) > 0 {
-		parts := make([]map[string]any, 0, len(detected))
+		parts := thinkingPart()
+		if parts == nil {
+			parts = make([]map[string]any, 0, len(detected))
+		}
 		for _, tc := range detected {
 			parts = append(parts, map[string]any{
 				"functionCall": map[string]any{
@@ -285,9 +452,12 @@ func buildGeminiPartsFromFinal(finalText, finalThinking string, toolNames []stri
 		return parts
 	}
 
-	text := finalText
-	if text == "" {
-		text = finalThinking
+	parts := thinkingPart()
+	if finalText != "" {
+		parts = append(parts, map[string]any{"text": finalText})
 	}
-	return []map[string]any{{"text": text}}
+	if len(parts) == 0 {
+		parts = append(parts, map[string]any{"text": ""})
+	}
+	return parts
 }

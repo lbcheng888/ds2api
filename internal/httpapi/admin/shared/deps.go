@@ -40,13 +40,10 @@ type ConfigStore interface {
 	CompatAllowMetaAgentTools() bool
 	CompatDefaultReasoningEffort() string
 	AutoDeleteMode() string
-	HistorySplitEnabled() bool
-	HistorySplitTriggerAfterTurns() int
 	CurrentInputFileEnabled() bool
 	CurrentInputFileMinChars() int
 	ThinkingInjectionEnabled() bool
 	ThinkingInjectionPrompt() string
-	CompatStripReferenceMarkers() bool
 	AutoDeleteSessions() bool
 }
 

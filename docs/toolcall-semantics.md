@@ -54,12 +54,13 @@
 
 在流式链路中（Go / Node 一致）：
 
-- DSML `<|DSML|tool_calls>` wrapper、基于固定本地标签名的 DSML 噪声容错形态、尾部管道符形态（如 `<|DSML|tool_calls|`）和 canonical `<tool_calls>` wrapper 都会进入结构化捕获
+- DSML `<|DSML|tool_calls>` wrapper、短横线形式（如 `<dsml-tool-calls>` / `<dsml-invoke>` / `<dsml-parameter>`）、基于固定本地标签名的 DSML 噪声容错形态、尾部管道符形态（如 `<|DSML|tool_calls|`）和 canonical `<tool_calls>` wrapper 都会进入结构化捕获
 - 如果流里直接从 invoke 开始，但后面补上了 closing wrapper，Go 流式筛分也会按缺失 opening wrapper 的修复路径尝试恢复
 - 已识别成功的工具调用不会再次回流到普通文本
 - 不符合新格式的块不会执行，并继续按原样文本透传
 - fenced code block（反引号 `` ``` `` 和波浪线 `~~~`）中的 XML 示例始终按普通文本处理
 - 支持嵌套围栏（如 4 反引号嵌套 3 反引号）和 CDATA 内围栏保护
+- 对 `command` / `content` 等长文本参数，CDATA 内部如果包含 Markdown fenced DSML / XML 示例，即使示例里出现 `]]></parameter>` / `</tool_calls>` 这类看起来像外层结束标签的片段，也会继续按参数原文保留，直到真正位于围栏外的外层结束标签
 - 如果模型把 `<![CDATA[` 打开后却没有闭合，流式扫描阶段仍会保守地继续缓冲，不会误把 CDATA 里的示例 XML 当成真实工具调用；在最终 parse / flush 恢复阶段，会对这类 loose CDATA 做窄修复，尽量保住外层已完整包裹的真实工具调用
 - 当文本中 mention 了某种标签名（如 `<dsml|tool_calls>` 或 Markdown inline code 里的 `<|DSML|tool_calls>`）而后面紧跟真正工具调用时，sieve 会跳过不可解析的 mention 候选并继续匹配后续真实工具块，不会因 mention 导致工具调用丢失，也不会截断 mention 后的正文
 - Go 侧 SSE 读取不再使用 `bufio.Scanner` 的固定 token 上限；单个 `data:` 行中包含很长的写文件参数时，非流式收集、流式解析与 auto-continue 透传都应保留完整行，再交给 tool parser 处理

@@ -57,6 +57,35 @@ test('parseToolCalls parses DSML shell as XML-compatible tool call', () => {
   assert.deepEqual(calls[0].input, { path: 'README.MD' });
 });
 
+test('parseToolCalls parses hyphenated DSML shell with here-doc CDATA', () => {
+  const payload = `<dsml-tool-calls>
+<dsml-invoke name="Bash">
+<dsml-parameter name="command"><![CDATA[git commit -m "$(cat <<'EOF'
+docs: add missing directory entries and package descriptions to architecture docs
+Fill gaps identified in architecture audit: add artifacts/ and static/ to
+directory tree, and document 7 auxiliary internal/ packages (textclean,
+claudeconv, compat, rawsample, devcapture, util, version) in Section 3.
+
+Co-Authored-By: Claude Opus 4.7 noreply@anthropic.com
+EOF
+)"]]></dsml-parameter>
+<dsml-parameter name="description"><![CDATA[Create commit with architecture doc updates]]></dsml-parameter>
+</dsml-invoke>
+</dsml-tool-calls>`;
+  const calls = parseToolCalls(payload, ['Bash']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'Bash');
+  assert.equal(calls[0].input.description, 'Create commit with architecture doc updates');
+  assert.equal(calls[0].input.command.includes('git commit -m "$(cat <<\'EOF\''), true);
+  assert.equal(calls[0].input.command.includes('Co-Authored-By: Claude Opus 4.7'), true);
+});
+
+test('parseToolCalls ignores bare hyphenated tool_calls lookalike', () => {
+  const payload = '<tool-calls><invoke name="Bash"><parameter name="command">pwd</parameter></invoke></tool-calls>';
+  const calls = parseToolCalls(payload, ['Bash']);
+  assert.equal(calls.length, 0);
+});
+
 test('parseToolCalls tolerates DSML trailing pipe tag terminator', () => {
   const payload = [
     '<|DSML|tool_calls| ',
@@ -469,6 +498,31 @@ test('sieve preserves Chinese review body with inline DSML mention before real t
   assert.equal(text.includes('它只提到了 `<|DSML|tool_calls>` 和 canonical `<tool_calls>`。由于这涉及 API 兼容性'), true);
   assert.equal(text.includes('补充'), true);
   assert.equal(text.includes('<|DSML|invoke'), false);
+});
+
+test('sieve captures hyphenated DSML shell with here-doc CDATA', () => {
+  const events = runSieve([
+    '<dsml-tool-calls>\n',
+    '<dsml-invoke name="Bash">\n',
+    '<dsml-parameter name="command"><![CDATA[git commit -m "$(cat <<\'EOF\'\n',
+    'docs: add missing directory entries and package descriptions to architecture docs\n',
+    'Fill gaps identified in architecture audit: add artifacts/ and static/ to\n',
+    'directory tree, and document 7 auxiliary internal/ packages (textclean,\n',
+    'claudeconv, compat, rawsample, devcapture, util, version) in Section 3.\n\n',
+    'Co-Authored-By: Claude Opus 4.7 noreply@anthropic.com\n',
+    'EOF\n',
+    ')"]]></dsml-parameter>\n',
+    '<dsml-parameter name="description"><![CDATA[Create commit with architecture doc updates]]></dsml-parameter>\n',
+    '</dsml-invoke>\n',
+    '</dsml-tool-calls>',
+  ], ['Bash']);
+  const text = collectText(events);
+  const finalCalls = events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
+  assert.equal(finalCalls.length, 1);
+  assert.equal(finalCalls[0].input.command.includes('git commit -m "$(cat <<\'EOF\''), true);
+  assert.equal(finalCalls[0].input.command.includes('Co-Authored-By: Claude Opus 4.7'), true);
+  assert.equal(text.includes('dsml-tool-calls'), false);
+  assert.equal(text.includes('git commit -m'), false);
 });
 
 test('parseToolCalls ignores JSON tool_calls payload (XML-only)', () => {

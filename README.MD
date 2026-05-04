@@ -23,6 +23,16 @@
 
 【感谢Linux.do社区及GitHub社区各位开发者对项目的支持与贡献】
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=cjackhwang%2Fds2api&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=cjackhwang/ds2api&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=cjackhwang/ds2api&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=cjackhwang/ds2api&type=date&legend=top-left" />
+ </picture>
+</a>
+
 > **重要免责声明**
 >
 > 本仓库仅供学习、研究、个人实验和内部验证使用，不提供任何形式的商业授权、适用性保证或结果保证。
@@ -76,13 +86,14 @@ flowchart LR
 
         subgraph Runtime["运行时核心能力"]
             Compat["PromptCompat\n(API -> 网页纯文本上下文)"]
-            Chat["Chat / Responses Runtime\n(统一工具调用与流式语义)"]
+            Completion["Completion Runtime\n(Session / PoW / Completion)"]
+            Turn["AssistantTurn\n(输出语义归一)"]
             Auth["Auth Resolver\n(API key / bearer / x-goog-api-key)"]
             Pool["Account Pool + Queue\n(并发槽位 + 等待队列)"]
             DSClient["DeepSeek Client\n(Session / Auth / Completion / Files)"]
             Pow["PoW 实现\n(纯 Go)"]
             Tool["Tool Sieve\n(Go/Node 语义对齐)"]
-            History["History Split\n(长历史文件化)"]
+            History["Current Input File\n(DS2API_HISTORY.txt)"]
         end
     end
 
@@ -94,18 +105,19 @@ flowchart LR
 
     OA --> Compat
     CA & GA --> Compat
-    Compat --> Chat
-    Compat -.长历史.-> History
-    Vercel -.Go prepare.-> Chat
+    Compat --> Completion
+    Completion -.完整上下文.-> History
+    Completion --> Turn
+    Vercel -.Go prepare.-> Completion
     Vercel -.Node SSE.-> Tool
-    Chat --> Auth
-    Chat -.账号轮询.-> Pool
-    Chat -.工具调用解析.-> Tool
-    Chat -.PoW 计算.-> Pow
+    Completion --> Auth
+    Completion -.账号轮询.-> Pool
+    Completion -.工具调用解析.-> Tool
+    Completion -.PoW 计算.-> Pow
     Auth --> DSClient
     DSClient --> Upstream
     Upstream --> DSClient
-    Chat --> Client
+    Turn --> Client
     Vercel --> Client
 ```
 
@@ -119,7 +131,7 @@ flowchart LR
 
 | 能力 | 说明 |
 | --- | --- |
-| OpenAI 兼容 | `GET /v1/models`、`GET /v1/models/{id}`、`POST /v1/chat/completions`、`POST /v1/responses`、`GET /v1/responses/{response_id}`、`POST /v1/embeddings`、`POST /v1/files` |
+| OpenAI 兼容 | `GET /v1/models`、`GET /v1/models/{id}`、`POST /v1/chat/completions`、`POST /v1/responses`、`GET /v1/responses/{response_id}`、`POST /v1/embeddings`、`POST /v1/files`、`GET /v1/files/{file_id}` |
 | Claude 兼容 | `GET /anthropic/v1/models`、`POST /anthropic/v1/messages`、`POST /anthropic/v1/messages/count_tokens`（及快捷路径 `/v1/messages`、`/messages`） |
 | Gemini 兼容 | `POST /v1beta/models/{model}:generateContent`、`POST /v1beta/models/{model}:streamGenerateContent`（及 `/v1/models/{model}:*` 路径） |
 | 统一 CORS 兼容 | `/v1/*`、`/anthropic/*`、`/v1beta/models/*`、`/admin/*` 统一走同一套 CORS 策略；Vercel 上 `/v1/chat/completions` 的 Node Runtime 也对齐相同放行规则，尽量减少第三方预检请求头限制 |
@@ -131,7 +143,7 @@ flowchart LR
 | WebUI 管理台 | `/admin` 单页应用（中英文双语、深色模式，支持查看服务器端对话记录） |
 | 运维探针 | `GET /healthz`（存活）、`GET /readyz`（就绪） |
 
-OpenAI `/v1/*` 仍是推荐的规范路径；同时支持 `/models`、`/chat/completions`、`/responses`、`/embeddings`、`/files` 等根路径快捷路由，方便只配置 DS2API 根地址的第三方客户端。
+OpenAI `/v1/*` 仍是推荐的规范路径；同时支持 `/models`、`/chat/completions`、`/responses`、`/embeddings`、`/files`、`/files/{file_id}` 等根路径快捷路由，方便只配置 DS2API 根地址的第三方客户端。
 
 ## 平台兼容矩阵
 
@@ -257,6 +269,10 @@ docker-compose logs -f
 2. 部署完成后访问 `/admin`，使用 Zeabur 环境变量/模板指引中的 `DS2API_ADMIN_KEY` 登录。
 3. 在管理台导入/编辑配置（会写入并持久化到 `/data/config.json`）。
 
+Zeabur 首次空卷启动时可以没有 `/data/config.json`；DS2API 会先使用空的文件模式配置启动，并在管理台首次保存时创建该文件。
+
+不依赖模板手动部署时，在 Zeabur 中选择 GitHub 仓库服务，Root Directory 保持 `/`，使用仓库根目录 `Dockerfile` 构建；添加持久卷 `/data`，设置 `PORT=5001`、`DS2API_ADMIN_KEY=你的强密钥`、`DS2API_CONFIG_PATH=/data/config.json`，然后暴露 HTTP 端口 `5001`。更完整步骤见 [docs/DEPLOY.md](docs/DEPLOY.md#不使用模板手动部署)。
+
 说明：Zeabur 使用仓库内 `Dockerfile` 直接构建时，不需要额外传入 `BUILD_VERSION`；镜像会优先读取该构建参数，未提供时自动回退到仓库根目录的 `VERSION` 文件。
 
 ### 方式三：Vercel 部署
@@ -317,8 +333,7 @@ go run ./cmd/ds2api
 - `model_aliases`：OpenAI / Claude / Gemini 共用的模型 alias 映射。
 - `runtime`：账号并发、队列与 token 刷新策略，可通过 Admin Settings 热更新。
 - `auto_delete.mode`：请求结束后的远端会话清理策略，支持 `none` / `single` / `all`。
-- `history_split`：旧轮次拆分字段，已废弃并忽略，仅保留兼容旧配置。
-- `current_input_file`：唯一生效的独立拆分策略；默认开启且阈值为 `0`，触发时将完整上下文合并上传为 `DS2API_HISTORY.txt` 上下文文件。
+- `current_input_file`：全局生效的上下文拆分上传策略；默认开启且阈值为 `0`，触发时将完整上下文合并上传为 `DS2API_HISTORY.txt` 上下文文件。
 - 如果关闭 `current_input_file`，请求会直接透传，不上传拆分上下文文件。
 - `thinking_injection`：默认开启；在最新 user 消息末尾追加思考增强提示词，提高高强度推理与工具调用前的思考稳定性；`prompt` 留空时使用内置默认提示词。
 

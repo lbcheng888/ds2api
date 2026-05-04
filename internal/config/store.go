@@ -54,11 +54,12 @@ func loadStore() (*Store, error) {
 
 func loadConfig() (Config, bool, error) {
 	rawCfg := strings.TrimSpace(os.Getenv("DS2API_CONFIG_JSON"))
+	path := ConfigPath()
 	if rawCfg != "" {
 		cfg, err := parseConfigString(rawCfg)
 		if err != nil {
 			if !IsVercel() && envWritebackEnabled() {
-				if fileCfg, fileErr := loadConfigFromFile(ConfigPath()); fileErr == nil {
+				if fileCfg, fileErr := loadConfigFromFile(path); fileErr == nil {
 					return fileCfg, false, nil
 				}
 			}
@@ -69,7 +70,7 @@ func loadConfig() (Config, bool, error) {
 		if IsVercel() || !envWritebackEnabled() {
 			return cfg, true, err
 		}
-		content, fileErr := os.ReadFile(ConfigPath())
+		content, fileErr := os.ReadFile(path)
 		if fileErr == nil {
 			var fileCfg Config
 			if unmarshalErr := json.Unmarshal(content, &fileCfg); unmarshalErr == nil {
@@ -81,7 +82,7 @@ func loadConfig() (Config, bool, error) {
 			if validateErr := ValidateConfig(cfg); validateErr != nil {
 				return cfg, true, validateErr
 			}
-			if writeErr := writeConfigFile(ConfigPath(), cfg.Clone()); writeErr == nil {
+			if writeErr := writeConfigFile(path, cfg.Clone()); writeErr == nil {
 				return cfg, false, err
 			} else {
 				Logger.Warn("[config] env writeback bootstrap failed", "error", writeErr)
@@ -89,7 +90,7 @@ func loadConfig() (Config, bool, error) {
 		}
 		return cfg, true, err
 	}
-	cfg, err := loadConfigFromFile(ConfigPath())
+	cfg, err := loadConfigFromFile(path)
 	if err != nil {
 		if shouldTryLegacyContainerConfigPath() {
 			legacyPath := legacyContainerConfigPath()
@@ -102,6 +103,10 @@ func loadConfig() (Config, bool, error) {
 			// Vercel may start without writable/present config; keep in-memory bootstrap config.
 			return Config{}, true, nil
 		}
+		if shouldBootstrapMissingConfigFile(err) {
+			Logger.Warn("[config] config file missing; starting with empty file-backed config", "path", path)
+			return Config{}, false, nil
+		}
 		return Config{}, false, err
 	}
 	if IsVercel() {
@@ -109,6 +114,10 @@ func loadConfig() (Config, bool, error) {
 		return cfg, true, nil
 	}
 	return cfg, false, nil
+}
+
+func shouldBootstrapMissingConfigFile(err error) bool {
+	return errors.Is(err, os.ErrNotExist) && strings.TrimSpace(os.Getenv("DS2API_CONFIG_PATH")) != ""
 }
 
 func loadConfigFromFile(path string) (Config, error) {

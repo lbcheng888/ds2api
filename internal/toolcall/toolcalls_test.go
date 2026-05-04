@@ -53,6 +53,45 @@ func TestParseToolCallsSupportsDSMLShell(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsSupportsHyphenatedDSMLShellWithHereDocCDATA(t *testing.T) {
+	text := `<dsml-tool-calls>
+<dsml-invoke name="Bash">
+<dsml-parameter name="command"><![CDATA[git commit -m "$(cat <<'EOF'
+docs: add missing directory entries and package descriptions to architecture docs
+Fill gaps identified in architecture audit: add artifacts/ and static/ to
+directory tree, and document 7 auxiliary internal/ packages (textclean,
+claudeconv, compat, rawsample, devcapture, util, version) in Section 3.
+
+Co-Authored-By: Claude Opus 4.7 noreply@anthropic.com
+EOF
+)"]]></dsml-parameter>
+<dsml-parameter name="description"><![CDATA[Create commit with architecture doc updates]]></dsml-parameter>
+</dsml-invoke>
+</dsml-tool-calls>`
+	calls := ParseToolCalls(text, []string{"Bash"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 hyphenated DSML call, got %#v", calls)
+	}
+	if calls[0].Name != "Bash" {
+		t.Fatalf("expected Bash tool, got %#v", calls[0])
+	}
+	command, _ := calls[0].Input["command"].(string)
+	if !strings.Contains(command, `git commit -m "$(cat <<'EOF'`) || !strings.Contains(command, "Co-Authored-By: Claude Opus 4.7") {
+		t.Fatalf("expected here-doc CDATA command to be preserved, got %q", command)
+	}
+	if calls[0].Input["description"] != "Create commit with architecture doc updates" {
+		t.Fatalf("expected description parameter, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsIgnoresBareHyphenatedToolCallsLookalike(t *testing.T) {
+	text := `<tool-calls><invoke name="Bash"><parameter name="command">pwd</parameter></invoke></tool-calls>`
+	calls := ParseToolCalls(text, []string{"Bash"})
+	if len(calls) != 0 {
+		t.Fatalf("expected bare hyphenated lookalike to be ignored, got %#v", calls)
+	}
+}
+
 func TestParseToolCallsToleratesDSMLTrailingPipeTagTerminator(t *testing.T) {
 	text := strings.Join([]string{
 		`<|DSML|tool_calls| `,
@@ -108,6 +147,61 @@ func TestParseToolCallsSupportsDSMLShellWithCanonicalExampleInCDATA(t *testing.T
 	}
 	if calls[0].Name != "Write" || calls[0].Input["content"] != content {
 		t.Fatalf("unexpected DSML CDATA parse result: %#v", calls[0])
+	}
+}
+
+func TestParseToolCallsKeepsHereDocCDATAWithFencedDSMLAndLiteralCDATAEnd(t *testing.T) {
+	command := strings.Join([]string{
+		"cat > docs/project-value.md << 'ENDOFFILE'",
+		"# DS2API project value",
+		"",
+		"```xml",
+		`<|DSML|tool_calls>`,
+		`  <|DSML|invoke name="Bash">`,
+		`    <|DSML|parameter name="command"><![CDATA[grep -E "error|fail" < input.log 2>&1]]></|DSML|parameter>`,
+		`  </|DSML|invoke>`,
+		`</|DSML|tool_calls>`,
+		"```",
+		"",
+		"Only the literal `]]>` needs special handling.",
+		"",
+		"ENDOFFILE",
+		`echo "Done. Lines: $(wc -l < docs/project-value.md)"`,
+	}, "\n")
+	text := `<|DSML|tool_calls><|DSML|invoke name="Bash"><|DSML|parameter name="command"><![CDATA[` + command + `]]></|DSML|parameter><|DSML|parameter name="description"><![CDATA[Write project value doc]]></|DSML|parameter></|DSML|invoke></|DSML|tool_calls>`
+
+	calls := ParseToolCalls(text, []string{"Bash"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one DSML call with extreme heredoc CDATA, got %#v", calls)
+	}
+	got, _ := calls[0].Input["command"].(string)
+	if got != command {
+		t.Fatalf("expected full heredoc command to survive, got:\n%q\nwant:\n%q", got, command)
+	}
+	if calls[0].Input["description"] != "Write project value doc" {
+		t.Fatalf("expected sibling parameter after command, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsKeepsCompactCDATAWithImmediateFencedDSML(t *testing.T) {
+	content := strings.Join([]string{
+		"```xml",
+		`<|DSML|tool_calls>`,
+		`  <|DSML|invoke name="Bash">`,
+		`    <|DSML|parameter name="command"><![CDATA[echo compact]]></|DSML|parameter>`,
+		`  </|DSML|invoke>`,
+		`</|DSML|tool_calls>`,
+		"```",
+		"tail",
+	}, "\n")
+	text := `<tool_calls><invoke name="Write"><parameter name="content"><![CDATA[` + content + `]]></parameter></invoke></tool_calls>`
+
+	calls := ParseToolCalls(text, []string{"Write"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one compact CDATA call, got %#v", calls)
+	}
+	if calls[0].Input["content"] != content {
+		t.Fatalf("expected compact CDATA content to survive, got %#v", calls[0].Input["content"])
 	}
 }
 

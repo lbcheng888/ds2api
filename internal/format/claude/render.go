@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"ds2api/internal/assistantturn"
 	"ds2api/internal/toolcall"
 	"fmt"
 	"time"
@@ -8,6 +9,47 @@ import (
 	"ds2api/internal/prompt"
 	"ds2api/internal/util"
 )
+
+func BuildMessageResponseFromTurn(messageID, model string, turn assistantturn.Turn, exposeThinking bool) map[string]any {
+	content := make([]map[string]any, 0, 4)
+	if exposeThinking && turn.Thinking != "" {
+		content = append(content, map[string]any{"type": "thinking", "thinking": turn.Thinking})
+	}
+	stopReason := "end_turn"
+	if len(turn.ToolCalls) > 0 {
+		stopReason = "tool_use"
+		for i, tc := range turn.ToolCalls {
+			content = append(content, map[string]any{
+				"type":  "tool_use",
+				"id":    fmt.Sprintf("toolu_%d_%d", time.Now().Unix(), i),
+				"name":  tc.Name,
+				"input": tc.Input,
+			})
+		}
+	} else {
+		text := turn.Text
+		if text == "" && exposeThinking {
+			text = turn.Thinking
+		}
+		if text == "" {
+			text = "抱歉，没有生成有效的响应内容。"
+		}
+		content = append(content, map[string]any{"type": "text", "text": text})
+	}
+	return map[string]any{
+		"id":            messageID,
+		"type":          "message",
+		"role":          "assistant",
+		"model":         model,
+		"content":       content,
+		"stop_reason":   stopReason,
+		"stop_sequence": nil,
+		"usage": map[string]any{
+			"input_tokens":  turn.Usage.InputTokens,
+			"output_tokens": turn.Usage.OutputTokens,
+		},
+	}
+}
 
 func BuildMessageResponse(messageID, model string, normalizedMessages []any, finalThinking, finalText string, toolNames []string) map[string]any {
 	detected := toolcall.ParseToolCalls(finalText, toolNames)

@@ -555,6 +555,51 @@ func TestSieve_ChineseReviewSamplePreservesInlineDSMLMention(t *testing.T) {
 	}
 }
 
+func TestSieve_HyphenatedDSMLShellWithHereDocCDATA(t *testing.T) {
+	var state State
+	chunks := []string{
+		"<dsml-tool-calls>\n",
+		"<dsml-invoke name=\"Bash\">\n",
+		"<dsml-parameter name=\"command\"><![CDATA[git commit -m \"$(cat <<'EOF'\n",
+		"docs: add missing directory entries and package descriptions to architecture docs\n",
+		"Fill gaps identified in architecture audit: add artifacts/ and static/ to\n",
+		"directory tree, and document 7 auxiliary internal/ packages (textclean,\n",
+		"claudeconv, compat, rawsample, devcapture, util, version) in Section 3.\n\n",
+		"Co-Authored-By: Claude Opus 4.7 noreply@anthropic.com\n",
+		"EOF\n",
+		")\"]]></dsml-parameter>\n",
+		"<dsml-parameter name=\"description\"><![CDATA[Create commit with architecture doc updates]]></dsml-parameter>\n",
+		"</dsml-invoke>\n",
+		"</dsml-tool-calls>",
+	}
+	var events []Event
+	for _, c := range chunks {
+		events = append(events, ProcessChunk(&state, c, []string{"Bash"})...)
+	}
+	events = append(events, Flush(&state, []string{"Bash"})...)
+
+	var text strings.Builder
+	var command string
+	callCount := 0
+	for _, e := range events {
+		text.WriteString(e.Content)
+		for _, call := range e.ToolCalls {
+			callCount++
+			command, _ = call.Input["command"].(string)
+		}
+	}
+
+	if callCount != 1 {
+		t.Fatalf("应解析出 1 个 hyphenated DSML 工具调用，got %d, text=%q", callCount, text.String())
+	}
+	if !strings.Contains(command, `git commit -m "$(cat <<'EOF'`) || !strings.Contains(command, "Co-Authored-By: Claude Opus 4.7") {
+		t.Fatalf("here-doc command 未完整保留, got %q", command)
+	}
+	if strings.Contains(text.String(), "dsml-tool-calls") || strings.Contains(text.String(), "git commit -m") {
+		t.Fatalf("真实工具块不应泄漏到正文, got %q", text.String())
+	}
+}
+
 func TestSieve_ToleratesDSMLSpaceSeparatorTypo(t *testing.T) {
 	var state State
 	chunks := []string{

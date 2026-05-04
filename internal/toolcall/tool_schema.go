@@ -311,7 +311,11 @@ func extractOneParameterSchema(tool map[string]any) (string, map[string]any) {
 		fn["parameters"],
 		tool["parameters"],
 		tool["input_schema"],
+		tool["inputSchema"],
+		tool["schema"],
 		fn["input_schema"],
+		fn["inputSchema"],
+		fn["schema"],
 	} {
 		if schema, ok := candidate.(map[string]any); ok {
 			return name, schema
@@ -335,6 +339,7 @@ func normalizeObjectForSchema(input map[string]any, schema map[string]any) (map[
 		return cloneSchemaMap(input), true
 	}
 	input = repairGenericParameterForSchema(input, properties, required)
+	input = repairSinglePropertyInputForSchema(input, properties)
 
 	out := map[string]any{}
 	for name, propSchema := range properties {
@@ -363,6 +368,20 @@ func normalizeObjectForSchema(input map[string]any, schema map[string]any) (map[
 		}
 	}
 	return out, true
+}
+
+func repairSinglePropertyInputForSchema(input map[string]any, properties map[string]map[string]any) map[string]any {
+	if len(input) == 0 || len(properties) != 1 {
+		return input
+	}
+	onlyName := ""
+	for name := range properties {
+		onlyName = name
+	}
+	if _, ok := inputValueForSchemaProperty(input, onlyName, properties); ok {
+		return input
+	}
+	return map[string]any{onlyName: input}
 }
 
 func schemaDisallowsAdditionalProperties(schema map[string]any) bool {
@@ -574,6 +593,9 @@ func normalizeValueForSchemaType(value any, schema map[string]any, typ string) (
 		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 			return fmt.Sprint(v), true
 		default:
+			if normalized, changed := stringifySchemaValue(value); changed {
+				return normalized, true
+			}
 			return nil, false
 		}
 	case "boolean":

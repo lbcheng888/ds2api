@@ -35,7 +35,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	if c.Runtime.AccountMaxInflight > 0 || c.Runtime.AccountMaxQueue > 0 || c.Runtime.GlobalMaxInflight > 0 || c.Runtime.TokenRefreshIntervalHours > 0 || c.Runtime.AccountFailureCooldownSeconds > 0 || c.Runtime.StreamMaxDurationSeconds > 0 || c.Runtime.ReasoningOnlyTimeoutSeconds > 0 || c.Runtime.BufferedToolContentMaxBytes > 0 {
 		m["runtime"] = c.Runtime
 	}
-	if c.Compat.WideInputStrictOutput != nil || c.Compat.StripReferenceMarkers != nil || c.Compat.AllowMetaAgentTools != nil || c.Compat.DefaultReasoningEffort != nil {
+	if c.Compat.WideInputStrictOutput != nil || c.Compat.AllowMetaAgentTools != nil || c.Compat.DefaultReasoningEffort != nil {
 		m["compat"] = c.Compat
 	}
 	if c.Responses.StoreTTLSeconds > 0 {
@@ -45,9 +45,6 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		m["embeddings"] = c.Embeddings
 	}
 	m["auto_delete"] = c.AutoDelete
-	if c.HistorySplit.Enabled != nil || c.HistorySplit.TriggerAfterTurns != nil {
-		m["history_split"] = c.HistorySplit
-	}
 	if c.CurrentInputFile.Enabled != nil || c.CurrentInputFile.MinChars != 0 {
 		m["current_input_file"] = c.CurrentInputFile
 	}
@@ -121,9 +118,7 @@ func (c *Config) UnmarshalJSON(b []byte) error {
 				return fmt.Errorf("invalid field %q: %w", k, err)
 			}
 		case "history_split":
-			if err := json.Unmarshal(v, &c.HistorySplit); err != nil {
-				return fmt.Errorf("invalid field %q: %w", k, err)
-			}
+			// Removed legacy field ignored. Current-input-file now owns long context handling.
 		case "current_input_file":
 			if err := json.Unmarshal(v, &c.CurrentInputFile); err != nil {
 				return fmt.Errorf("invalid field %q: %w", k, err)
@@ -162,17 +157,12 @@ func (c Config) Clone() Config {
 		Runtime:      c.Runtime,
 		Compat: CompatConfig{
 			WideInputStrictOutput:  cloneBoolPtr(c.Compat.WideInputStrictOutput),
-			StripReferenceMarkers:  cloneBoolPtr(c.Compat.StripReferenceMarkers),
 			AllowMetaAgentTools:    cloneBoolPtr(c.Compat.AllowMetaAgentTools),
 			DefaultReasoningEffort: cloneStringPtr(c.Compat.DefaultReasoningEffort),
 		},
 		Responses:  c.Responses,
 		Embeddings: c.Embeddings,
 		AutoDelete: c.AutoDelete,
-		HistorySplit: HistorySplitConfig{
-			Enabled:           cloneBoolPtr(c.HistorySplit.Enabled),
-			TriggerAfterTurns: cloneIntPtr(c.HistorySplit.TriggerAfterTurns),
-		},
 		CurrentInputFile: CurrentInputFileConfig{
 			Enabled:  cloneBoolPtr(c.CurrentInputFile.Enabled),
 			MinChars: c.CurrentInputFile.MinChars,
@@ -211,14 +201,6 @@ func cloneBoolPtr(in *bool) *bool {
 }
 
 func cloneStringPtr(in *string) *string {
-	if in == nil {
-		return nil
-	}
-	v := *in
-	return &v
-}
-
-func cloneIntPtr(in *int) *int {
 	if in == nil {
 		return nil
 	}

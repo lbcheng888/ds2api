@@ -75,7 +75,6 @@ func TestChatCompletionsAutoDeleteModes(t *testing.T) {
 			}
 			h := &Handler{
 				Store: mockOpenAIConfig{
-					wideInput:      true,
 					autoDeleteMode: tc.mode,
 				},
 				Auth: streamStatusAuthStub{},
@@ -123,7 +122,6 @@ func TestAutoDeleteRemoteSessionIgnoresCanceledParentContext(t *testing.T) {
 	ds := &autoDeleteCtxDSStub{}
 	h := &Handler{
 		Store: mockOpenAIConfig{
-			wideInput:      true,
 			autoDeleteMode: "single",
 		},
 		DS: ds,

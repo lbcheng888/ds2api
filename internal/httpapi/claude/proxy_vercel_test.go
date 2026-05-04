@@ -14,7 +14,8 @@ type claudeProxyStoreStub struct {
 
 func (s claudeProxyStoreStub) ModelAliases() map[string]string { return s.aliases }
 
-func (claudeProxyStoreStub) CompatStripReferenceMarkers() bool { return true }
+func (claudeProxyStoreStub) CurrentInputFileEnabled() bool { return true }
+func (claudeProxyStoreStub) CurrentInputFileMinChars() int { return 0 }
 
 type openAIProxyStub struct {
 	status int
@@ -166,7 +167,7 @@ func TestClaudeProxyViaOpenAIEnablesThinkingWhenRequested(t *testing.T) {
 	}
 }
 
-func TestClaudeProxyViaOpenAIKeepsStreamDefaultThinkingDisabled(t *testing.T) {
+func TestClaudeProxyViaOpenAIEnablesStreamThinkingByDefault(t *testing.T) {
 	openAI := &openAIProxyCaptureStub{}
 	h := &Handler{
 		Store:  claudeProxyStoreStub{aliases: map[string]string{"claude-sonnet-4-6": "deepseek-v4-flash"}},
@@ -178,12 +179,12 @@ func TestClaudeProxyViaOpenAIKeepsStreamDefaultThinkingDisabled(t *testing.T) {
 	h.Messages(rec, req)
 
 	thinking, _ := openAI.seenReq["thinking"].(map[string]any)
-	if thinking["type"] != "disabled" {
-		t.Fatalf("expected Claude stream default to keep downstream thinking disabled, got %#v", openAI.seenReq)
+	if thinking["type"] != "enabled" {
+		t.Fatalf("expected Claude stream default to enable downstream thinking, got %#v", openAI.seenReq)
 	}
 }
 
-func TestClaudeProxyViaOpenAIStripsThinkingBlocksFromNonStreamResponse(t *testing.T) {
+func TestClaudeProxyViaOpenAIExposesThinkingBlocksByDefault(t *testing.T) {
 	body := `{"id":"chatcmpl_1","object":"chat.completion","created":1,"model":"claude-sonnet-4-5","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"internal reasoning","tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
 	h := &Handler{OpenAI: openAIProxyStub{status: 200, body: body}}
 	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"stream":false}`))
@@ -195,11 +196,28 @@ func TestClaudeProxyViaOpenAIStripsThinkingBlocksFromNonStreamResponse(t *testin
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
 	got := rec.Body.String()
-	if strings.Contains(got, `"type":"thinking"`) {
-		t.Fatalf("expected converted Claude response to strip thinking block, got %s", got)
+	if !strings.Contains(got, `"type":"thinking"`) {
+		t.Fatalf("expected converted Claude response to expose thinking block, got %s", got)
 	}
 	if !strings.Contains(got, `"tool_use"`) {
 		t.Fatalf("expected converted Claude response to preserve tool_use, got %s", got)
+	}
+}
+
+func TestClaudeProxyViaOpenAIStripsThinkingBlocksWhenDisabled(t *testing.T) {
+	body := `{"id":"chatcmpl_1","object":"chat.completion","created":1,"model":"claude-sonnet-4-5","choices":[{"index":0,"message":{"role":"assistant","content":"ok","reasoning_content":"internal reasoning"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+	h := &Handler{OpenAI: openAIProxyStub{status: 200, body: body}}
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"},"stream":false}`))
+	rec := httptest.NewRecorder()
+
+	h.Messages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	got := rec.Body.String()
+	if strings.Contains(got, `"type":"thinking"`) {
+		t.Fatalf("expected disabled thinking to strip thinking block, got %s", got)
 	}
 }
 

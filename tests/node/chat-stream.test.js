@@ -137,7 +137,6 @@ async function runMockVercelStreamSequence(upstreamSequences, prepareOverrides =
     final_prompt: 'hello',
     thinking_enabled: false,
     search_enabled: false,
-    compat: { strip_reference_markers: true },
     tool_names: [],
     deepseek_token: 'deepseek-token',
     pow_header: 'pow-header',
@@ -310,7 +309,6 @@ test('vercel stream reuses prior PoW when refresh fails', async () => {
         final_prompt: 'hello',
         thinking_enabled: false,
         search_enabled: false,
-        compat: { strip_reference_markers: true },
         tool_names: [],
         deepseek_token: 'deepseek-token',
         pow_header: 'pow-header-initial',
@@ -643,17 +641,17 @@ test('parseChunkForContent preserves space-only content tokens', () => {
   assert.deepEqual(parsed.parts, [{ text: ' ', type: 'text' }]);
 });
 
-test('parseChunkForContent strips reference markers from fragment content', () => {
+test('parseChunkForContent strips citation and reference markers from fragment content', () => {
   const chunk = {
     p: 'response/fragments',
     o: 'APPEND',
     v: [
-      { type: 'RESPONSE', content: '广州天气 [reference:12] 多云' },
+      { type: 'RESPONSE', content: '广州天气 [citation:1] [reference:12] 多云' },
     ],
   };
   const parsed = parseChunkForContent(chunk, false, 'text');
   assert.equal(parsed.finished, false);
-  assert.deepEqual(parsed.parts, [{ text: '广州天气  多云', type: 'text' }]);
+  assert.deepEqual(parsed.parts, [{ text: '广州天气   多云', type: 'text' }]);
 });
 
 test('parseChunkForContent detects content_filter status and ignores upstream output tokens', () => {

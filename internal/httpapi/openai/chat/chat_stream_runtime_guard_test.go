@@ -3,6 +3,8 @@ package chat
 import (
 	"net/http/httptest"
 	"testing"
+
+	"ds2api/internal/promptcompat"
 )
 
 func TestShouldHoldBufferedToolContentCachesPlanModePromise(t *testing.T) {
@@ -19,6 +21,7 @@ func TestShouldHoldBufferedToolContentCachesPlanModePromise(t *testing.T) {
 		false,
 		[]string{"Read", "Bash", "Edit"},
 		nil,
+		promptcompat.DefaultToolChoicePolicy(),
 		true,
 		false,
 	)
@@ -50,6 +53,7 @@ func TestShouldHoldBufferedToolContentIgnoresPlainAnswer(t *testing.T) {
 		false,
 		[]string{"Read", "Bash", "Edit"},
 		nil,
+		promptcompat.DefaultToolChoicePolicy(),
 		true,
 		false,
 	)
@@ -77,6 +81,7 @@ func TestShouldHoldBufferedToolContentHoldsToolRequiredTurnWithoutCandidateText(
 		false,
 		[]string{"Read", "Bash", "Edit"},
 		nil,
+		promptcompat.DefaultToolChoicePolicy(),
 		true,
 		false,
 	)

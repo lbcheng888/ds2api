@@ -2,7 +2,12 @@
 
 const CDATA_PATTERN = /^<!\[CDATA\[([\s\S]*?)]]>$/i;
 const XML_ATTR_PATTERN = /\b([a-z0-9_:-]+)\s*=\s*("([^"]*)"|'([^']*)')/gi;
-const TOOL_MARKUP_NAMES = ['tool_calls', 'invoke', 'parameter'];
+const TOOL_MARKUP_NAMES = [
+  { raw: 'tool_calls', canonical: 'tool_calls' },
+  { raw: 'tool-calls', canonical: 'tool_calls', dsmlOnly: true },
+  { raw: 'invoke', canonical: 'invoke' },
+  { raw: 'parameter', canonical: 'parameter' },
+];
 
 const {
   toStringSafe,
@@ -437,7 +442,7 @@ function scanToolMarkupTagAt(text, start) {
   const prefix = consumeToolMarkupNamePrefix(raw, lower, i);
   i = prefix.next;
   const dsmlLike = prefix.dsmlLike;
-  const { name, len } = matchToolMarkupName(lower, i);
+  const { name, len } = matchToolMarkupName(lower, i, dsmlLike);
   if (!name) {
     return null;
   }
@@ -610,24 +615,31 @@ function consumeToolMarkupNamePrefixOnce(raw, lower, idx) {
     return { next: idx + 1, ok: true };
   }
   if (lower.startsWith('dsml', idx)) {
-    return { next: idx + 'dsml'.length, ok: true };
+    let next = idx + 'dsml'.length;
+    if (next < raw.length && raw[next] === '-') {
+      next += 1;
+    }
+    return { next, ok: true };
   }
   return { next: idx, ok: false };
 }
 
 function hasToolMarkupNamePrefix(lowerTail) {
   for (const name of TOOL_MARKUP_NAMES) {
-    if (lowerTail.startsWith(name) || name.startsWith(lowerTail)) {
+    if (lowerTail.startsWith(name.raw) || name.raw.startsWith(lowerTail)) {
       return true;
     }
   }
   return false;
 }
 
-function matchToolMarkupName(lower, start) {
+function matchToolMarkupName(lower, start, dsmlLike) {
   for (const name of TOOL_MARKUP_NAMES) {
-    if (lower.startsWith(name, start)) {
-      return { name, len: name.length };
+    if (name.dsmlOnly && !dsmlLike) {
+      continue;
+    }
+    if (lower.startsWith(name.raw, start)) {
+      return { name: name.canonical, len: name.raw.length };
     }
   }
   return { name: '', len: 0 };

@@ -712,7 +712,7 @@ function stripReferenceMarkersText(text) {
   if (!text) {
     return text;
   }
-  return text.replace(/\[reference:\s*\d+\]/gi, '');
+  return text.replace(/\[(?:citation|reference):\s*\d+\]/gi, '');
 }
 
 function asString(v) {

@@ -20,6 +20,16 @@ DS2API converts DeepSeek Web chat capability into OpenAI-compatible, Claude-comp
 
 Documentation entry: [Docs Index](docs/README.md) / [Architecture](docs/ARCHITECTURE.en.md) / [API Reference](API.en.md)
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=cjackhwang%2Fds2api&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=cjackhwang/ds2api&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=cjackhwang/ds2api&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=cjackhwang/ds2api&type=date&legend=top-left" />
+ </picture>
+</a>
+
 > **Important Disclaimer**
 >
 > This repository is provided for learning, research, personal experimentation, and internal validation only. It does not grant any commercial authorization and comes with no warranty of fitness, stability, or results.
@@ -73,13 +83,14 @@ flowchart LR
 
         subgraph Runtime["Runtime + Core Capabilities"]
             Compat["PromptCompat\n(API -> web-chat plain text context)"]
-            Chat["Chat / Responses Runtime\n(unified tools + stream semantics)"]
+            Completion["Completion Runtime\n(session / PoW / completion)"]
+            Turn["AssistantTurn\n(output semantic normalization)"]
             Auth["Auth Resolver\n(API key / bearer / x-goog-api-key)"]
             Pool["Account Pool + Queue\n(in-flight slots + wait queue)"]
             DSClient["DeepSeek Client\n(session / auth / completion / files)"]
             Pow["PoW Solver\n(Pure Go)"]
             Tool["Tool Sieve\n(Go/Node semantic parity)"]
-            History["History Split\n(long history as files)"]
+            History["Current Input File\n(DS2API_HISTORY.txt)"]
         end
     end
 
@@ -91,18 +102,19 @@ flowchart LR
 
     OA --> Compat
     CA & GA --> Compat
-    Compat --> Chat
-    Compat -.long history.-> History
-    Vercel -.Go prepare.-> Chat
+    Compat --> Completion
+    Completion -.full context.-> History
+    Completion --> Turn
+    Vercel -.Go prepare.-> Completion
     Vercel -.Node SSE.-> Tool
-    Chat --> Auth
-    Chat -.account rotation.-> Pool
-    Chat -.tool-call parsing.-> Tool
-    Chat -.PoW solving.-> Pow
+    Completion --> Auth
+    Completion -.account rotation.-> Pool
+    Completion -.tool-call parsing.-> Tool
+    Completion -.PoW solving.-> Pow
     Auth --> DSClient
     DSClient --> Upstream
     Upstream --> DSClient
-    Chat --> Client
+    Turn --> Client
     Vercel --> Client
 ```
 
@@ -116,7 +128,7 @@ For the full module-by-module architecture and directory responsibilities, see [
 
 | Capability | Details |
 | --- | --- |
-| OpenAI compatible | `GET /v1/models`, `GET /v1/models/{id}`, `POST /v1/chat/completions`, `POST /v1/responses`, `GET /v1/responses/{response_id}`, `POST /v1/embeddings`, `POST /v1/files` |
+| OpenAI compatible | `GET /v1/models`, `GET /v1/models/{id}`, `POST /v1/chat/completions`, `POST /v1/responses`, `GET /v1/responses/{response_id}`, `POST /v1/embeddings`, `POST /v1/files`, `GET /v1/files/{file_id}` |
 | Claude compatible | `GET /anthropic/v1/models`, `POST /anthropic/v1/messages`, `POST /anthropic/v1/messages/count_tokens` (plus shortcut paths `/v1/messages`, `/messages`) |
 | Gemini compatible | `POST /v1beta/models/{model}:generateContent`, `POST /v1beta/models/{model}:streamGenerateContent` (plus `/v1/models/{model}:*` paths) |
 | Unified CORS compatibility | `/v1/*`, `/anthropic/*`, `/v1beta/models/*`, and `/admin/*` share one CORS policy; on Vercel, the Node Runtime for `/v1/chat/completions` mirrors the same relaxed preflight behavior for third-party clients |
@@ -128,7 +140,7 @@ For the full module-by-module architecture and directory responsibilities, see [
 | WebUI Admin Panel | SPA at `/admin` (bilingual Chinese/English, dark mode, with server-side conversation history) |
 | Health Probes | `GET /healthz` (liveness), `GET /readyz` (readiness) |
 
-OpenAI `/v1/*` routes remain canonical, and DS2API also accepts root shortcuts such as `/models`, `/chat/completions`, `/responses`, `/embeddings`, and `/files` for clients configured with the bare service URL.
+OpenAI `/v1/*` routes remain canonical, and DS2API also accepts root shortcuts such as `/models`, `/chat/completions`, `/responses`, `/embeddings`, `/files`, and `/files/{file_id}` for clients configured with the bare service URL.
 
 ## Platform Compatibility Matrix
 
@@ -245,6 +257,10 @@ Rebuild after updates: `docker-compose up -d --build`
 2. After deployment, open `/admin` and login with `DS2API_ADMIN_KEY` shown in Zeabur env/template instructions.
 3. Import / edit config in Admin UI (it will be written and persisted to `/data/config.json`).
 
+Fresh Zeabur volumes can start without `/data/config.json`; DS2API will boot with an empty file-backed config and create the file on the first Admin UI save.
+
+For manual deployment without the template, create a Zeabur GitHub service, keep Root Directory as `/`, build with the repo-root `Dockerfile`, mount a persistent volume at `/data`, set `PORT=5001`, `DS2API_ADMIN_KEY=your-strong-secret`, and `DS2API_CONFIG_PATH=/data/config.json`, then expose HTTP port `5001`. See [docs/DEPLOY.en.md](docs/DEPLOY.en.md#manual-deployment-without-the-template) for the full guide.
+
 Note: when Zeabur builds directly from the repo `Dockerfile`, you do not need to pass `BUILD_VERSION`. The image prefers that build arg when provided, and automatically falls back to the repo-root `VERSION` file when it is absent.
 
 ### Option 3: Vercel
@@ -305,8 +321,7 @@ Common fields:
 - `model_aliases`: one shared alias map for OpenAI / Claude / Gemini model names.
 - `runtime`: account concurrency, queueing, and token refresh behavior, hot-reloadable via Admin Settings.
 - `auto_delete.mode`: remote session cleanup after each request, supporting `none` / `single` / `all`.
-- `history_split`: legacy multi-turn history split field, now ignored and kept only for backward-compatible config loading.
-- `current_input_file`: the only active split mode; it is enabled by default and uploads the full context as a `DS2API_HISTORY.txt` context file once the character threshold is reached.
+- `current_input_file`: the global context split/upload mode; it is enabled by default and uploads the full context as a `DS2API_HISTORY.txt` context file once the character threshold is reached.
 - If you turn off `current_input_file`, requests pass through directly without uploading any split context file.
 
 For the full environment variable list, see [docs/DEPLOY.en.md](docs/DEPLOY.en.md). For auth behavior, see [API.en.md](API.en.md#authentication).

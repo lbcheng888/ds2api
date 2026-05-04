@@ -6,8 +6,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"ds2api/internal/chathistory"
 	"ds2api/internal/config"
 	dsprotocol "ds2api/internal/deepseek/protocol"
+	"ds2api/internal/textclean"
 	"ds2api/internal/util"
 )
 
@@ -15,17 +17,15 @@ import (
 var writeJSON = util.WriteJSON
 
 type Handler struct {
-	Store  ConfigReader
-	Auth   AuthResolver
-	DS     DeepSeekCaller
-	OpenAI OpenAIChatRunner
+	Store       ConfigReader
+	Auth        AuthResolver
+	DS          DeepSeekCaller
+	OpenAI      OpenAIChatRunner
+	ChatHistory *chathistory.Store
 }
 
-func (h *Handler) compatStripReferenceMarkers() bool {
-	if h == nil || h.Store == nil {
-		return true
-	}
-	return h.Store.CompatStripReferenceMarkers()
+func stripReferenceMarkersEnabled() bool {
+	return textclean.StripReferenceMarkersEnabled()
 }
 
 var (

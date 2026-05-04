@@ -104,11 +104,8 @@ func registerOpenAITestRoutes(r chi.Router, h *openAITestSurface) {
 	r.Post("/v1/responses", h.responsesHandler().Responses)
 	r.Get("/v1/responses/{response_id}", h.responsesHandler().GetResponseByID)
 	r.Post("/v1/files", h.filesHandler().UploadFile)
+	r.Get("/v1/files/{file_id}", h.filesHandler().RetrieveFile)
 	r.Post("/v1/embeddings", h.embeddingsHandler().Embeddings)
-}
-
-func splitOpenAIHistoryMessages(messages []any, triggerAfterTurns int) ([]any, []any) {
-	return history.SplitOpenAIHistoryMessages(messages, triggerAfterTurns)
 }
 
 func buildOpenAICurrentInputContextTranscript(messages []any) string {

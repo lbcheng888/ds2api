@@ -2,7 +2,18 @@ package toolcall
 
 import "strings"
 
-var toolMarkupNames = []string{"tool_calls", "invoke", "parameter"}
+type toolMarkupNameAlias struct {
+	raw       string
+	canonical string
+	dsmlOnly  bool
+}
+
+var toolMarkupNames = []toolMarkupNameAlias{
+	{raw: "tool_calls", canonical: "tool_calls"},
+	{raw: "tool-calls", canonical: "tool_calls", dsmlOnly: true},
+	{raw: "invoke", canonical: "invoke"},
+	{raw: "parameter", canonical: "parameter"},
+}
 
 type ToolMarkupTag struct {
 	Start       int
@@ -19,7 +30,7 @@ type ToolMarkupTag struct {
 func ContainsToolMarkupSyntaxOutsideIgnored(text string) (hasDSML, hasCanonical bool) {
 	lower := strings.ToLower(text)
 	for i := 0; i < len(text); {
-		next, advanced, blocked := skipXMLIgnoredSection(lower, i)
+		next, advanced, blocked := skipXMLIgnoredSection(text, lower, i)
 		if blocked {
 			return hasDSML, hasCanonical
 		}
@@ -47,7 +58,7 @@ func ContainsToolMarkupSyntaxOutsideIgnored(text string) (hasDSML, hasCanonical 
 func ContainsToolCallWrapperSyntaxOutsideIgnored(text string) (hasDSML, hasCanonical bool) {
 	lower := strings.ToLower(text)
 	for i := 0; i < len(text); {
-		next, advanced, blocked := skipXMLIgnoredSection(lower, i)
+		next, advanced, blocked := skipXMLIgnoredSection(text, lower, i)
 		if blocked {
 			return hasDSML, hasCanonical
 		}
@@ -79,7 +90,7 @@ func ContainsToolCallWrapperSyntaxOutsideIgnored(text string) (hasDSML, hasCanon
 func FindToolMarkupTagOutsideIgnored(text string, start int) (ToolMarkupTag, bool) {
 	lower := strings.ToLower(text)
 	for i := maxInt(start, 0); i < len(text); {
-		next, advanced, blocked := skipXMLIgnoredSection(lower, i)
+		next, advanced, blocked := skipXMLIgnoredSection(text, lower, i)
 		if blocked {
 			return ToolMarkupTag{}, false
 		}
@@ -137,7 +148,7 @@ func scanToolMarkupTagAt(text string, start int) (ToolMarkupTag, bool) {
 		i++
 	}
 	i, dsmlLike := consumeToolMarkupNamePrefix(lower, text, i)
-	name, nameLen := matchToolMarkupName(lower, i)
+	name, nameLen := matchToolMarkupName(lower, i, dsmlLike)
 	if nameLen == 0 {
 		return ToolMarkupTag{}, false
 	}
@@ -230,24 +241,31 @@ func consumeToolMarkupNamePrefixOnce(lower, text string, idx int) (int, bool) {
 		return idx + 1, true
 	}
 	if strings.HasPrefix(lower[idx:], "dsml") {
-		return idx + len("dsml"), true
+		next := idx + len("dsml")
+		if next < len(text) && (text[next] == '-' || text[next] == '_') {
+			next++
+		}
+		return next, true
 	}
 	return idx, false
 }
 
 func hasToolMarkupNamePrefix(lowerTail string) bool {
 	for _, name := range toolMarkupNames {
-		if strings.HasPrefix(lowerTail, name) || strings.HasPrefix(name, lowerTail) {
+		if strings.HasPrefix(lowerTail, name.raw) || strings.HasPrefix(name.raw, lowerTail) {
 			return true
 		}
 	}
 	return false
 }
 
-func matchToolMarkupName(lower string, start int) (string, int) {
+func matchToolMarkupName(lower string, start int, dsmlLike bool) (string, int) {
 	for _, name := range toolMarkupNames {
-		if strings.HasPrefix(lower[start:], name) {
-			return name, len(name)
+		if name.dsmlOnly && !dsmlLike {
+			continue
+		}
+		if strings.HasPrefix(lower[start:], name.raw) {
+			return name.canonical, len(name.raw)
 		}
 	}
 	return "", 0

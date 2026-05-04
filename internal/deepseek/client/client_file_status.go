@@ -22,6 +22,9 @@ const (
 
 var fileReadySleep = time.Sleep
 
+// ErrUploadFileNotFound indicates that DeepSeek returned no matching uploaded file.
+var ErrUploadFileNotFound = errors.New("uploaded file not found")
+
 func (c *Client) waitForUploadedFile(ctx context.Context, a *auth.RequestAuth, result *UploadFileResult) error {
 	if result == nil || strings.TrimSpace(result.ID) == "" {
 		return nil
@@ -42,7 +45,7 @@ func (c *Client) waitForUploadedFile(ctx context.Context, a *auth.RequestAuth, r
 			return fmt.Errorf("waiting for file %s to become ready: %w", result.ID, err)
 		}
 
-		fetched, err := c.fetchUploadedFile(pollCtx, a, result.ID)
+		fetched, err := c.FetchUploadedFile(pollCtx, a, result.ID)
 		if err == nil && fetched != nil {
 			mergeUploadFileResults(result, fetched)
 			if isReadyUploadFileStatus(result.Status) {
@@ -65,7 +68,8 @@ func (c *Client) waitForUploadedFile(ctx context.Context, a *auth.RequestAuth, r
 	return fmt.Errorf("file %s did not become ready: %w", result.ID, lastErr)
 }
 
-func (c *Client) fetchUploadedFile(ctx context.Context, a *auth.RequestAuth, fileID string) (*UploadFileResult, error) {
+// FetchUploadedFile returns metadata for an uploaded DeepSeek file by ID.
+func (c *Client) FetchUploadedFile(ctx context.Context, a *auth.RequestAuth, fileID string) (*UploadFileResult, error) {
 	fileID = strings.TrimSpace(fileID)
 	if fileID == "" {
 		return nil, errors.New("file id is required")
@@ -92,7 +96,7 @@ func (c *Client) fetchUploadedFile(ctx context.Context, a *auth.RequestAuth, fil
 
 	result := extractFetchedUploadFileResult(resp, fileID)
 	if result == nil || strings.TrimSpace(result.ID) == "" {
-		return nil, errors.New("fetch files succeeded without matching file data")
+		return nil, ErrUploadFileNotFound
 	}
 	result.Raw = resp
 	return result, nil

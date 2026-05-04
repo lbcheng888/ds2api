@@ -2,32 +2,10 @@ package responses
 
 import (
 	"net/http"
-	"strings"
 
 	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/toolcall"
 )
-
-func evaluateResponsesFinalOutput(finalPrompt, visibleText, rawText, thinking string, contentFilter bool, toolNames []string, toolsRaw any) claudecodeharness.FinalEvaluationResult {
-	detectionText := visibleText
-	if strings.TrimSpace(rawText) != "" {
-		detectionText = rawText
-	}
-	result := claudecodeharness.EvaluateFinalOutput(claudecodeharness.FinalEvaluationInput{
-		FinalPrompt:         finalPrompt,
-		Text:                detectionText,
-		Thinking:            thinking,
-		ToolNames:           toolNames,
-		ToolSchemas:         toolcall.ExtractParameterSchemas(toolsRaw),
-		AllowMetaAgentTools: true,
-		ContentFilter:       contentFilter,
-		Profile:             "openai",
-	})
-	if !result.MissingToolDecision.Blocked && len(result.Calls) == 0 && result.Text == detectionText {
-		result.Text = visibleText
-	}
-	return result
-}
 
 func normalizeResponsesFinalToolCalls(finalPrompt string, calls []toolcall.ParsedToolCall, toolsRaw any, toolNames []string) ([]toolcall.ParsedToolCall, int, string, string, bool) {
 	normalized, report := toolcall.NormalizeParsedToolCallsForSchemasWithReport(calls, toolsRaw)

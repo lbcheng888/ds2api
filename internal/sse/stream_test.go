@@ -43,7 +43,7 @@ func TestStartParsedLinePumpParsesAndStops(t *testing.T) {
 }
 
 func TestStartParsedLinePumpHandlesLongSingleSSELine(t *testing.T) {
-	payload := strings.Repeat("x", 2*1024*1024+4096)
+	payload := strings.Repeat("x", 5*1024*1024+4096)
 	results, done := StartParsedLinePump(context.Background(), strings.NewReader(makeLargeContentSSEBody(t, payload)), false, "text")
 
 	var got strings.Builder

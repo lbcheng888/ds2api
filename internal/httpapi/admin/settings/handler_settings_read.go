@@ -32,7 +32,6 @@ func (h *Handler) getSettings(w http.ResponseWriter, _ *http.Request) {
 			"reasoning_only_timeout_seconds":   h.Store.RuntimeReasoningOnlyTimeoutSeconds(),
 			"buffered_tool_content_max_bytes":  h.Store.RuntimeBufferedToolContentMaxBytes(),
 		},
-		"compat":      snap.Compat,
 		"responses":   snap.Responses,
 		"embeddings":  snap.Embeddings,
 		"auto_delete": snap.AutoDelete,

@@ -11,7 +11,7 @@ import (
 	"ds2api/internal/httpapi/openai/history"
 	"ds2api/internal/httpapi/openai/shared"
 	"ds2api/internal/promptcompat"
-	"ds2api/internal/toolcall"
+	"ds2api/internal/textclean"
 	"ds2api/internal/toolstream"
 )
 
@@ -29,11 +29,8 @@ type Handler struct {
 	responses   *responseStore
 }
 
-func (h *Handler) compatStripReferenceMarkers() bool {
-	if h == nil {
-		return true
-	}
-	return shared.CompatStripReferenceMarkers(h.Store)
+func stripReferenceMarkersEnabled() bool {
+	return textclean.StripReferenceMarkersEnabled()
 }
 
 func (h *Handler) applyCurrentInputFile(ctx context.Context, a *auth.RequestAuth, stdReq promptcompat.StandardRequest) (promptcompat.StandardRequest, error) {
@@ -98,18 +95,6 @@ func cleanVisibleOutput(text string, stripReferenceMarkers bool) string {
 	return shared.CleanVisibleOutput(text, stripReferenceMarkers)
 }
 
-func replaceCitationMarkersWithLinks(text string, links map[int]string) string {
-	return shared.ReplaceCitationMarkersWithLinks(text, links)
-}
-
-func upstreamEmptyOutputDetail(contentFilter bool, text, thinking string) (int, string, string) {
-	return shared.UpstreamEmptyOutputDetail(contentFilter, text, thinking)
-}
-
-func writeUpstreamEmptyOutputError(w http.ResponseWriter, text, thinking string, contentFilter bool) bool {
-	return shared.WriteUpstreamEmptyOutputError(w, text, thinking, contentFilter)
-}
-
 func emptyOutputRetryEnabled() bool {
 	return shared.EmptyOutputRetryEnabled()
 }
@@ -128,8 +113,4 @@ func usagePromptWithEmptyOutputRetry(originalPrompt string, retryAttempts int) s
 
 func filterIncrementalToolCallDeltasByAllowed(deltas []toolstream.ToolCallDelta, seenNames map[int]string) []toolstream.ToolCallDelta {
 	return shared.FilterIncrementalToolCallDeltasByAllowed(deltas, seenNames)
-}
-
-func detectAssistantToolCalls(rawText, visibleText, exposedThinking, detectionThinking string, toolNames []string) toolcall.ToolCallParseResult {
-	return shared.DetectAssistantToolCalls(rawText, visibleText, exposedThinking, detectionThinking, toolNames)
 }

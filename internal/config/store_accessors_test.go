@@ -2,21 +2,6 @@ package config
 
 import "testing"
 
-func TestStoreHistorySplitAccessors(t *testing.T) {
-	enabled := true
-	turns := 3
-	store := &Store{cfg: Config{HistorySplit: HistorySplitConfig{
-		Enabled:           &enabled,
-		TriggerAfterTurns: &turns,
-	}}}
-	if store.HistorySplitEnabled() {
-		t.Fatal("expected history split to stay disabled")
-	}
-	if got := store.HistorySplitTriggerAfterTurns(); got != 1 {
-		t.Fatalf("history split trigger_after_turns=%d want=1", got)
-	}
-}
-
 func TestStoreCurrentInputFileAccessors(t *testing.T) {
 	store := &Store{cfg: Config{}}
 	if !store.CurrentInputFileEnabled() {
@@ -39,12 +24,6 @@ func TestStoreCurrentInputFileAccessors(t *testing.T) {
 	}
 	if got := store.CurrentInputFileMinChars(); got != 12345 {
 		t.Fatalf("current input file min_chars=%d want=12345", got)
-	}
-
-	historyEnabled := true
-	store.cfg.HistorySplit.Enabled = &historyEnabled
-	if !store.CurrentInputFileEnabled() {
-		t.Fatal("expected history split config to not suppress current input file mode")
 	}
 }
 

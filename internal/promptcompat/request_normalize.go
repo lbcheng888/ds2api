@@ -10,7 +10,6 @@ import (
 
 type ConfigReader interface {
 	ModelAliases() map[string]string
-	CompatWideInputStrictOutput() bool
 }
 
 func NormalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID string) (StandardRequest, error) {
@@ -74,17 +73,7 @@ func NormalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 		thinkingEnabled = false
 	}
 
-	// Keep width-control as an explicit policy hook even if current default is true.
-	allowWideInput := true
-	if store != nil {
-		allowWideInput = store.CompatWideInputStrictOutput()
-	}
-	var messagesRaw []any
-	if allowWideInput {
-		messagesRaw = ResponsesMessagesFromRequest(req)
-	} else if msgs, ok := req["messages"].([]any); ok && len(msgs) > 0 {
-		messagesRaw = msgs
-	}
+	messagesRaw := ResponsesMessagesFromRequest(req)
 	if len(messagesRaw) == 0 {
 		return StandardRequest{}, fmt.Errorf("request must include 'input' or 'messages'")
 	}

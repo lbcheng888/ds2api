@@ -72,9 +72,6 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 			if compatCfg.WideInputStrictOutput != nil {
 				c.Compat.WideInputStrictOutput = compatCfg.WideInputStrictOutput
 			}
-			if compatCfg.StripReferenceMarkers != nil {
-				c.Compat.StripReferenceMarkers = compatCfg.StripReferenceMarkers
-			}
 			if compatCfg.AllowMetaAgentTools != nil {
 				c.Compat.AllowMetaAgentTools = compatCfg.AllowMetaAgentTools
 			}

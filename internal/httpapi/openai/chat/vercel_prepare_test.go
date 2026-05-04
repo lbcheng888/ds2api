@@ -94,7 +94,6 @@ func TestHandleVercelStreamPrepareAppliesCurrentInputFile(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &Handler{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 		},
 		Auth: streamStatusAuthStub{},
@@ -151,7 +150,6 @@ func TestHandleVercelStreamPrepareMapsCurrentInputFileManagedAuthFailureTo401(t 
 	}
 	h := &Handler{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 		},
 		Auth: streamStatusManagedAuthStub{},

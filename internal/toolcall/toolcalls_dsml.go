@@ -21,7 +21,7 @@ func rewriteDSMLToolMarkupOutsideIgnored(text string) string {
 	var b strings.Builder
 	b.Grow(len(text))
 	for i := 0; i < len(text); {
-		next, advanced, blocked := skipXMLIgnoredSection(lower, i)
+		next, advanced, blocked := skipXMLIgnoredSection(text, lower, i)
 		if blocked {
 			b.WriteString(text[i:])
 			break

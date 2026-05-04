@@ -176,20 +176,17 @@ func (h *Handler) runtimeDiagnosticsProfile() map[string]any {
 	}
 	recommended := defaultRuntimeRecommended(len(h.Store.Accounts()), h.Store.RuntimeAccountMaxInflight())
 	return map[string]any{
-		"account_max_inflight":              h.Store.RuntimeAccountMaxInflight(),
-		"account_max_queue":                 h.Store.RuntimeAccountMaxQueue(recommended),
-		"global_max_inflight":               h.Store.RuntimeGlobalMaxInflight(recommended),
-		"token_refresh_interval_hours":      h.Store.RuntimeTokenRefreshIntervalHours(),
-		"account_failure_cooldown_seconds":  h.Store.RuntimeAccountFailureCooldownSeconds(),
-		"stream_max_duration_seconds":       h.Store.RuntimeStreamMaxDurationSeconds(),
-		"reasoning_only_timeout_seconds":    h.Store.RuntimeReasoningOnlyTimeoutSeconds(),
-		"buffered_tool_content_max_bytes":   h.Store.RuntimeBufferedToolContentMaxBytes(),
-		"allow_meta_agent_tools":            h.Store.CompatAllowMetaAgentTools(),
-		"default_reasoning_effort":          h.Store.CompatDefaultReasoningEffort(),
-		"strip_reference_markers":           h.Store.CompatStripReferenceMarkers(),
-		"history_split_enabled":             h.Store.HistorySplitEnabled(),
-		"history_split_trigger_after_turns": h.Store.HistorySplitTriggerAfterTurns(),
-		"auto_delete_mode":                  h.Store.AutoDeleteMode(),
+		"account_max_inflight":             h.Store.RuntimeAccountMaxInflight(),
+		"account_max_queue":                h.Store.RuntimeAccountMaxQueue(recommended),
+		"global_max_inflight":              h.Store.RuntimeGlobalMaxInflight(recommended),
+		"token_refresh_interval_hours":     h.Store.RuntimeTokenRefreshIntervalHours(),
+		"account_failure_cooldown_seconds": h.Store.RuntimeAccountFailureCooldownSeconds(),
+		"stream_max_duration_seconds":      h.Store.RuntimeStreamMaxDurationSeconds(),
+		"reasoning_only_timeout_seconds":   h.Store.RuntimeReasoningOnlyTimeoutSeconds(),
+		"buffered_tool_content_max_bytes":  h.Store.RuntimeBufferedToolContentMaxBytes(),
+		"allow_meta_agent_tools":           h.Store.CompatAllowMetaAgentTools(),
+		"default_reasoning_effort":         h.Store.CompatDefaultReasoningEffort(),
+		"auto_delete_mode":                 h.Store.AutoDeleteMode(),
 	}
 }
 

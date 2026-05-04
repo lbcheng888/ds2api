@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -57,7 +58,7 @@ func blockChatHistoryDetailDir(t *testing.T, detailDir string) func() {
 func TestChatCompletionsNonStreamPersistsHistory(t *testing.T) {
 	historyStore := newTestChatHistoryStore(t)
 	h := &Handler{
-		Store:       mockOpenAIConfig{wideInput: true},
+		Store:       mockOpenAIConfig{},
 		Auth:        streamStatusAuthStub{},
 		DS:          streamStatusDSStub{resp: makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":"hello world"}`, `data: [DONE]`)},
 		ChatHistory: historyStore,
@@ -99,6 +100,86 @@ func TestChatCompletionsNonStreamPersistsHistory(t *testing.T) {
 	}
 	if item.CallerID != "caller:test" {
 		t.Fatalf("expected caller hash persisted in summary, got %#v", item.CallerID)
+	}
+}
+
+func TestChatHistoryNonStreamArchivesRawToolCallMarkup(t *testing.T) {
+	historyStore := newTestChatHistoryStore(t)
+	entry, err := historyStore.Start(chathistory.StartParams{
+		CallerID:  "caller:test",
+		Model:     "deepseek-v4-flash",
+		UserInput: "call tool",
+	})
+	if err != nil {
+		t.Fatalf("start history failed: %v", err)
+	}
+	session := &chatHistorySession{
+		store:       historyStore,
+		entryID:     entry.ID,
+		startedAt:   time.Now(),
+		lastPersist: time.Now().Add(-time.Second),
+		finalPrompt: "call tool",
+	}
+	rawToolCall := `<tool_calls><invoke name="search"><parameter name="q">golang</parameter></invoke></tool_calls>`
+
+	h := &Handler{}
+	rec := httptest.NewRecorder()
+	resp := makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":`+strconv.Quote(rawToolCall)+`}`, `data: [DONE]`)
+	h.handleNonStream(rec, resp, "cid-tool-history", "deepseek-v4-flash", "prompt", 0, false, false, []string{"search"}, nil, session)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	full, err := historyStore.Get(entry.ID)
+	if err != nil {
+		t.Fatalf("get detail failed: %v", err)
+	}
+	if full.Content != rawToolCall {
+		t.Fatalf("expected raw tool markup archived, got %q", full.Content)
+	}
+	if full.FinishReason != "tool_calls" {
+		t.Fatalf("expected tool_calls finish reason, got %#v", full.FinishReason)
+	}
+}
+
+func TestChatHistoryStreamArchivesRawToolCallMarkup(t *testing.T) {
+	historyStore := newTestChatHistoryStore(t)
+	entry, err := historyStore.Start(chathistory.StartParams{
+		CallerID:  "caller:test",
+		Model:     "deepseek-v4-flash",
+		Stream:    true,
+		UserInput: "call tool",
+	})
+	if err != nil {
+		t.Fatalf("start history failed: %v", err)
+	}
+	session := &chatHistorySession{
+		store:       historyStore,
+		entryID:     entry.ID,
+		startedAt:   time.Now(),
+		lastPersist: time.Now().Add(-time.Second),
+		finalPrompt: "call tool",
+	}
+	rawToolCall := `<tool_calls><invoke name="search"><parameter name="q">golang</parameter></invoke></tool_calls>`
+
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	resp := makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":`+strconv.Quote(rawToolCall)+`}`, `data: [DONE]`)
+	h.handleStream(rec, req, resp, "cid-stream-tool-history", "deepseek-v4-flash", "prompt", 0, false, false, []string{"search"}, nil, session)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	full, err := historyStore.Get(entry.ID)
+	if err != nil {
+		t.Fatalf("get detail failed: %v", err)
+	}
+	if full.Content != rawToolCall {
+		t.Fatalf("expected raw streamed tool markup archived, got %q", full.Content)
+	}
+	if full.FinishReason != "tool_calls" {
+		t.Fatalf("expected tool_calls finish reason, got %#v", full.FinishReason)
 	}
 }
 
@@ -213,10 +294,10 @@ func TestHandleStreamContextCancelledMarksHistoryStopped(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsSkipsAdminWebUISource(t *testing.T) {
+func TestChatCompletionsRecordsAdminWebUISource(t *testing.T) {
 	historyStore := newTestChatHistoryStore(t)
 	h := &Handler{
-		Store:       mockOpenAIConfig{wideInput: true},
+		Store:       mockOpenAIConfig{},
 		Auth:        streamStatusAuthStub{},
 		DS:          streamStatusDSStub{resp: makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":"hello world"}`, `data: [DONE]`)},
 		ChatHistory: historyStore,
@@ -226,7 +307,7 @@ func TestChatCompletionsSkipsAdminWebUISource(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
 	req.Header.Set("Authorization", "Bearer direct-token")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(adminWebUISourceHeader, adminWebUISourceValue)
+	req.Header.Set("X-Ds2-Source", "admin-webui-api-tester")
 	rec := httptest.NewRecorder()
 	h.ChatCompletions(rec, req)
 
@@ -237,8 +318,8 @@ func TestChatCompletionsSkipsAdminWebUISource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot failed: %v", err)
 	}
-	if len(snapshot.Items) != 0 {
-		t.Fatalf("expected admin webui source to be skipped, got %#v", snapshot.Items)
+	if len(snapshot.Items) != 1 {
+		t.Fatalf("expected admin webui source to be recorded, got %#v", snapshot.Items)
 	}
 }
 
@@ -248,7 +329,7 @@ func TestChatCompletionsSkipsHistoryWhenDisabled(t *testing.T) {
 		t.Fatalf("disable history store failed: %v", err)
 	}
 	h := &Handler{
-		Store:       mockOpenAIConfig{wideInput: true},
+		Store:       mockOpenAIConfig{},
 		Auth:        streamStatusAuthStub{},
 		DS:          streamStatusDSStub{resp: makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":"hello world"}`, `data: [DONE]`)},
 		ChatHistory: historyStore,
@@ -278,7 +359,6 @@ func TestChatCompletionsCurrentInputFilePersistsLatestRequestPrompt(t *testing.T
 	ds := &inlineUploadDSStub{}
 	h := &Handler{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 		},
 		Auth:        streamStatusAuthStub{},
