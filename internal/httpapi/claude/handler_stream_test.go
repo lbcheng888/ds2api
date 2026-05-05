@@ -1,6 +1,10 @@
 package claude
 
 import (
+	"context"
+	"ds2api/internal/auth"
+	dsclient "ds2api/internal/deepseek/client"
+	"ds2api/internal/promptcompat"
 	"ds2api/internal/sse"
 	"encoding/json"
 	"io"
@@ -154,6 +158,80 @@ func TestHandleClaudeStreamRealtimeToolBufferedPlainTextDoesNotRepeatFinalText(t
 	}
 }
 
+func TestHandleClaudeStreamRealtimeToolModeDropsLeakedEndOfSentenceReplay(t *testing.T) {
+	h := &Handler{}
+	resp := makeClaudeSSEHTTPResponse(
+		makeClaudeContentLine(t, "<| end_of_sentence |>{\n  \"name\": \"api\",\n  \"version\": \"4.0.0\"\n}"),
+		makeClaudeContentLine(t, "<| end_of_toolresults |><| Tool |>{\"compilerOptions\":{}}\n./src/"),
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "请分析当前代码"}}, false, false, []string{"Read", "Bash"}, nil)
+
+	body := rec.Body.String()
+	for _, leaked := range []string{"end_of_sentence", "end_of_toolresults", "\"name\": \"api\"", "compilerOptions", "./src/"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("leaked prompt replay %q into Claude stream body=%s", leaked, body)
+		}
+	}
+}
+
+func TestHandleClaudeStreamRealtimeDropsSplitLeakedEndOfSentenceReplay(t *testing.T) {
+	h := &Handler{}
+	resp := makeClaudeSSEHTTPResponse(
+		makeClaudeContentLine(t, "可见摘要<| end_of_"),
+		makeClaudeContentLine(t, "sentence |>export type ApiMessage = {}"),
+		makeClaudeContentLine(t, "export type ApiStreamEvent = {}"),
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "请分析当前代码"}}, false, false, []string{"Read", "Bash"}, nil)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "可见摘要") {
+		t.Fatalf("expected visible prefix to remain, body=%s", body)
+	}
+	for _, leaked := range []string{"end_of_sentence", "ApiMessage", "ApiStreamEvent"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("split leaked prompt replay %q into Claude stream body=%s", leaked, body)
+		}
+	}
+}
+
+func TestHandleClaudeStreamRealtimeSuppressesShortPreambleBeforeToolUse(t *testing.T) {
+	h := &Handler{}
+	resp := makeClaudeSSEHTTPResponse(
+		makeClaudeContentLine(t, "Let me first"),
+		makeClaudeContentLine(t, `<tool_calls><invoke name="Bash"><parameter name="command">find . -type f</parameter></invoke></tool_calls>`),
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "请并行分析当前代码问题和改进点"}}, false, false, []string{"Bash"}, nil)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "Let me first") {
+		t.Fatalf("short preamble must not be emitted before tool_use, body=%s", body)
+	}
+	frames := parseClaudeFrames(t, body)
+	var foundTool bool
+	for _, frame := range findClaudeFrames(frames, "content_block_start") {
+		block, _ := frame.Payload["content_block"].(map[string]any)
+		if block["type"] == "tool_use" && block["name"] == "Bash" {
+			foundTool = true
+			break
+		}
+	}
+	if !foundTool {
+		t.Fatalf("expected Bash tool_use, body=%s", body)
+	}
+}
+
 func TestHandleClaudeStreamRealtimeTrimsContinuationReplay(t *testing.T) {
 	h := &Handler{}
 	prefix := strings.Repeat("A", 40)
@@ -241,7 +319,7 @@ func TestHandleClaudeStreamRealtimeSkipsThinkingFallbackWhenFinalTextExists(t *t
 	}
 }
 
-func TestHandleClaudeStreamRealtimeBlocksMissingToolPromise(t *testing.T) {
+func TestHandleClaudeStreamRealtimeSynthesizesSafeExplorationPromise(t *testing.T) {
 	h := &Handler{}
 	resp := makeClaudeSSEHTTPResponse(
 		`data: {"p":"response/content","v":"The user is asking about cold bootstrap performance breakdown and wants to explore this in parallel.\n\nLet me examine the current codebase state and then investigate the three phases concurrently."}`,
@@ -256,15 +334,176 @@ func TestHandleClaudeStreamRealtimeBlocksMissingToolPromise(t *testing.T) {
 	if strings.Contains(body, "Let me examine") {
 		t.Fatalf("missing-tool promise must not be emitted as text, body=%s", body)
 	}
+	if strings.Contains(body, "upstream_missing_tool_call") {
+		t.Fatalf("safe exploration promise should become a tool call, body=%s", body)
+	}
 	frames := parseClaudeFrames(t, body)
-	errFrames := findClaudeFrames(frames, "error")
-	if len(errFrames) == 0 {
-		t.Fatalf("expected error event for missing tool call, body=%s", body)
+	var foundTool bool
+	for _, frame := range findClaudeFrames(frames, "content_block_start") {
+		block, _ := frame.Payload["content_block"].(map[string]any)
+		if block["type"] == "tool_use" && block["name"] == "Bash" {
+			foundTool = true
+			break
+		}
 	}
-	errObj, _ := errFrames[0].Payload["error"].(map[string]any)
-	if errObj["code"] != "upstream_missing_tool_call" {
-		t.Fatalf("expected upstream_missing_tool_call, body=%s", body)
+	if !foundTool {
+		t.Fatalf("expected synthesized Bash tool_use, body=%s", body)
 	}
+}
+
+func TestHandleClaudeStreamRealtimeSuppressesMalformedDSMLToolText(t *testing.T) {
+	h := &Handler{}
+	resp := makeClaudeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"<|DSML|tool_calls>\n<|DSML|invoke name=\"Agent\">\n<|DSML|parameter name=\"description\">分析</|DSML|parameter>\n<|DSML|parameter name=\"prompt\">分析当前项目</|DSML|parameter>\n</|DSML|invoke>\n</DSML|"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "use agent"}}, false, false, []string{"Agent", "Read"}, nil)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "DSML") || strings.Contains(body, "<|") {
+		t.Fatalf("malformed DSML tool syntax must not leak as visible text, body=%s", body)
+	}
+}
+
+func TestHandleClaudeDirectStreamRetriesMissingToolBeforeError(t *testing.T) {
+	ds := &claudeStreamRetryDS{responses: []*http.Response{
+		makeClaudeSSEHTTPResponse(
+			`data: {"response_message_id":88,"p":"response/content","v":"Now let me check the current working tree state and build/test status."}`,
+			`data: [DONE]`,
+		),
+		makeClaudeSSEHTTPResponse(
+			`data: {"response_message_id":89,"p":"response/content","v":"<tool_calls><invoke name=\"Bash\"><parameter name=\"command\">git status --short</parameter></invoke></tool_calls>"}`,
+			`data: [DONE]`,
+		),
+	}}
+	h := &Handler{DS: ds}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+	stdReq := promptcompat.StandardRequest{
+		ResponseModel:   "deepseek-v4-flash",
+		PromptTokenText: "please check status",
+		Messages:        []any{map[string]any{"role": "user", "content": "please check status"}},
+		ToolNames:       []string{"Bash", "Read", "Edit"},
+		ToolsRaw: []any{map[string]any{
+			"name": "Bash",
+			"input_schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"command": map[string]any{"type": "string"},
+				},
+			},
+		}},
+	}
+
+	h.handleClaudeDirectStream(rec, req, &auth.RequestAuth{}, stdReq, nil)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "upstream_missing_tool_call") {
+		t.Fatalf("missing-tool retry should not leak first-attempt error, body=%s", body)
+	}
+	frames := parseClaudeFrames(t, body)
+	var foundTool bool
+	for _, frame := range findClaudeFrames(frames, "content_block_start") {
+		block, _ := frame.Payload["content_block"].(map[string]any)
+		if block["type"] == "tool_use" && block["name"] == "Bash" {
+			foundTool = true
+			break
+		}
+	}
+	if !foundTool {
+		t.Fatalf("expected retried Bash tool_use, body=%s", body)
+	}
+	if len(ds.payloads) != 2 {
+		t.Fatalf("expected two completion calls, got %d", len(ds.payloads))
+	}
+	if got := ds.payloads[1]["parent_message_id"]; got != 88 {
+		t.Fatalf("retry parent_message_id mismatch: %#v", got)
+	}
+	prompt, _ := ds.payloads[1]["prompt"].(string)
+	if !strings.Contains(prompt, "promised tool work but emitted no valid tool call") {
+		t.Fatalf("expected missing-tool retry prompt, got %q", prompt)
+	}
+}
+
+func TestHandleClaudeDirectStreamSynthesizesSafeExplorationBeforeRetry(t *testing.T) {
+	ds := &claudeStreamRetryDS{responses: []*http.Response{
+		makeClaudeSSEHTTPResponse(
+			`data: {"response_message_id":90,"p":"response/content","v":"Let me read the main source files to understand the codebase."}`,
+			`data: [DONE]`,
+		),
+	}}
+	h := &Handler{DS: ds}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+	stdReq := promptcompat.StandardRequest{
+		ResponseModel:   "deepseek-v4-pro",
+		PromptTokenText: "please analyze current code",
+		Messages:        []any{map[string]any{"role": "user", "content": "please analyze current code"}},
+		ToolNames:       []string{"Bash", "Read"},
+		ToolsRaw: []any{map[string]any{
+			"name": "Bash",
+			"input_schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"command":     map[string]any{"type": "string"},
+					"description": map[string]any{"type": "string"},
+				},
+				"required": []any{"command"},
+			},
+		}},
+	}
+
+	h.handleClaudeDirectStream(rec, req, &auth.RequestAuth{}, stdReq, nil)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "upstream_missing_tool_call") || strings.Contains(body, "Let me read") {
+		t.Fatalf("safe exploration promise should not leak or error, body=%s", body)
+	}
+	frames := parseClaudeFrames(t, body)
+	var foundTool bool
+	for _, frame := range findClaudeFrames(frames, "content_block_start") {
+		block, _ := frame.Payload["content_block"].(map[string]any)
+		if block["type"] == "tool_use" && block["name"] == "Bash" {
+			foundTool = true
+			break
+		}
+	}
+	if !foundTool {
+		t.Fatalf("expected synthesized Bash tool_use, body=%s", body)
+	}
+	if len(ds.payloads) != 1 {
+		t.Fatalf("safe exploration synthesis should avoid retry, got %d completion calls", len(ds.payloads))
+	}
+}
+
+type claudeStreamRetryDS struct {
+	responses []*http.Response
+	payloads  []map[string]any
+}
+
+func (d *claudeStreamRetryDS) CreateSession(context.Context, *auth.RequestAuth, int) (string, error) {
+	return "session-claude-retry", nil
+}
+
+func (d *claudeStreamRetryDS) GetPow(context.Context, *auth.RequestAuth, int) (string, error) {
+	return "pow", nil
+}
+
+func (d *claudeStreamRetryDS) UploadFile(context.Context, *auth.RequestAuth, dsclient.UploadFileRequest, int) (*dsclient.UploadFileResult, error) {
+	return &dsclient.UploadFileResult{ID: "unused"}, nil
+}
+
+func (d *claudeStreamRetryDS) CallCompletion(_ context.Context, _ *auth.RequestAuth, payload map[string]any, _ string, _ int) (*http.Response, error) {
+	d.payloads = append(d.payloads, payload)
+	if len(d.responses) == 0 {
+		return makeClaudeSSEHTTPResponse(`data: {"p":"response/content","v":"fallback"}`), nil
+	}
+	resp := d.responses[0]
+	d.responses = d.responses[1:]
+	return resp, nil
 }
 
 func TestHandleClaudeStreamRealtimeUpstreamErrorEvent(t *testing.T) {

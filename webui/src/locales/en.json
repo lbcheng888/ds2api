@@ -397,7 +397,7 @@
         "currentInputFileEnabled": "Independent split (by size)",
         "currentInputFileDesc": "Enabled by default. Once the character threshold is reached, upload the full context as a DS2API_HISTORY.txt context file.",
         "currentInputFileMinChars": "Current input threshold (characters)",
-        "currentInputFileHelp": "Default is 0, which uses independent split for any non-empty input.",
+        "currentInputFileHelp": "Default is 12000; 0 uses the default, and 1 makes almost every non-empty input use independent split.",
         "modelTitle": "Model mapping",
         "modelAliases": "Global model aliases (JSON)",
         "autoDeleteTitle": "Session Cleanup Policy",

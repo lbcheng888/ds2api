@@ -180,3 +180,75 @@ func TestNormalizeParsedToolCallsForSchemasPreservesArrayWhenSchemaSaysArray(t *
 		t.Fatalf("expected todos array preserved, got %#v want %#v", got[0].Input["todos"], todos)
 	}
 }
+
+func TestNormalizeParsedToolCallsForSchemasWrapsSingleArrayObject(t *testing.T) {
+	toolsRaw := []any{
+		map[string]any{
+			"name": "UpdateTodos",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"todos": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"content": map[string]any{"type": "string"},
+								"status":  map[string]any{"type": "string"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	calls := []ParsedToolCall{{
+		Name: "UpdateTodos",
+		Input: map[string]any{
+			"todos": map[string]any{"content": "分析当前代码", "status": "pending"},
+		},
+	}}
+	got := NormalizeParsedToolCallsForSchemas(calls, toolsRaw)
+	todos, ok := got[0].Input["todos"].([]any)
+	if !ok || len(todos) != 1 {
+		t.Fatalf("expected single todo object wrapped as array, got %#v", got[0].Input["todos"])
+	}
+	first, _ := todos[0].(map[string]any)
+	if first["content"] != "分析当前代码" {
+		t.Fatalf("unexpected wrapped todo: %#v", todos)
+	}
+}
+
+func TestNormalizeParsedToolCallsForSchemasParsesLooseArrayString(t *testing.T) {
+	toolsRaw := []any{
+		map[string]any{
+			"name": "UpdateTodos",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"todos": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"content": map[string]any{"type": "string"},
+								"status":  map[string]any{"type": "string"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	calls := []ParsedToolCall{{
+		Name: "UpdateTodos",
+		Input: map[string]any{
+			"todos": `{"content":"分析当前代码","status":"pending"}, {"content":"继续实现","status":"pending"}`,
+		},
+	}}
+	got := NormalizeParsedToolCallsForSchemas(calls, toolsRaw)
+	todos, ok := got[0].Input["todos"].([]any)
+	if !ok || len(todos) != 2 {
+		t.Fatalf("expected loose todo list string parsed as array, got %#v", got[0].Input["todos"])
+	}
+}

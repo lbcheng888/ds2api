@@ -20,6 +20,10 @@ var leakedThinkTagPattern = regexp.MustCompile(`(?is)</?\s*think\s*>`)
 //   - U+2581 variant:   <｜begin▁of▁sentence｜>
 var leakedBOSMarkerPattern = regexp.MustCompile(`(?i)<[｜\|]\s*begin[_▁]of[_▁]sentence\s*[｜\|]>`)
 
+// leakedEndOfSentenceMarkerPattern is a hard assistant-output boundary. Text
+// after it is prompt/history replay and must not be exposed as visible output.
+var leakedEndOfSentenceMarkerPattern = regexp.MustCompile(`(?i)<[｜\|]\s*end[_▁]of[_▁]sentence\s*[｜\|]>`)
+
 // leakedMetaMarkerPattern matches the remaining DeepSeek special tokens in BOTH forms:
 //   - ASCII underscore: <｜end_of_sentence｜>, <｜end_of_toolresults｜>, <｜end_of_instructions｜>
 //   - U+2581 variant:   <｜end▁of▁sentence｜>, <｜end▁of▁toolresults｜>, <｜end▁of▁instructions｜>
@@ -48,12 +52,18 @@ func sanitizeLeakedOutput(text string) string {
 	out = leakedToolCallArrayPattern.ReplaceAllString(out, "")
 	out = leakedToolResultBlobPattern.ReplaceAllString(out, "")
 	out, _ = stripLeakedHistoryTranscriptSuffix(out)
+	out, _ = stripLeakedEndOfSentenceSuffix(out)
 	out = stripDanglingThinkSuffix(out)
 	out = leakedThinkTagPattern.ReplaceAllString(out, "")
 	out = leakedBOSMarkerPattern.ReplaceAllString(out, "")
 	out = leakedMetaMarkerPattern.ReplaceAllString(out, "")
 	out = stripLeakedToolCallWrapperBlocks(out)
 	out = sanitizeLeakedAgentXMLBlocks(out)
+	return out
+}
+
+func TruncateAtLeakedEndOfSentence(text string) string {
+	out, _ := stripLeakedEndOfSentenceSuffix(text)
 	return out
 }
 
@@ -72,6 +82,17 @@ func stripLeakedHistoryTranscriptSuffix(text string) (string, bool) {
 		return text, false
 	}
 	return strings.TrimRight(text[:idx], " \t\r"), true
+}
+
+func stripLeakedEndOfSentenceSuffix(text string) (string, bool) {
+	if text == "" {
+		return text, false
+	}
+	loc := leakedEndOfSentenceMarkerPattern.FindStringIndex(text)
+	if loc == nil {
+		return text, false
+	}
+	return strings.TrimRight(text[:loc[0]], " \t\r\n"), true
 }
 
 func stripLeakedToolCallWrapperBlocks(text string) string {

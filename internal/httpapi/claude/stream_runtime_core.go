@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	claudecodeharness "ds2api/internal/harness/claudecode"
 	"ds2api/internal/responsehistory"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
+	"ds2api/internal/textclean"
 	"ds2api/internal/toolcall"
 	"ds2api/internal/toolstream"
 )
@@ -28,18 +28,19 @@ type claudeStreamRuntime struct {
 	thinkingEnabled       bool
 	searchEnabled         bool
 	bufferToolContent     bool
-	holdBufferedToolText  bool
 	stripReferenceMarkers bool
 
 	messageID string
 	thinking  strings.Builder
 	text      strings.Builder
 
+	outputSanitizer       textclean.StreamSanitizer
 	sieve                 toolstream.State
 	rawText               strings.Builder
 	rawThinking           strings.Builder
 	toolDetectionThinking strings.Builder
 	toolCallsDetected     bool
+	responseMessageID     int
 
 	nextBlockIndex     int
 	thinkingBlockOpen  bool
@@ -49,6 +50,9 @@ type claudeStreamRuntime struct {
 	textEmitted        bool
 	ended              bool
 	upstreamErr        string
+	finalErrorStatus   int
+	finalErrorMessage  string
+	finalErrorCode     string
 	history            *responsehistory.Session
 }
 
@@ -94,6 +98,9 @@ func (s *claudeStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 		s.upstreamErr = parsed.ErrorMessage
 		return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReason("upstream_error")}
 	}
+	if parsed.ResponseMessageID > 0 {
+		s.responseMessageID = parsed.ResponseMessageID
+	}
 	if parsed.Stop {
 		return streamengine.ParsedDecision{Stop: true}
 	}
@@ -120,7 +127,11 @@ func (s *claudeStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 		} else {
 			s.rawText.WriteString(rawTrimmed)
 		}
-		cleanedText := cleanVisibleOutput(rawTrimmed, s.stripReferenceMarkers)
+		cleanInput := rawTrimmed
+		if p.Type != "thinking" {
+			cleanInput = s.outputSanitizer.Sanitize(rawTrimmed)
+		}
+		cleanedText := cleanVisibleOutput(cleanInput, s.stripReferenceMarkers)
 		if cleanedText == "" {
 			continue
 		}
@@ -192,7 +203,7 @@ func (s *claudeStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 			continue
 		}
 
-		events := toolstream.ProcessChunk(&s.sieve, rawTrimmed, s.toolNames)
+		events := toolstream.ProcessChunk(&s.sieve, cleanInput, s.toolNames)
 		for _, evt := range events {
 			if len(evt.ToolCalls) > 0 {
 				s.closeTextBlock()
@@ -212,7 +223,10 @@ func (s *claudeStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 			if cleaned == "" || (s.searchEnabled && sse.IsCitation(cleaned)) {
 				continue
 			}
-			if s.shouldHoldBufferedToolContent() {
+			if s.shouldSuppressLeakedToolSyntax(cleaned) {
+				continue
+			}
+			if s.shouldBufferToolModeText() {
 				continue
 			}
 			s.closeThinkingBlock()
@@ -250,39 +264,14 @@ func (s *claudeStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 	return streamengine.ParsedDecision{ContentSeen: contentSeen}
 }
 
-func (s *claudeStreamRuntime) shouldHoldBufferedToolContent() bool {
+func (s *claudeStreamRuntime) shouldBufferToolModeText() bool {
+	return s.bufferToolContent && !s.toolCallsDetected
+}
+
+func (s *claudeStreamRuntime) shouldSuppressLeakedToolSyntax(text string) bool {
 	if !s.bufferToolContent || s.toolCallsDetected {
 		return false
 	}
-	if s.holdBufferedToolText {
-		return true
-	}
-	if claudecodeharness.IsToolRequiredTurn(claudecodeharness.ToolRequiredTurnInput{
-		FinalPrompt:         s.promptTokenText,
-		ToolNames:           s.toolNames,
-		AllowMetaAgentTools: true,
-	}) {
-		s.holdBufferedToolText = true
-		return true
-	}
-	detectionText := s.text.String()
-	if rawText := strings.TrimSpace(s.rawText.String()); rawText != "" {
-		detectionText = rawText
-	}
-	if !claudecodeharness.LooksLikeBufferedToolHoldCandidate(detectionText) {
-		return false
-	}
-	decision := claudecodeharness.DetectMissingToolCallNoRecord(claudecodeharness.MissingToolCallInput{
-		Text:                detectionText,
-		FinalPrompt:         s.promptTokenText,
-		ToolNames:           s.toolNames,
-		ToolSchemas:         toolcall.ExtractParameterSchemas(s.toolsRaw),
-		AllowMetaAgentTools: true,
-		Profile:             "claude",
-	})
-	if decision.Blocked {
-		s.holdBufferedToolText = true
-		return true
-	}
-	return false
+	hasDSML, hasCanonical := toolcall.ContainsToolMarkupSyntaxOutsideIgnored(text)
+	return hasDSML || hasCanonical
 }

@@ -736,7 +736,7 @@ data: {"type":"message_stop"}
 - `compat`（`wide_input_strict_output`、`strip_reference_markers`、`allow_meta_agent_tools`、`default_reasoning_effort`）
 - `responses` / `embeddings`
 - `auto_delete`（`mode`：`none` / `single` / `all`；旧配置 `sessions=true` 仍按 `all` 处理）
-- `current_input_file`（`enabled` 默认返回 `true`、`min_chars`）
+- `current_input_file`（`enabled` 默认返回 `true`、`min_chars` 默认返回 `12000`；写入 `0` 表示使用默认值）
 - `model_aliases`
 - `env_backed`、`needs_vercel_sync`
 - `toolcall` 策略已固定为 `feature_match + high`，不再通过 settings 返回或修改

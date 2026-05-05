@@ -24,6 +24,11 @@ var leakedThinkTagPattern = regexp.MustCompile(`(?is)</?\s*think\s*>`)
 //   - U+2581 variant:   <｜begin▁of▁sentence｜>
 var leakedBOSMarkerPattern = regexp.MustCompile(`(?i)<[｜\|]\s*begin[_▁]of[_▁]sentence\s*[｜\|]>`)
 
+// leakedEndOfSentenceMarkerPattern is a hard output boundary. When it leaks
+// from the prompt into model-visible output, any following bytes belong to a
+// replayed prompt/history segment rather than the assistant answer.
+var leakedEndOfSentenceMarkerPattern = regexp.MustCompile(`(?i)<[｜\|]\s*end[_▁]of[_▁]sentence\s*[｜\|]>`)
+
 // leakedMetaMarkerPattern matches the remaining DeepSeek special tokens in BOTH forms:
 //   - ASCII underscore: <｜end_of_sentence｜>, <｜end_of_toolresults｜>, <｜end_of_instructions｜>
 //   - U+2581 variant:   <｜end▁of▁sentence｜>, <｜end▁of▁toolresults｜>, <｜end▁of▁instructions｜>
@@ -109,6 +114,7 @@ var leakedAgentResultTagPattern = regexp.MustCompile(`(?is)</?result>`)
 type StreamSanitizer struct {
 	pendingSystemReminderPrefix string
 	pendingInstructionPrefix    string
+	pendingSpecialMarkerPrefix  string
 	insideSystemReminder        bool
 	dropRemainder               bool
 }
@@ -125,6 +131,10 @@ func (s *StreamSanitizer) Sanitize(text string) string {
 		text = s.pendingInstructionPrefix + text
 		s.pendingInstructionPrefix = ""
 	}
+	if s.pendingSpecialMarkerPrefix != "" {
+		text = s.pendingSpecialMarkerPrefix + text
+		s.pendingSpecialMarkerPrefix = ""
+	}
 	out := s.sanitizeSystemInstructionStream(text)
 	if s.dropRemainder || s.insideSystemReminder || out == "" {
 		return out
@@ -133,8 +143,16 @@ func (s *StreamSanitizer) Sanitize(text string) string {
 		s.dropRemainder = true
 		return cleaned
 	}
+	if cleaned, leaked := stripLeakedEndOfSentenceSuffix(out); leaked {
+		s.dropRemainder = true
+		return cleaned
+	}
 	if idx := partialSystemReminderOpenStart(out); idx >= 0 {
 		s.pendingSystemReminderPrefix = out[idx:]
+		return out[:idx]
+	}
+	if idx := partialDeepSeekSpecialMarkerStart(out); idx >= 0 {
+		s.pendingSpecialMarkerPrefix = out[idx:]
 		return out[:idx]
 	}
 	return out
@@ -149,6 +167,7 @@ func SanitizeLeakedOutput(text string) string {
 	out = leakedToolResultBlobPattern.ReplaceAllString(out, "")
 	out = leakedDanglingToolTagLinePattern.ReplaceAllString(out, "")
 	out, _ = stripLeakedHistoryTranscriptSuffix(out)
+	out, _ = stripLeakedEndOfSentenceSuffix(out)
 	out = sanitizeLeakedSystemInstructions(out)
 	out = stripDanglingThinkSuffix(out)
 	out = leakedThinkTagPattern.ReplaceAllString(out, "")
@@ -173,6 +192,17 @@ func stripLeakedHistoryTranscriptSuffix(text string) (string, bool) {
 		return text, false
 	}
 	return strings.TrimRight(text[:idx], " \t\r"), true
+}
+
+func stripLeakedEndOfSentenceSuffix(text string) (string, bool) {
+	if text == "" {
+		return text, false
+	}
+	loc := leakedEndOfSentenceMarkerPattern.FindStringIndex(text)
+	if loc == nil {
+		return text, false
+	}
+	return strings.TrimRight(text[:loc[0]], " \t\r\n"), true
 }
 
 func (s *StreamSanitizer) sanitizeSystemInstructionStream(text string) string {
@@ -277,6 +307,49 @@ func partialSystemReminderOpenStart(text string) int {
 		return last
 	}
 	return -1
+}
+
+func partialDeepSeekSpecialMarkerStart(text string) int {
+	last := strings.LastIndex(text, "<")
+	if last < 0 {
+		return -1
+	}
+	tail := text[last:]
+	normalized := normalizeSpecialMarkerFragment(tail)
+	if normalized == "" {
+		return -1
+	}
+	for _, marker := range []string{
+		"<|assistant|>",
+		"<|tool|>",
+		"<|begin_of_sentence|>",
+		"<|end_of_sentence|>",
+		"<|end_of_thinking|>",
+		"<|end_of_toolresults|>",
+		"<|end_of_instructions|>",
+	} {
+		if normalized != marker && strings.HasPrefix(marker, normalized) {
+			return last
+		}
+	}
+	return -1
+}
+
+func normalizeSpecialMarkerFragment(text string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(text) {
+		switch r {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '｜':
+			b.WriteRune('|')
+		case '▁':
+			b.WriteRune('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func stripDanglingThinkSuffix(text string) string {

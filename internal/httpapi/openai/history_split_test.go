@@ -74,6 +74,10 @@ func TestBuildOpenAICurrentInputContextTranscriptUsesNumberedHistorySections(t *
 		t.Fatalf("expected history transcript description, got %q", transcript)
 	}
 	for _, want := range []string{
+		"metadata:",
+		"total_entries=5",
+		"latest_user_entry=5",
+		"latest_tool_entry=4",
 		"=== 1. SYSTEM ===",
 		"=== 2. USER ===",
 		"=== 3. ASSISTANT ===",
@@ -380,6 +384,81 @@ func TestApplyCurrentInputFileUploadsFullContextFile(t *testing.T) {
 	}
 	if !strings.Contains(out.FinalPrompt, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
 		t.Fatalf("expected continuation-oriented prompt in live prompt, got %s", out.FinalPrompt)
+	}
+}
+
+func TestApplyCurrentInputFileKeepsHotToolStateInline(t *testing.T) {
+	ds := &inlineUploadDSStub{}
+	h := &openAITestSurface{
+		Store: mockOpenAIConfig{
+			currentInputEnabled: true,
+			currentInputMin:     0,
+			thinkingInjection:   boolPtr(true),
+		},
+		DS: ds,
+	}
+	req := map[string]any{
+		"model":    "deepseek-v4-flash",
+		"messages": historySplitTestMessages(),
+	}
+	stdReq, err := promptcompat.NormalizeOpenAIChatRequest(h.Store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+
+	out, err := h.applyCurrentInputFile(context.Background(), &auth.RequestAuth{DeepSeekToken: "token-hot"}, stdReq)
+	if err != nil {
+		t.Fatalf("apply current input file failed: %v", err)
+	}
+	if !strings.Contains(out.FinalPrompt, "Recent execution ledger, authoritative hot state:") {
+		t.Fatalf("expected live prompt to include execution ledger, got %s", out.FinalPrompt)
+	}
+	if !strings.Contains(out.FinalPrompt, "- search call-1: tool result") {
+		t.Fatalf("expected live prompt to summarize latest tool output, got %s", out.FinalPrompt)
+	}
+	if !strings.Contains(out.FinalPrompt, "Recent hot context copied inline from DS2API_HISTORY.txt:") ||
+		!strings.Contains(out.FinalPrompt, "=== 1. ASSISTANT ===") ||
+		!strings.Contains(out.FinalPrompt, "=== 2. TOOL ===") {
+		t.Fatalf("expected live prompt to keep assistant/tool hot context, got %s", out.FinalPrompt)
+	}
+	if strings.Contains(out.FinalPrompt, "first user turn") {
+		t.Fatalf("expected older cold user history to stay out of live prompt, got %s", out.FinalPrompt)
+	}
+}
+
+func TestApplyCurrentInputFileReusesCachedUploadForSameContext(t *testing.T) {
+	ds := &inlineUploadDSStub{}
+	h := &openAITestSurface{
+		Store: mockOpenAIConfig{
+			currentInputEnabled: true,
+			currentInputMin:     0,
+			thinkingInjection:   boolPtr(true),
+		},
+		DS: ds,
+	}
+	req := map[string]any{
+		"model":    "deepseek-v4-flash",
+		"messages": historySplitTestMessages(),
+	}
+	stdReq, err := promptcompat.NormalizeOpenAIChatRequest(h.Store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	authReq := &auth.RequestAuth{DeepSeekToken: "token-cache", AccountID: "acct-cache"}
+
+	first, err := h.applyCurrentInputFile(context.Background(), authReq, stdReq)
+	if err != nil {
+		t.Fatalf("first apply current input file failed: %v", err)
+	}
+	second, err := h.applyCurrentInputFile(context.Background(), authReq, stdReq)
+	if err != nil {
+		t.Fatalf("second apply current input file failed: %v", err)
+	}
+	if len(ds.uploadCalls) != 1 {
+		t.Fatalf("expected cached second call to avoid re-upload, got %d uploads", len(ds.uploadCalls))
+	}
+	if len(first.RefFileIDs) != 1 || len(second.RefFileIDs) != 1 || first.RefFileIDs[0] != second.RefFileIDs[0] {
+		t.Fatalf("expected cached file id to be reused, first=%#v second=%#v", first.RefFileIDs, second.RefFileIDs)
 	}
 }
 

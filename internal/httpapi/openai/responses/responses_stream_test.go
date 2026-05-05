@@ -364,6 +364,38 @@ func TestHandleResponsesStreamCurrentInputFileSuppressesStalePreambleBeforeToolC
 	}
 }
 
+func TestHandleResponsesStreamSuppressesShortPreambleBeforeToolCall(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	rec := httptest.NewRecorder()
+
+	sseLine := func(v string) string {
+		b, _ := json.Marshal(map[string]any{
+			"p": "response/content",
+			"v": v,
+		})
+		return "data: " + string(b) + "\n"
+	}
+
+	streamBody := sseLine("Let me first") +
+		sseLine(`<tool_calls><invoke name="Bash"><parameter name="command">find . -type f</parameter></invoke></tool_calls>`) +
+		"data: [DONE]\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+	}
+
+	h.handleResponsesStream(rec, req, resp, "owner-a", "resp_short_preamble_tool", "deepseek-v4-flash", "请并行分析当前代码问题和改进点", 0, false, false, []string{"Bash"}, nil, promptcompat.DefaultToolChoicePolicy(), "")
+
+	body := rec.Body.String()
+	if strings.Contains(body, "Let me first") {
+		t.Fatalf("short preamble must not be streamed before tool call, body=%s", body)
+	}
+	if !strings.Contains(body, "event: response.function_call_arguments.done") || !strings.Contains(body, "event: response.completed") {
+		t.Fatalf("expected tool call and completion events, body=%s", body)
+	}
+}
+
 func TestHandleResponsesStreamCurrentInputFileFlushesPlainTextAtFinal(t *testing.T) {
 	h := &Handler{}
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)

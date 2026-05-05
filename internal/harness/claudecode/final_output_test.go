@@ -99,6 +99,58 @@ func TestRepairFinalOutputConvertsChineseMultipleSubagentLaunchPromise(t *testin
 	}
 }
 
+func TestRepairFinalOutputPollsRunningAgentOnLowInformationText(t *testing.T) {
+	got := RepairFinalOutput(FinalOutputInput{
+		FinalPrompt: `<｜User｜>继续汇总 agent 结果<｜Assistant｜>
+Task Output agenttask1234
+Task is still running.`,
+		Text:                "3.",
+		ToolNames:           []string{"TaskOutput", "Agent", "Read"},
+		ToolSchemas:         taskOutputSchema,
+		AllowMetaAgentTools: true,
+	})
+	if !got.Changed || got.Reason != "running_agent_task_output" || !got.ToolCall {
+		t.Fatalf("expected running-agent TaskOutput repair, got %#v", got)
+	}
+	if !strings.Contains(got.Text, "<tool_name>TaskOutput</tool_name>") || !strings.Contains(got.Text, "agenttask1234") {
+		t.Fatalf("expected TaskOutput call for running task, got %s", got.Text)
+	}
+}
+
+func TestRepairFinalOutputSynthesizesSafeExplorationBash(t *testing.T) {
+	got := RepairFinalOutput(FinalOutputInput{
+		FinalPrompt: "<｜User｜>请分析当前代码<｜Assistant｜>",
+		Text:        "Let me read the main source files to understand the codebase.",
+		ToolNames:   []string{"Read", "Bash"},
+		ToolSchemas: bashSchema,
+	})
+	if !got.Changed || got.Reason != "safe_exploration_promise" || !got.ToolCall {
+		t.Fatalf("expected safe exploration repair, got %#v", got)
+	}
+	if !strings.Contains(got.Text, "<tool_name>Bash</tool_name>") || !strings.Contains(got.Text, "find . -maxdepth 2") {
+		t.Fatalf("expected read-only Bash inventory call, got %s", got.Text)
+	}
+}
+
+func TestRepairFinalOutputDoesNotSynthesizeWriteOrRunPromise(t *testing.T) {
+	for _, text := range []string{
+		"I will edit the file now.",
+		"Now let me run the test suite.",
+		"I will implement this by reading files first.",
+		"Let me search for egg, egraph, equality_saturation in src/.",
+	} {
+		got := RepairFinalOutput(FinalOutputInput{
+			FinalPrompt: "<｜User｜>继续修复<｜Assistant｜>",
+			Text:        text,
+			ToolNames:   []string{"Bash", "Edit", "Read"},
+			ToolSchemas: bashSchema,
+		})
+		if got.Reason == "safe_exploration_promise" || got.ToolCall {
+			t.Fatalf("must not synthesize unsafe promise %q, got %#v", text, got)
+		}
+	}
+}
+
 func TestCompleteToolCallsSchemaDefaultsReadFillsLimitOffset(t *testing.T) {
 	schemas := readSchemaWithLimitOffset
 	calls := []toolcall.ParsedToolCall{

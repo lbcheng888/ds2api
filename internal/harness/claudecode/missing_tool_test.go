@@ -280,6 +280,76 @@ func TestClassifyCurrentTurnToolRequirementDetectsAgentRunningClaimWithoutEviden
 	}
 }
 
+func TestDetectMissingToolCallAllowsSubstantiveTextAfterBackgroundAgentLaunch(t *testing.T) {
+	got := DetectMissingToolCall(MissingToolCallInput{
+		FinalPrompt: `<｜User｜>请分析当前 cheng 语言问题和改进点<｜Assistant｜>
+Background agent launched successfully.
+<｜Assistant｜>`,
+		Text: `结论：当前问题集中在冷启动边界和 seed 职责过重。
+
+- cheng_seed.c 承载了太多不该有的编译能力。
+- seed 只应是冷启动外根。
+- 后续建议把 parser/lowering/codegen 分层收口。`,
+		ToolNames:           []string{"Agent", "Read", "Bash"},
+		AllowMetaAgentTools: true,
+	})
+	if got.Blocked {
+		t.Fatalf("expected substantive progress text after Agent launch to be allowed, got %#v", got)
+	}
+}
+
+func TestDetectMissingToolCallAllowsSubstantiveAnalysisReport(t *testing.T) {
+	text := `一、编译器自举 - 硬阻断链
+
+1. 纯自举编译的全量闭包差很远：当前 pure self probe 只编译入口模块，完整 manifest 模块集差距很大。
+2. DirectObjectEmitWithoutBindInstruction_word_zero 是当前最硬的 blocker：说明 BodyIR 进入 primary object writer 后还没有把通用语句降成 ARM64 机器码。
+3. 通用 CFG lowering 未完成：if/elseif/range/while 等控制流还停留在专用切片。
+4. 跨函数调用的符号发射有 bug：elif_else_guard_cfg_fixture 的 classify 函数 BodyIR 有正常 WordCount 却无法稳定发射。`
+	intent := CompileRequestIntent(RequestIntentInput{
+		FinalPrompt:         "<｜User｜>请分析当前 cheng 语言问题和改进点<｜Assistant｜>",
+		FinalText:           text,
+		AvailableToolNames:  []string{"Agent", "Read", "Bash"},
+		AllowMetaAgentTools: true,
+	})
+	if !intent.PureAnalysis || intent.TextPromises.Any {
+		t.Fatalf("unexpected analysis intent: %#v", intent)
+	}
+	req := ClassifyCurrentTurnToolRequirement(CurrentTurnToolRequirementInput{
+		FinalPrompt:         "<｜User｜>请分析当前 cheng 语言问题和改进点<｜Assistant｜>",
+		Text:                text,
+		ToolNames:           []string{"Agent", "Read", "Bash"},
+		AllowMetaAgentTools: true,
+	})
+	if req.Required {
+		t.Fatalf("expected substantive analysis classifier to allow report, got %#v", req)
+	}
+	got := DetectMissingToolCall(MissingToolCallInput{
+		FinalPrompt:         "<｜User｜>请分析当前 cheng 语言问题和改进点<｜Assistant｜>",
+		Text:                text,
+		ToolNames:           []string{"Agent", "Read", "Bash"},
+		AllowMetaAgentTools: true,
+	})
+	if got.Blocked {
+		t.Fatalf("expected substantive analysis report to be allowed, got %#v", got)
+	}
+}
+
+func TestDetectMissingToolCallBlocksSubstantiveReportWithNextStepPromise(t *testing.T) {
+	got := DetectMissingToolCall(MissingToolCallInput{
+		FinalPrompt: "<｜User｜>请分析当前 cheng 语言问题和改进点<｜Assistant｜>",
+		Text: `结论：当前问题集中在 codegen 链路。
+
+1. parser 已经不是最硬瓶颈。
+2. BodyIR 到 primary object writer 的桥还缺关键实现。
+
+下一步：读取 primary_object_plan.cheng 并确认 A64 发射器清单。`,
+		ToolNames: []string{"Read", "Bash", "Edit"},
+	})
+	if !got.Blocked || got.Code != MissingToolCallCode {
+		t.Fatalf("expected next-step promise to remain blocked, got %#v", got)
+	}
+}
+
 func TestDetectMissingToolCallBlocksTaskListToolCommitmentWithoutRealTool(t *testing.T) {
 	got := DetectMissingToolCall(MissingToolCallInput{
 		Text: `Task list:

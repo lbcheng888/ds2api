@@ -106,6 +106,10 @@ func ExtractToolMeta(tool map[string]any) (string, string, any) {
 }
 
 func normalizeToolValueWithSchema(value any, schema any) (any, bool) {
+	return normalizeToolValueWithSchemaField(value, schema, "")
+}
+
+func normalizeToolValueWithSchemaField(value any, schema any, fieldName string) (any, bool) {
 	if value == nil || schema == nil {
 		return value, false
 	}
@@ -129,12 +133,12 @@ func normalizeToolValueWithSchema(value any, schema any) (any, bool) {
 			next := current
 			var fieldChanged bool
 			if propSchema, ok := properties[key]; ok {
-				next, fieldChanged = normalizeToolValueWithSchema(current, propSchema)
+				next, fieldChanged = normalizeToolValueWithSchemaField(current, propSchema, key)
 			} else if disallowsAdditionalSchemaValues(additional) {
 				changed = true
 				continue
 			} else if additional != nil {
-				next, fieldChanged = normalizeToolValueWithSchema(current, additional)
+				next, fieldChanged = normalizeToolValueWithSchemaField(current, additional, key)
 			}
 			out[key] = next
 			changed = changed || fieldChanged
@@ -145,15 +149,18 @@ func normalizeToolValueWithSchema(value any, schema any) (any, bool) {
 		return out, true
 	}
 	if looksLikeArraySchema(schemaMap) {
-		arr, ok := value.([]any)
-		if !ok || len(arr) == 0 {
+		arr, converted := normalizeSchemaArrayCandidate(value, schemaMap, fieldName)
+		if arr == nil {
 			return value, false
 		}
 		itemsSchema := schemaMap["items"]
 		if itemsSchema == nil {
+			if converted {
+				return arr, true
+			}
 			return value, false
 		}
-		changed := false
+		changed := converted
 		out := make([]any, len(arr))
 		switch itemSchemas := itemsSchema.(type) {
 		case []any:
@@ -162,13 +169,13 @@ func normalizeToolValueWithSchema(value any, schema any) (any, bool) {
 					out[i] = item
 					continue
 				}
-				next, itemChanged := normalizeToolValueWithSchema(item, itemSchemas[i])
+				next, itemChanged := normalizeToolValueWithSchemaField(item, itemSchemas[i], fieldName)
 				out[i] = next
 				changed = changed || itemChanged
 			}
 		default:
 			for i, item := range arr {
-				next, itemChanged := normalizeToolValueWithSchema(item, itemsSchema)
+				next, itemChanged := normalizeToolValueWithSchemaField(item, itemsSchema, fieldName)
 				out[i] = next
 				changed = changed || itemChanged
 			}
@@ -191,6 +198,59 @@ func normalizeToolValueWithSchema(value any, schema any) (any, bool) {
 		return value, false
 	}
 	return value, false
+}
+
+func normalizeSchemaArrayCandidate(value any, schema map[string]any, fieldName string) ([]any, bool) {
+	switch v := value.(type) {
+	case []any:
+		return v, false
+	case string:
+		if arr, ok := parseLooseJSONArrayValue(v, fieldName); ok {
+			return arr, true
+		}
+		parsed, ok := parseLooseArrayElementValue(v)
+		if !ok {
+			return nil, false
+		}
+		if canWrapSingleArrayItem(parsed, schema["items"]) {
+			return []any{parsed}, true
+		}
+		return nil, false
+	case map[string]any:
+		if arr, ok := coerceArrayValue(v, fieldName); ok {
+			return arr, true
+		}
+		if canWrapSingleArrayItem(v, schema["items"]) {
+			return []any{v}, true
+		}
+		return nil, false
+	default:
+		return nil, false
+	}
+}
+
+func canWrapSingleArrayItem(value any, itemSchema any) bool {
+	schemaMap, ok := itemSchema.(map[string]any)
+	if !ok || len(schemaMap) == 0 {
+		return false
+	}
+	if looksLikeObjectSchema(schemaMap) {
+		_, ok := value.(map[string]any)
+		return ok
+	}
+	if shouldCoerceSchemaToString(schemaMap) {
+		_, ok := value.(string)
+		return ok
+	}
+	if is, known := isBooleanSchema(schemaMap); known && is {
+		_, ok := coerceBoolValue(value)
+		return ok
+	}
+	if is, known := isNumberOrIntegerSchema(schemaMap); known && is {
+		_, ok := coerceNumberValue(value)
+		return ok
+	}
+	return false
 }
 
 func disallowsAdditionalSchemaValues(additional any) bool {

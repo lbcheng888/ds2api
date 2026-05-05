@@ -35,11 +35,55 @@ func TestStreamSanitizerStopsAtLeakedHistoryTranscript(t *testing.T) {
 	}
 }
 
+func TestStreamSanitizerStopsAtLeakedEndOfSentence(t *testing.T) {
+	var s StreamSanitizer
+	got := s.Sanitize("可见结论<｜end▁of▁sentence｜>#!!/usr/bin/env node\n") +
+		s.Sanitize("import { createInterface } from 'node:readline';\n")
+	if got != "可见结论" {
+		t.Fatalf("unexpected leaked end-of-sentence sanitize result: %q", got)
+	}
+}
+
+func TestStreamSanitizerStopsAtSplitASCIIEndOfSentence(t *testing.T) {
+	var s StreamSanitizer
+	got := s.Sanitize("可见结论<| end_of_") +
+		s.Sanitize("sentence |>export type ApiMessage = {}\n") +
+		s.Sanitize("more replay")
+	if got != "可见结论" {
+		t.Fatalf("unexpected split ascii end-of-sentence sanitize result: %q", got)
+	}
+}
+
+func TestStreamSanitizerStopsAtSplitFullwidthEndOfSentence(t *testing.T) {
+	var s StreamSanitizer
+	got := s.Sanitize("可见结论<｜end▁of") +
+		s.Sanitize("▁sentence｜>export type ApiMessage = {}\n")
+	if got != "可见结论" {
+		t.Fatalf("unexpected split fullwidth end-of-sentence sanitize result: %q", got)
+	}
+}
+
+func TestStreamSanitizerKeepsNormalSplitAngleText(t *testing.T) {
+	var s StreamSanitizer
+	got := s.Sanitize("正常 <") + s.Sanitize("tag> 文本")
+	if got != "正常 <tag> 文本" {
+		t.Fatalf("unexpected normal split angle result: %q", got)
+	}
+}
+
 func TestSanitizeLeakedOutputRemovesHistoryTranscriptSuffix(t *testing.T) {
 	raw := "可见\n=== 145. TOOL ===\n[tool_call_id=call_abc]\nError editing file\n后续"
 	got := SanitizeLeakedOutput(raw)
 	if got != "可见\n" {
 		t.Fatalf("unexpected history transcript sanitize result: %q", got)
+	}
+}
+
+func TestSanitizeLeakedOutputTruncatesEndOfSentenceSuffix(t *testing.T) {
+	raw := "<｜end▁of▁sentence｜>#!!/usr/bin/env node\nimport 'x';"
+	got := SanitizeLeakedOutput(raw)
+	if got != "" {
+		t.Fatalf("expected leaked prompt replay to be dropped, got %q", got)
 	}
 }
 

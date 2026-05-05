@@ -306,6 +306,65 @@ test('formatOpenAIStreamToolCalls preserves arrays when schema says array', () =
   assert.deepEqual(args.todos, todos);
 });
 
+test('formatOpenAIStreamToolCalls wraps single object when schema says array', () => {
+  const formatted = formatOpenAIStreamToolCalls([
+    { name: 'UpdateTodos', input: { todos: { content: '分析当前代码', status: 'pending' } } },
+  ], new Map(), [
+    {
+      name: 'UpdateTodos',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          todos: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                content: { type: 'string' },
+                status: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+  ]);
+  assert.equal(formatted.length, 1);
+  const args = JSON.parse(formatted[0].function.arguments);
+  assert.deepEqual(args.todos, [{ content: '分析当前代码', status: 'pending' }]);
+});
+
+test('formatOpenAIStreamToolCalls parses loose object list when schema says array', () => {
+  const formatted = formatOpenAIStreamToolCalls([
+    { name: 'UpdateTodos', input: { todos: '{"content":"分析当前代码","status":"pending"}, {"content":"继续实现","status":"pending"}' } },
+  ], new Map(), [
+    {
+      name: 'UpdateTodos',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          todos: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                content: { type: 'string' },
+                status: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+  ]);
+  assert.equal(formatted.length, 1);
+  const args = JSON.parse(formatted[0].function.arguments);
+  assert.deepEqual(args.todos, [
+    { content: '分析当前代码', status: 'pending' },
+    { content: '继续实现', status: 'pending' },
+  ]);
+});
+
 test('parseToolCalls treats CDATA object fragment as object', () => {
   const fragment = '<question><![CDATA[Pick one]]></question><options><item><label><![CDATA[A]]></label></item><item><label><![CDATA[B]]></label></item></options>';
   const payload = `<tool_calls><invoke name="AskUserQuestion"><parameter name="questions"><![CDATA[${fragment}]]></parameter></invoke></tool_calls>`;

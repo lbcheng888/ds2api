@@ -295,7 +295,7 @@ func TestHandleStreamToolsPlainTextStreamsBeforeFinish(t *testing.T) {
 	}
 }
 
-func TestHandleStreamToolsBlocksFutureExaminePromiseWithoutToolCall(t *testing.T) {
+func TestHandleStreamToolsSynthesizesFutureExaminePromise(t *testing.T) {
 	h := &Handler{}
 	resp := makeSSEHTTPResponse(
 		`data: {"p":"response/content","v":"Let me first understand the current state of the codebase by examining the key files that have been modified."}`,
@@ -307,18 +307,25 @@ func TestHandleStreamToolsBlocksFutureExaminePromiseWithoutToolCall(t *testing.T
 	h.handleStream(rec, req, resp, "cid-stream-examine-no-tool", "deepseek-v4-flash", "prompt", 0, false, false, []string{"Read", "Grep", "Bash"}, nil, nil)
 
 	body := rec.Body.String()
-	if !strings.Contains(body, "upstream_missing_tool_call") {
-		t.Fatalf("expected missing-tool error for future examine promise, body=%s", body)
+	if strings.Contains(body, "upstream_missing_tool_call") {
+		t.Fatalf("safe examine promise should become a tool call, body=%s", body)
 	}
-	if strings.Contains(body, `"finish_reason":"stop"`) {
-		t.Fatalf("future examine promise must not finish as stop, body=%s", body)
+	frames, done := parseSSEDataFrames(t, body)
+	if !done {
+		t.Fatalf("expected stream DONE, body=%s", body)
+	}
+	if !streamHasToolCallsDelta(frames) {
+		t.Fatalf("expected synthesized tool_calls delta, body=%s", body)
+	}
+	if streamFinishReason(frames) != "tool_calls" {
+		t.Fatalf("expected finish_reason=tool_calls, body=%s", body)
 	}
 	if strings.Contains(body, `"content":"Let me first understand`) {
 		t.Fatalf("future examine promise should be held instead of streamed as normal content, body=%s", body)
 	}
 }
 
-func TestHandleStreamToolsBlocksConversationContextCodebasePromise(t *testing.T) {
+func TestHandleStreamToolsSynthesizesConversationContextCodebasePromise(t *testing.T) {
 	h := &Handler{}
 	resp := makeSSEHTTPResponse(
 		`data: {"p":"response/content","v":"Looking at the conversation context, I need to understand the current state of the project before proceeding. Let me examine the codebase first."}`,
@@ -330,11 +337,18 @@ func TestHandleStreamToolsBlocksConversationContextCodebasePromise(t *testing.T)
 	h.handleStream(rec, req, resp, "cid-stream-context-codebase-no-tool", "deepseek-v4-flash", "prompt", 0, false, false, []string{"Read", "Grep", "Bash"}, nil, nil)
 
 	body := rec.Body.String()
-	if !strings.Contains(body, "upstream_missing_tool_call") {
-		t.Fatalf("expected missing-tool error for conversation-context examine promise, body=%s", body)
+	if strings.Contains(body, "upstream_missing_tool_call") {
+		t.Fatalf("safe conversation-context examine promise should become a tool call, body=%s", body)
 	}
-	if strings.Contains(body, `"finish_reason":"stop"`) {
-		t.Fatalf("conversation-context examine promise must not finish as stop, body=%s", body)
+	frames, done := parseSSEDataFrames(t, body)
+	if !done {
+		t.Fatalf("expected stream DONE, body=%s", body)
+	}
+	if !streamHasToolCallsDelta(frames) {
+		t.Fatalf("expected synthesized tool_calls delta, body=%s", body)
+	}
+	if streamFinishReason(frames) != "tool_calls" {
+		t.Fatalf("expected finish_reason=tool_calls, body=%s", body)
 	}
 	if strings.Contains(body, `"content":"Looking at the conversation context`) {
 		t.Fatalf("conversation-context examine promise should be held instead of streamed as normal content, body=%s", body)
@@ -367,6 +381,31 @@ func TestHandleStreamCurrentInputFileSuppressesStalePreambleBeforeToolCall(t *te
 	}
 	if streamFinishReason(frames) != "tool_calls" {
 		t.Fatalf("expected finish_reason=tool_calls, body=%s", body)
+	}
+}
+
+func TestHandleStreamSuppressesShortPreambleBeforeToolCall(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"Let me first"}`,
+		`data: {"p":"response/content","v":"<tool_calls><invoke name=\"Bash\"><parameter name=\"command\">find . -type f</parameter></invoke></tool_calls>"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h.handleStream(rec, req, resp, "cid-short-preamble-tool", "deepseek-v4-flash", "请并行分析当前代码问题和改进点", 0, false, false, []string{"Bash"}, nil, nil)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "Let me first") {
+		t.Fatalf("short preamble must not be streamed before tool call, body=%s", body)
+	}
+	frames, done := parseSSEDataFrames(t, body)
+	if !done {
+		t.Fatalf("expected [DONE], body=%s", body)
+	}
+	if !streamHasToolCallsDelta(frames) {
+		t.Fatalf("expected tool_calls delta, body=%s", body)
 	}
 }
 

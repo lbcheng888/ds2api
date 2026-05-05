@@ -12,7 +12,6 @@ import (
 	"ds2api/internal/promptcompat"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
-	"ds2api/internal/textclean"
 	"ds2api/internal/toolcall"
 	"ds2api/internal/toolstream"
 )
@@ -48,7 +47,6 @@ type chatStreamRuntime struct {
 	accumulator       shared.StreamAccumulator
 	text              strings.Builder
 	deferredToolText  strings.Builder
-	outputSanitizer   textclean.StreamSanitizer
 	responseMessageID int
 
 	finalThinking     string
@@ -290,7 +288,7 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 			if cleaned == "" || (s.searchEnabled && sse.IsCitation(cleaned)) {
 				continue
 			}
-			if s.shouldDeferBufferedToolText() {
+			if s.shouldBufferToolModeText() {
 				s.deferredToolText.WriteString(cleaned)
 				continue
 			}
@@ -366,7 +364,10 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 		if !s.bufferToolContent {
 			batch.append("content", p.VisibleText)
 		} else {
-			events := toolstream.ProcessChunk(&s.toolSieve, p.RawText, s.toolNames)
+			if p.ToolText == "" {
+				continue
+			}
+			events := toolstream.ProcessChunk(&s.toolSieve, p.ToolText, s.toolNames)
 			for _, evt := range events {
 				if len(evt.ToolCallDeltas) > 0 {
 					if !s.emitEarlyToolDeltas {
@@ -405,18 +406,14 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 					continue
 				}
 				if evt.Content != "" {
-					cleaned := cleanVisibleOutput(s.outputSanitizer.Sanitize(evt.Content), s.stripReferenceMarkers)
+					cleaned := cleanVisibleOutput(evt.Content, s.stripReferenceMarkers)
 					if cleaned == "" || (s.searchEnabled && sse.IsCitation(cleaned)) {
 						continue
 					}
-					if s.shouldHoldBufferedToolContent() {
-						continue
-					}
-					if s.shouldDeferBufferedToolText() {
+					if s.shouldBufferToolModeText() {
 						s.deferredToolText.WriteString(cleaned)
 						continue
 					}
-					batch.append("content", cleaned)
 				}
 			}
 		}
@@ -462,8 +459,8 @@ func (s *chatStreamRuntime) shouldHoldBufferedToolContent() bool {
 	return false
 }
 
-func (s *chatStreamRuntime) shouldDeferBufferedToolText() bool {
-	return s.bufferToolContent && !s.toolCallsEmitted && strings.Contains(s.finalPrompt, promptcompat.CurrentInputContextFilename)
+func (s *chatStreamRuntime) shouldBufferToolModeText() bool {
+	return s.bufferToolContent && !s.toolCallsEmitted
 }
 
 func (s *chatStreamRuntime) flushDeferredToolText() {

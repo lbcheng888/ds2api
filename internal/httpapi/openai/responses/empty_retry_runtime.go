@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"ds2api/internal/assistantturn"
 	"ds2api/internal/auth"
 	"ds2api/internal/config"
 	dsprotocol "ds2api/internal/deepseek/protocol"
@@ -37,17 +38,18 @@ func (h *Handler) handleResponsesStreamWithRetry(w http.ResponseWriter, r *http.
 			config.Logger.Info("[openai_empty_retry] terminal empty output", "surface", "responses", "stream", true, "retry_attempts", attempts, "success_source", "none", "error_code", streamRuntime.finalErrorCode)
 			return
 		}
+		retryReason := responsesStreamRetryReason(streamRuntime)
 		attempts++
-		config.Logger.Info("[openai_empty_retry] attempting synthetic retry", "surface", "responses", "stream", true, "retry_attempt", attempts, "parent_message_id", streamRuntime.responseMessageID)
+		config.Logger.Info("[openai_retry] attempting synthetic retry", "surface", "responses", "stream", true, "retry_attempt", attempts, "parent_message_id", streamRuntime.responseMessageID, "reason", retryReason)
 		retryPow, powErr := h.DS.GetPow(r.Context(), a, 3)
 		if powErr != nil {
-			config.Logger.Warn("[openai_empty_retry] retry PoW fetch failed, falling back to original PoW", "surface", "responses", "stream", true, "retry_attempt", attempts, "error", powErr)
+			config.Logger.Warn("[openai_retry] retry PoW fetch failed, falling back to original PoW", "surface", "responses", "stream", true, "retry_attempt", attempts, "reason", retryReason, "error", powErr)
 			retryPow = pow
 		}
-		nextResp, err := h.DS.CallCompletion(r.Context(), a, clonePayloadForEmptyOutputRetry(payload, streamRuntime.responseMessageID), retryPow, 3)
+		nextResp, err := h.DS.CallCompletion(r.Context(), a, clonePayloadForResponsesRetry(payload, streamRuntime.responseMessageID, retryReason), retryPow, 3)
 		if err != nil {
 			streamRuntime.failResponse(http.StatusInternalServerError, "Failed to get completion.", "error")
-			config.Logger.Warn("[openai_empty_retry] retry request failed", "surface", "responses", "stream", true, "retry_attempt", attempts, "error", err)
+			config.Logger.Warn("[openai_retry] retry request failed", "surface", "responses", "stream", true, "retry_attempt", attempts, "reason", retryReason, "error", err)
 			return
 		}
 		if nextResp.StatusCode != http.StatusOK {
@@ -56,9 +58,30 @@ func (h *Handler) handleResponsesStreamWithRetry(w http.ResponseWriter, r *http.
 			streamRuntime.failResponse(nextResp.StatusCode, strings.TrimSpace(string(body)), "error")
 			return
 		}
-		streamRuntime.finalPrompt = usagePromptWithEmptyOutputRetry(finalPrompt, attempts)
+		streamRuntime.finalPrompt = usagePromptForResponsesRetry(finalPrompt, attempts, retryReason)
 		currentResp = nextResp
 	}
+}
+
+func responsesStreamRetryReason(streamRuntime *responsesStreamRuntime) string {
+	if streamRuntime != nil && assistantturn.IsMissingToolErrorCode(streamRuntime.finalErrorCode) {
+		return "missing_tool"
+	}
+	return "empty_output"
+}
+
+func clonePayloadForResponsesRetry(payload map[string]any, parentMessageID int, reason string) map[string]any {
+	if reason == "missing_tool" {
+		return clonePayloadForMissingToolRetry(payload, parentMessageID)
+	}
+	return clonePayloadForEmptyOutputRetry(payload, parentMessageID)
+}
+
+func usagePromptForResponsesRetry(prompt string, attempts int, reason string) string {
+	if reason == "missing_tool" {
+		return usagePromptWithMissingToolRetry(prompt, attempts)
+	}
+	return usagePromptWithEmptyOutputRetry(prompt, attempts)
 }
 
 func (h *Handler) prepareResponsesStreamRuntime(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, refFileTokens int, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, toolChoice promptcompat.ToolChoicePolicy, traceID string, historySession *responsehistory.Session) (*responsesStreamRuntime, string, bool) {

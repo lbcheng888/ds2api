@@ -77,7 +77,7 @@ function extractToolNameAndSchema(tool) {
   return [name, schema];
 }
 
-function normalizeToolValueWithSchema(value, schema) {
+function normalizeToolValueWithSchema(value, schema, fieldName = '') {
   if (value == null || !schema || typeof schema !== 'object' || Array.isArray(schema)) {
     return [value, false];
   }
@@ -96,9 +96,9 @@ function normalizeToolValueWithSchema(value, schema) {
       let next = current;
       let fieldChanged = false;
       if (properties && Object.prototype.hasOwnProperty.call(properties, key)) {
-        [next, fieldChanged] = normalizeToolValueWithSchema(current, properties[key]);
+        [next, fieldChanged] = normalizeToolValueWithSchema(current, properties[key], key);
       } else if (additional != null) {
-        [next, fieldChanged] = normalizeToolValueWithSchema(current, additional);
+        [next, fieldChanged] = normalizeToolValueWithSchema(current, additional, key);
       }
       out[key] = next;
       changed = changed || fieldChanged;
@@ -106,22 +106,180 @@ function normalizeToolValueWithSchema(value, schema) {
     return changed ? [out, true] : [value, false];
   }
   if (looksLikeArraySchema(schema)) {
-    if (!Array.isArray(value) || value.length === 0 || schema.items == null) {
+    const [items, converted] = normalizeSchemaArrayCandidate(value, schema, fieldName);
+    if (!items || items.length === 0 || schema.items == null) {
       return [value, false];
     }
-    let changed = false;
-    const out = value.map((item, idx) => {
+    let changed = converted;
+    const out = items.map((item, idx) => {
       const itemSchema = Array.isArray(schema.items) ? schema.items[idx] : schema.items;
       if (itemSchema == null) {
         return item;
       }
-      const [next, itemChanged] = normalizeToolValueWithSchema(item, itemSchema);
+      const [next, itemChanged] = normalizeToolValueWithSchema(item, itemSchema, fieldName);
       changed = changed || itemChanged;
       return next;
     });
     return changed ? [out, true] : [value, false];
   }
   return [value, false];
+}
+
+function normalizeSchemaArrayCandidate(value, schema, fieldName) {
+  if (Array.isArray(value)) {
+    return [value, false];
+  }
+  if (value && typeof value === 'object') {
+    const coerced = coerceArrayValue(value, fieldName);
+    if (coerced) {
+      return [coerced, true];
+    }
+    if (canWrapSingleArrayItem(value, schema.items)) {
+      return [[value], true];
+    }
+    return [null, false];
+  }
+  if (typeof value === 'string') {
+    const parsed = parseLooseArrayValue(value, fieldName);
+    if (parsed) {
+      return [parsed, true];
+    }
+    const single = parseLooseElementValue(value);
+    if (single != null && canWrapSingleArrayItem(single, schema.items)) {
+      return [[single], true];
+    }
+  }
+  return [null, false];
+}
+
+function coerceArrayValue(value, fieldName) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'item')) {
+    const item = value.item;
+    const nested = coerceArrayValue(item, '');
+    return nested || [item];
+  }
+  if (fieldName && Object.prototype.hasOwnProperty.call(value, fieldName)) {
+    return coerceArrayValue(value[fieldName], '');
+  }
+  return null;
+}
+
+function parseLooseArrayValue(raw, fieldName) {
+  const parsed = parseLooseElementValue(raw);
+  const coerced = coerceArrayValue(parsed, fieldName);
+  if (coerced) {
+    return coerced;
+  }
+  const segments = splitTopLevelJSONValues(String(raw).trim());
+  if (!segments || segments.length < 2) {
+    return null;
+  }
+  const out = [];
+  for (const segment of segments) {
+    const item = parseLooseElementValue(segment);
+    if (item == null) {
+      return null;
+    }
+    out.push(item);
+  }
+  return out;
+}
+
+function parseLooseElementValue(raw) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {}
+  const repaired = repairLooseJSONObject(trimmed);
+  if (repaired !== trimmed) {
+    try {
+      return JSON.parse(repaired);
+    } catch {}
+  }
+  return null;
+}
+
+function repairLooseJSONObject(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) {
+    return trimmed;
+  }
+  return trimmed
+    .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_-]*)(\s*:)/g, '$1"$2"$3')
+    .replace(/,\s*([}\]])/g, '$1');
+}
+
+function splitTopLevelJSONValues(raw) {
+  const text = String(raw || '').trim();
+  if (!text) {
+    return null;
+  }
+  const values = [];
+  let start = 0;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{' || ch === '[') {
+      depth += 1;
+    } else if (ch === '}' || ch === ']') {
+      depth = Math.max(0, depth - 1);
+    } else if (ch === ',' && depth === 0) {
+      const segment = text.slice(start, i).trim();
+      if (!segment) {
+        return null;
+      }
+      values.push(segment);
+      start = i + 1;
+    }
+  }
+  const last = text.slice(start).trim();
+  if (!last) {
+    return null;
+  }
+  values.push(last);
+  return values.length >= 2 ? values : null;
+}
+
+function canWrapSingleArrayItem(value, itemSchema) {
+  if (!itemSchema || typeof itemSchema !== 'object' || Array.isArray(itemSchema)) {
+    return false;
+  }
+  if (looksLikeObjectSchema(itemSchema)) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
+  if (shouldCoerceSchemaToString(itemSchema)) {
+    return typeof value === 'string';
+  }
+  if (isBooleanSchema(itemSchema)) {
+    return typeof value === 'boolean';
+  }
+  if (isNumberSchema(itemSchema)) {
+    return typeof value === 'number';
+  }
+  return false;
 }
 
 function shouldCoerceSchemaToString(schema) {
@@ -168,6 +326,16 @@ function looksLikeArraySchema(schema) {
     (typeof schema.type === 'string' && schema.type.trim().toLowerCase() === 'array') ||
     schema.items != null
   );
+}
+
+function isBooleanSchema(schema) {
+  return !!schema && typeof schema === 'object' && !Array.isArray(schema) &&
+    typeof schema.type === 'string' && schema.type.trim().toLowerCase() === 'boolean';
+}
+
+function isNumberSchema(schema) {
+  return !!schema && typeof schema === 'object' && !Array.isArray(schema) &&
+    typeof schema.type === 'string' && ['number', 'integer'].includes(schema.type.trim().toLowerCase());
 }
 
 function stringifySchemaValue(value) {

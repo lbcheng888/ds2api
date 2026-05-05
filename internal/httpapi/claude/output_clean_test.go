@@ -14,3 +14,10 @@ func TestCleanVisibleOutputRemovesDanglingToolTagFragment(t *testing.T) {
 		t.Fatalf("expected prose to remain, got %q", got)
 	}
 }
+
+func TestCleanVisibleOutputTruncatesLeakedEndOfSentenceReplay(t *testing.T) {
+	got := cleanVisibleOutput("<｜end▁of▁sentence｜>#!!/usr/bin/env node\nimport 'x';", false)
+	if got != "" {
+		t.Fatalf("expected leaked prompt replay to be dropped, got %q", got)
+	}
+}

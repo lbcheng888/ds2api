@@ -76,6 +76,27 @@ func TestEvaluateFinalOutputBlocksTaskTrackingOnlyCalls(t *testing.T) {
 	}
 }
 
+func TestEvaluateFinalOutputConvertsSafeExplorationPromise(t *testing.T) {
+	got := EvaluateFinalOutput(FinalEvaluationInput{
+		FinalPrompt: "<｜User｜>请分析当前代码<｜Assistant｜>",
+		Text:        "Let me read the main source files to understand the codebase.",
+		ToolNames:   []string{"Read", "Bash"},
+		ToolSchemas: bashSchema,
+	})
+	if got.MissingToolDecision.Blocked {
+		t.Fatalf("safe exploration synthesis should suppress missing-tool gate, got %#v", got.MissingToolDecision)
+	}
+	if len(got.Calls) != 1 || got.Calls[0].Name != "Bash" {
+		t.Fatalf("expected one Bash call, got %#v", got.Calls)
+	}
+	if got.Calls[0].Input["command"] != safeProjectInventoryCommand {
+		t.Fatalf("expected inventory command, got %#v", got.Calls[0].Input)
+	}
+	if strings.TrimSpace(got.Text) != "" {
+		t.Fatalf("synthesized safe exploration XML should not leak as text, got %q", got.Text)
+	}
+}
+
 func TestEvaluateFinalOutputBlocksEnterPlanModeForExecutionRequest(t *testing.T) {
 	got := EvaluateFinalOutput(FinalEvaluationInput{
 		FinalPrompt: "<｜User｜>请继续推进并完成实现<｜Assistant｜>",

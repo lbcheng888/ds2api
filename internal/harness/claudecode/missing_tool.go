@@ -116,6 +116,9 @@ func ClassifyCurrentTurnToolRequirement(in CurrentTurnToolRequirementInput) Curr
 		CurrentTurnToolNames: ledger.RecentToolNames,
 		AllowMetaAgentTools:  in.AllowMetaAgentTools,
 	})
+	if allowsSubstantiveReportWithoutTool(finalText, in.FinalPrompt, intent, in.AllowMetaAgentTools) {
+		return CurrentTurnToolRequirement{}
+	}
 	if LooksLikeUnexecutedAgentLaunch(finalText, in.FinalPrompt, in.AllowMetaAgentTools) {
 		return requiredToolExecution(ToolExecutionRequirementAgentLaunch)
 	}
@@ -292,6 +295,90 @@ func IsBackgroundAgentAcknowledgement(finalPrompt, finalText string, allowMetaAg
 		}
 	}
 	return false
+}
+
+func LooksLikeSubstantiveAgentProgressText(text string) bool {
+	return LooksLikeSubstantiveReportText(text)
+}
+
+func LooksLikeSubstantiveReportText(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if len([]rune(trimmed)) < 40 || len([]rune(trimmed)) > 4000 {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if containsAny(lower, []string{
+		"let me ",
+		"i will ",
+		"i'll ",
+		"now i ",
+		"next i ",
+		"going to ",
+		"启动 agent",
+		"启动agent",
+		"启动代理",
+		"启动子代理",
+		"发起 agent",
+		"发起agent",
+		"发起代理",
+		"调用 agent",
+		"调用agent",
+		"调用工具",
+		"现在读",
+		"现在改",
+		"现在写",
+		"现在运行",
+		"现在执行",
+		"下一步",
+		"接下来",
+		"let me",
+		"i need to",
+		"i'm going to",
+		"i am going to",
+	}) {
+		return false
+	}
+	return strings.Contains(trimmed, "\n- ") ||
+		strings.Contains(trimmed, "\n* ") ||
+		strings.Contains(trimmed, "\n1.") ||
+		taskListItemPattern.MatchString(trimmed) ||
+		strings.Contains(trimmed, "结论") ||
+		strings.Contains(trimmed, "问题") ||
+		strings.Contains(trimmed, "建议") ||
+		strings.Contains(trimmed, "瓶颈") ||
+		strings.Contains(trimmed, "阻断") ||
+		strings.Contains(lower, "blocker") ||
+		strings.Contains(lower, "summary") ||
+		strings.Contains(lower, "finding")
+}
+
+func allowsSubstantiveReportWithoutTool(finalText, finalPrompt string, intent RequestIntent, allowMetaAgentTools bool) bool {
+	if !LooksLikeSubstantiveReportText(finalText) {
+		return false
+	}
+	if intent.TextPromises.Any || intent.ClaimsWithoutTools.Any {
+		return false
+	}
+	if allowMetaAgentTools && RecentPromptHasBackgroundAgentLaunch(finalPrompt) {
+		return true
+	}
+	if intent.PureAnalysis {
+		return true
+	}
+	if intent.ToolRequiredTurn || intent.UserAuthorization.Execute {
+		return false
+	}
+	latest := strings.ToLower(strings.TrimSpace(intent.LatestUserText))
+	if latest == "" {
+		return true
+	}
+	if latestUserExplicitlyDisablesTools(latest) {
+		return true
+	}
+	if latestUserHasDirectExecutionCue(latest) || latestUserHasLocalDiagnosticCue(latest) {
+		return false
+	}
+	return true
 }
 
 func missingToolDecision(profile string) MissingToolCallDecision {

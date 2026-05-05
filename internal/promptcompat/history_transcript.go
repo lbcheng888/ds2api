@@ -31,13 +31,7 @@ func buildOpenAIHistoryTranscript(messages []any) string {
 	if len(messages) == 0 {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString(historyTranscriptTitle)
-	b.WriteString("\n")
-	b.WriteString(historyTranscriptSummary)
-	b.WriteString("\n\n")
-
-	entry := 0
+	entries := make([]historyTranscriptEntry, 0, len(messages))
 	for _, raw := range messages {
 		msg, ok := raw.(map[string]any)
 		if !ok {
@@ -48,8 +42,25 @@ func buildOpenAIHistoryTranscript(messages []any) string {
 		if content == "" {
 			continue
 		}
-		entry++
-		fmt.Fprintf(&b, "=== %d. %s ===\n%s\n\n", entry, strings.ToUpper(roleLabelForHistory(role)), content)
+		entries = append(entries, historyTranscriptEntry{
+			Role:    roleLabelForHistory(role),
+			Content: content,
+		})
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString(historyTranscriptTitle)
+	b.WriteString("\n")
+	b.WriteString(historyTranscriptSummary)
+	b.WriteString("\n\n")
+	writeHistoryTranscriptMetadata(&b, entries)
+	b.WriteString("\n")
+
+	for i, entry := range entries {
+		fmt.Fprintf(&b, "=== %d. %s ===\n%s\n\n", i+1, strings.ToUpper(entry.Role), entry.Content)
 	}
 
 	transcript := strings.TrimSpace(b.String())
@@ -57,6 +68,27 @@ func buildOpenAIHistoryTranscript(messages []any) string {
 		return ""
 	}
 	return transcript + "\n"
+}
+
+type historyTranscriptEntry struct {
+	Role    string
+	Content string
+}
+
+func writeHistoryTranscriptMetadata(b *strings.Builder, entries []historyTranscriptEntry) {
+	fmt.Fprintf(b, "metadata:\n")
+	fmt.Fprintf(b, "total_entries=%d\n", len(entries))
+	fmt.Fprintf(b, "latest_user_entry=%d\n", latestHistoryEntryIndex(entries, "user"))
+	fmt.Fprintf(b, "latest_tool_entry=%d\n", latestHistoryEntryIndex(entries, "tool"))
+}
+
+func latestHistoryEntryIndex(entries []historyTranscriptEntry, role string) int {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if strings.EqualFold(entries[i].Role, role) {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 func buildOpenAIHistoryEntry(role string, msg map[string]any) string {

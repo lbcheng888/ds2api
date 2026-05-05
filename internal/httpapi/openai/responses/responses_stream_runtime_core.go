@@ -13,7 +13,6 @@ import (
 	"ds2api/internal/responsehistory"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
-	"ds2api/internal/textclean"
 	"ds2api/internal/toolcall"
 	"ds2api/internal/toolstream"
 )
@@ -47,7 +46,6 @@ type responsesStreamRuntime struct {
 	visibleText       strings.Builder
 	text              strings.Builder
 	deferredToolText  strings.Builder
-	outputSanitizer   textclean.StreamSanitizer
 	responseMessageID int
 	streamToolCallIDs map[int]string
 	functionItemIDs   map[int]string
@@ -292,8 +290,11 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 			batch.append("text", p.VisibleText)
 			continue
 		}
+		if p.ToolText == "" {
+			continue
+		}
 		batch.flush()
-		s.processToolStreamEvents(toolstream.ProcessChunk(&s.sieve, p.RawText, s.toolNames), true, true)
+		s.processToolStreamEvents(toolstream.ProcessChunk(&s.sieve, p.ToolText, s.toolNames), true, true)
 	}
 
 	batch.flush()
@@ -346,8 +347,8 @@ func (s *responsesStreamRuntime) shouldHoldBufferedToolContent() bool {
 	return false
 }
 
-func (s *responsesStreamRuntime) shouldDeferBufferedToolText() bool {
-	return s.bufferToolContent && !s.toolCallsEmitted && strings.Contains(s.finalPrompt, promptcompat.CurrentInputContextFilename)
+func (s *responsesStreamRuntime) shouldBufferToolModeText() bool {
+	return s.bufferToolContent && !s.toolCallsEmitted
 }
 
 func (s *responsesStreamRuntime) flushDeferredToolText() {

@@ -560,7 +560,7 @@ func compilePureAnalysis(latestUser, finalText string, promises IntentTextPromis
 	if !containsAny(lower, []string{"分析", "评估", "审查", "review", "assess", "evaluate", "analysis"}) {
 		return false
 	}
-	return !containsAny(lower, []string{
+	if containsAny(lower, []string{
 		"实现",
 		"修复",
 		"修改",
@@ -568,6 +568,10 @@ func compilePureAnalysis(latestUser, finalText string, promises IntentTextPromis
 		"执行",
 		"运行",
 		"启动",
+	}) {
+		return false
+	}
+	return !executionProofContainsAnyEnglishWord(lower, []string{
 		"implement",
 		"fix",
 		"modify",

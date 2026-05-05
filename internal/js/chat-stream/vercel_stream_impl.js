@@ -38,6 +38,68 @@ const EMPTY_OUTPUT_RETRY_SUFFIX = 'Previous reply had no visible output. Please 
 const EMPTY_OUTPUT_RETRY_MAX_ATTEMPTS = 1;
 const AUTO_CONTINUE_MAX_ROUNDS = 8;
 
+function createLeakedOutputSanitizer() {
+  return {
+    pendingMarkerPrefix: '',
+    dropRemainder: false,
+    sanitize(text) {
+      if (!text || this.dropRemainder) {
+        return '';
+      }
+      let out = this.pendingMarkerPrefix + text;
+      this.pendingMarkerPrefix = '';
+      const full = stripLeakedEndOfSentenceSuffix(out);
+      if (full.stripped) {
+        this.dropRemainder = true;
+        return full.text;
+      }
+      const partialIdx = partialDeepSeekSpecialMarkerStart(out);
+      if (partialIdx >= 0) {
+        this.pendingMarkerPrefix = out.slice(partialIdx);
+        out = out.slice(0, partialIdx);
+      }
+      return out;
+    },
+  };
+}
+
+function stripLeakedEndOfSentenceSuffix(text) {
+  const match = /<[｜|]\s*end[_▁]of[_▁]sentence\s*[｜|]>/i.exec(text);
+  if (!match) {
+    return { text, stripped: false };
+  }
+  return { text: text.slice(0, match.index).replace(/[ \t\r\n]+$/g, ''), stripped: true };
+}
+
+function partialDeepSeekSpecialMarkerStart(text) {
+  const idx = text.lastIndexOf('<');
+  if (idx < 0) {
+    return -1;
+  }
+  const normalized = normalizeSpecialMarkerFragment(text.slice(idx));
+  if (!normalized) {
+    return -1;
+  }
+  const markers = [
+    '<|assistant|>',
+    '<|tool|>',
+    '<|begin_of_sentence|>',
+    '<|end_of_sentence|>',
+    '<|end_of_thinking|>',
+    '<|end_of_toolresults|>',
+    '<|end_of_instructions|>',
+  ];
+  return markers.some((marker) => normalized !== marker && marker.startsWith(normalized)) ? idx : -1;
+}
+
+function normalizeSpecialMarkerFragment(text) {
+  return String(text)
+    .toLowerCase()
+    .replace(/[ \t\r\n]/g, '')
+    .replace(/｜/g, '|')
+    .replace(/▁/g, '_');
+}
+
 async function handleVercelStream(req, res, rawBody, payload) {
   const prep = await fetchStreamPrepare(req, rawBody);
   if (!prep.ok) {
@@ -180,6 +242,7 @@ async function handleVercelStream(req, res, rawBody, payload) {
     let toolCallsDoneEmitted = false;
     const streamToolCallIDs = new Map();
     const streamToolNames = new Map();
+    const outputSanitizer = createLeakedOutputSanitizer();
     const decoder = new TextDecoder();
     let buffered = '';
     let ended = false;
@@ -350,7 +413,11 @@ async function handleVercelStream(req, res, rawBody, payload) {
                     deltaCoalescer.append('reasoning_content', trimmed);
                   }
                 } else {
-                  const trimmed = trimContinuationOverlap(outputText, p.text);
+                  const cleanText = outputSanitizer.sanitize(p.text);
+                  if (!cleanText) {
+                    continue;
+                  }
+                  const trimmed = trimContinuationOverlap(outputText, cleanText);
                   if (!trimmed) {
                     continue;
                   }

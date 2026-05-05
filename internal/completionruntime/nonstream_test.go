@@ -119,6 +119,50 @@ func TestExecuteNonStreamWithRetryUsesParentMessageForEmptyRetry(t *testing.T) {
 	}
 }
 
+func TestExecuteNonStreamWithRetryUsesParentMessageForMissingToolRetry(t *testing.T) {
+	ds := &fakeDeepSeekCaller{responses: []*http.Response{
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":88,"p":"response/content","v":"Now let me check the current working tree state and build/test status."}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":89,"p":"response/content","v":"<tool_calls><invoke name=\"Bash\"><parameter name=\"command\">git status --short</parameter></invoke></tool_calls>"}`),
+	}}
+	stdReq := promptcompat.StandardRequest{
+		Surface:         "test",
+		ResponseModel:   "deepseek-v4-flash",
+		PromptTokenText: "prompt",
+		FinalPrompt:     "final prompt",
+		ToolNames:       []string{"Bash", "Read", "Edit"},
+		ToolsRaw: []any{map[string]any{
+			"name": "Bash",
+			"input_schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"command": map[string]any{"type": "string"},
+				},
+			},
+		}},
+	}
+
+	result, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, &auth.RequestAuth{}, stdReq, Options{RetryEnabled: true})
+	if outErr != nil {
+		t.Fatalf("unexpected output error: %#v", outErr)
+	}
+	if result.Attempts != 1 {
+		t.Fatalf("expected one retry, got %d", result.Attempts)
+	}
+	if len(ds.payloads) != 2 {
+		t.Fatalf("expected two completion calls, got %d", len(ds.payloads))
+	}
+	if got := ds.payloads[1]["parent_message_id"]; got != 88 {
+		t.Fatalf("retry parent_message_id mismatch: %#v", got)
+	}
+	prompt, _ := ds.payloads[1]["prompt"].(string)
+	if !strings.Contains(prompt, "promised tool work but emitted no valid tool call") {
+		t.Fatalf("expected missing-tool retry prompt, got %q", prompt)
+	}
+	if len(result.Turn.ToolCalls) != 1 || result.Turn.ToolCalls[0].Name != "Bash" {
+		t.Fatalf("expected retried Bash tool call, got %#v", result.Turn.ToolCalls)
+	}
+}
+
 func TestExecuteNonStreamWithRetryConvertsReferenceMarkers(t *testing.T) {
 	ds := &fakeDeepSeekCaller{responses: []*http.Response{sseHTTPResponse(
 		http.StatusOK,

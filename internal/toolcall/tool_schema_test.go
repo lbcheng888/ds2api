@@ -390,6 +390,69 @@ func TestNormalizeCallsForSchemasCoercesScalarTypes(t *testing.T) {
 	}
 }
 
+func TestNormalizeCallsForSchemasWrapsSingleArrayObject(t *testing.T) {
+	schemas := ParameterSchemas{
+		"UpdateTodos": {
+			"type": "object",
+			"properties": map[string]any{
+				"todos": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"content": map[string]any{"type": "string"},
+							"status":  map[string]any{"type": "string"},
+						},
+					},
+				},
+			},
+			"required": []any{"todos"},
+		},
+	}
+	calls := []ParsedToolCall{{
+		Name: "UpdateTodos",
+		Input: map[string]any{
+			"todos": map[string]any{"content": "分析当前代码", "status": "pending"},
+		},
+	}}
+	got := NormalizeCallsForSchemasWithMeta(calls, schemas, true)
+	if len(got) != 1 {
+		t.Fatalf("expected one normalized call, got %#v", got)
+	}
+	todos, ok := got[0].Input["todos"].([]any)
+	if !ok || len(todos) != 1 {
+		t.Fatalf("expected todos to be array, got %#v", got[0].Input["todos"])
+	}
+}
+
+func TestNormalizeCallsForSchemasDropsInvalidArrayString(t *testing.T) {
+	schemas := ParameterSchemas{
+		"UpdateTodos": {
+			"type": "object",
+			"properties": map[string]any{
+				"todos": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"content": map[string]any{"type": "string"},
+						},
+					},
+				},
+			},
+			"required": []any{"todos"},
+		},
+	}
+	calls := []ParsedToolCall{{
+		Name:  "UpdateTodos",
+		Input: map[string]any{"todos": "分析当前代码"},
+	}}
+	got := NormalizeCallsForSchemasWithMeta(calls, schemas, true)
+	if len(got) != 0 {
+		t.Fatalf("expected invalid non-array todos string to be dropped, got %#v", got)
+	}
+}
+
 func TestNormalizeCallsForSchemasResolvesKnownToolAliases(t *testing.T) {
 	schemas := ParameterSchemas{
 		"glob": {

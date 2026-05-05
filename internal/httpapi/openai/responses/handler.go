@@ -107,8 +107,16 @@ func clonePayloadForEmptyOutputRetry(payload map[string]any, parentMessageID int
 	return shared.ClonePayloadForEmptyOutputRetry(payload, parentMessageID)
 }
 
+func clonePayloadForMissingToolRetry(payload map[string]any, parentMessageID int) map[string]any {
+	return shared.ClonePayloadForMissingToolRetry(payload, parentMessageID)
+}
+
 func usagePromptWithEmptyOutputRetry(originalPrompt string, retryAttempts int) string {
 	return shared.UsagePromptWithEmptyOutputRetry(originalPrompt, retryAttempts)
+}
+
+func usagePromptWithMissingToolRetry(originalPrompt string, retryAttempts int) string {
+	return shared.UsagePromptWithMissingToolRetry(originalPrompt, retryAttempts)
 }
 
 func filterIncrementalToolCallDeltasByAllowed(deltas []toolstream.ToolCallDelta, seenNames map[int]string) []toolstream.ToolCallDelta {

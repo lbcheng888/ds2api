@@ -64,10 +64,16 @@ func (s *claudeStreamRuntime) sendToolUseBlock(idx int, tc toolcall.ParsedToolCa
 }
 
 func (s *claudeStreamRuntime) finalize(stopReason string) {
+	_ = s.finalizeWithRetry(stopReason, false)
+}
+
+func (s *claudeStreamRuntime) finalizeWithRetry(stopReason string, deferMissingTool bool) bool {
 	if s.ended {
-		return
+		return true
 	}
-	s.ended = true
+	s.finalErrorStatus = 0
+	s.finalErrorMessage = ""
+	s.finalErrorCode = ""
 
 	s.closeThinkingBlock()
 
@@ -89,7 +95,10 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 				if cleaned == "" || (s.searchEnabled && sse.IsCitation(cleaned)) {
 					continue
 				}
-				if s.shouldHoldBufferedToolContent() {
+				if s.shouldSuppressLeakedToolSyntax(cleaned) {
+					continue
+				}
+				if s.shouldBufferToolModeText() {
 					continue
 				}
 				if !s.textBlockOpen {
@@ -142,11 +151,19 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 		AlreadyEmittedToolCalls: s.toolCallsDetected,
 	})
 	if outcome.ShouldFail {
+		if deferMissingTool && !s.textEmitted && !s.toolCallsDetected && assistantturn.IsMissingToolError(outcome.Error) {
+			s.finalErrorStatus = outcome.Error.Status
+			s.finalErrorMessage = outcome.Error.Message
+			s.finalErrorCode = outcome.Error.Code
+			s.resetAfterDeferredMissingToolRetry()
+			return false
+		}
+		s.ended = true
 		if s.history != nil {
 			s.history.Error(outcome.Error.Status, outcome.Error.Message, outcome.Error.Code, responsehistory.ThinkingForArchive(turn.RawThinking, turn.DetectionThinking, turn.Thinking), responsehistory.TextForArchive(turn.RawText, turn.Text))
 		}
 		s.sendErrorWithCode(outcome.Error.Message, outcome.Error.Code)
-		return
+		return true
 	}
 
 	if s.bufferToolContent && !s.toolCallsDetected {
@@ -187,6 +204,7 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 	if outcome.HasToolCalls {
 		stopReason = "tool_use"
 	}
+	s.ended = true
 	if s.history != nil {
 		s.history.Success(
 			200,
@@ -208,22 +226,38 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 		},
 	})
 	s.send("message_stop", map[string]any{"type": "message_stop"})
+	return true
+}
+
+func (s *claudeStreamRuntime) resetAfterDeferredMissingToolRetry() {
+	s.rawText.Reset()
+	s.rawThinking.Reset()
+	s.toolDetectionThinking.Reset()
+	s.text.Reset()
+	s.thinking.Reset()
+	s.sieve = toolstream.State{}
 }
 
 func (s *claudeStreamRuntime) onFinalize(reason streamengine.StopReason, scannerErr error) {
+	_ = s.onFinalizeWithRetry(reason, scannerErr, false)
+}
+
+func (s *claudeStreamRuntime) onFinalizeWithRetry(reason streamengine.StopReason, scannerErr error, deferMissingTool bool) bool {
 	if string(reason) == "upstream_error" {
+		s.ended = true
 		if s.history != nil {
 			s.history.Error(500, s.upstreamErr, "upstream_error", responsehistory.ThinkingForArchive(s.rawThinking.String(), s.toolDetectionThinking.String(), s.thinking.String()), responsehistory.TextForArchive(s.rawText.String(), s.text.String()))
 		}
 		s.sendError(s.upstreamErr)
-		return
+		return true
 	}
 	if scannerErr != nil {
+		s.ended = true
 		if s.history != nil {
 			s.history.Error(500, scannerErr.Error(), "error", responsehistory.ThinkingForArchive(s.rawThinking.String(), s.toolDetectionThinking.String(), s.thinking.String()), responsehistory.TextForArchive(s.rawText.String(), s.text.String()))
 		}
 		s.sendError(scannerErr.Error())
-		return
+		return true
 	}
-	s.finalize("end_turn")
+	return s.finalizeWithRetry("end_turn", deferMissingTool)
 }

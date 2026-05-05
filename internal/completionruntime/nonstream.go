@@ -129,25 +129,53 @@ func ExecuteNonStreamWithRetry(ctx context.Context, ds DeepSeekCaller, a *auth.R
 		if retryMax <= 0 {
 			retryMax = shared.EmptyOutputRetryMaxAttempts()
 		}
-		if !opts.RetryEnabled || !assistantturn.ShouldRetryEmptyOutput(turn, attempts, retryMax) {
+		retryReason := nonStreamRetryReason(turn, attempts, retryMax, opts.RetryEnabled)
+		if retryReason == "" {
 			return NonStreamResult{SessionID: sessionID, Payload: payload, Turn: turn, Attempts: attempts}, turn.Error
 		}
 
 		attempts++
-		config.Logger.Info("[completion_runtime_empty_retry] attempting synthetic retry", "surface", stdReq.Surface, "stream", false, "retry_attempt", attempts, "parent_message_id", turn.ResponseMessageID)
+		config.Logger.Info("[completion_runtime_retry] attempting synthetic retry", "surface", stdReq.Surface, "stream", false, "retry_attempt", attempts, "parent_message_id", turn.ResponseMessageID, "reason", retryReason)
 		retryPow, powErr := ds.GetPow(ctx, a, maxAttempts)
 		if powErr != nil {
-			config.Logger.Warn("[completion_runtime_empty_retry] retry PoW fetch failed, falling back to original PoW", "surface", stdReq.Surface, "retry_attempt", attempts, "error", powErr)
+			config.Logger.Warn("[completion_runtime_retry] retry PoW fetch failed, falling back to original PoW", "surface", stdReq.Surface, "retry_attempt", attempts, "reason", retryReason, "error", powErr)
 			retryPow = pow
 		}
-		retryPayload := shared.ClonePayloadForEmptyOutputRetry(payload, turn.ResponseMessageID)
+		retryPayload := clonePayloadForNonStreamRetry(payload, turn.ResponseMessageID, retryReason)
 		nextResp, err := ds.CallCompletion(ctx, a, retryPayload, retryPow, maxAttempts)
 		if err != nil {
 			return NonStreamResult{SessionID: sessionID, Payload: payload, Turn: turn, Attempts: attempts}, &assistantturn.OutputError{Status: http.StatusInternalServerError, Message: "Failed to get completion.", Code: "error"}
 		}
-		usagePrompt = shared.UsagePromptWithEmptyOutputRetry(usagePrompt, attempts)
+		usagePrompt = usagePromptForNonStreamRetry(usagePrompt, attempts, retryReason)
 		currentResp = nextResp
 	}
+}
+
+func nonStreamRetryReason(turn assistantturn.Turn, attempts, retryMax int, enabled bool) string {
+	if !enabled {
+		return ""
+	}
+	if assistantturn.ShouldRetryMissingTool(turn, attempts, retryMax) {
+		return "missing_tool"
+	}
+	if assistantturn.ShouldRetryEmptyOutput(turn, attempts, retryMax) {
+		return "empty_output"
+	}
+	return ""
+}
+
+func clonePayloadForNonStreamRetry(payload map[string]any, parentMessageID int, reason string) map[string]any {
+	if reason == "missing_tool" {
+		return shared.ClonePayloadForMissingToolRetry(payload, parentMessageID)
+	}
+	return shared.ClonePayloadForEmptyOutputRetry(payload, parentMessageID)
+}
+
+func usagePromptForNonStreamRetry(prompt string, attempts int, reason string) string {
+	if reason == "missing_tool" {
+		return shared.UsagePromptWithMissingToolRetry(prompt, attempts)
+	}
+	return shared.UsagePromptWithEmptyOutputRetry(prompt, attempts)
 }
 
 func collectAttempt(resp *http.Response, stdReq promptcompat.StandardRequest, usagePrompt string, opts Options) (assistantturn.Turn, *assistantturn.OutputError) {

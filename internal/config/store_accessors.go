@@ -272,6 +272,9 @@ func (s *Store) CurrentInputFileEnabled() bool {
 func (s *Store) CurrentInputFileMinChars() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.cfg.CurrentInputFile.MinChars <= 0 {
+		return DefaultCurrentInputFileMinChars
+	}
 	return s.cfg.CurrentInputFile.MinChars
 }
 

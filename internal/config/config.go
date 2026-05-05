@@ -208,6 +208,8 @@ type CurrentInputFileConfig struct {
 	MinChars int   `json:"min_chars,omitempty"`
 }
 
+const DefaultCurrentInputFileMinChars = 12000
+
 type ThinkingInjectionConfig struct {
 	Enabled *bool  `json:"enabled,omitempty"`
 	Prompt  string `json:"prompt,omitempty"`

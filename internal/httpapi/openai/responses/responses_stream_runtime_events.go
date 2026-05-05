@@ -44,16 +44,12 @@ func (s *responsesStreamRuntime) sendDone() {
 func (s *responsesStreamRuntime) processToolStreamEvents(events []toolstream.Event, emitContent bool, resetAfterToolCalls bool) {
 	for _, evt := range events {
 		if emitContent && evt.Content != "" {
-			cleaned := cleanVisibleOutput(s.outputSanitizer.Sanitize(evt.Content), s.stripReferenceMarkers)
+			cleaned := cleanVisibleOutput(evt.Content, s.stripReferenceMarkers)
 			if cleaned != "" && (!s.searchEnabled || !sse.IsCitation(cleaned)) {
-				if s.shouldHoldBufferedToolContent() {
-					continue
-				}
-				if s.shouldDeferBufferedToolText() {
+				if s.shouldBufferToolModeText() {
 					s.deferredToolText.WriteString(cleaned)
 					continue
 				}
-				s.emitTextDelta(cleaned)
 			}
 		}
 		if len(evt.ToolCallDeltas) > 0 {

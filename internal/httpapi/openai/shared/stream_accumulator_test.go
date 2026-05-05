@@ -113,3 +113,50 @@ func TestStreamAccumulatorStripsInlineCitationAndReferenceMarkers(t *testing.T) 
 		t.Fatalf("unexpected parts: %#v", result.Parts)
 	}
 }
+
+func TestStreamAccumulatorStopsVisibleAndToolTextAfterEndOfSentence(t *testing.T) {
+	acc := StreamAccumulator{StripReferenceMarkers: true}
+	first := acc.Apply(sse.LineResult{
+		Parsed: true,
+		Parts: []sse.ContentPart{{
+			Type: "text",
+			Text: "可见<｜end▁of▁sentence｜>#!!/usr/bin/env node\n",
+		}},
+	})
+	second := acc.Apply(sse.LineResult{
+		Parsed: true,
+		Parts:  []sse.ContentPart{{Type: "text", Text: "import 'x';\n"}},
+	})
+
+	if got := acc.Text.String(); got != "可见" {
+		t.Fatalf("visible text = %q", got)
+	}
+	if len(first.Parts) != 1 || first.Parts[0].VisibleText != "可见" || first.Parts[0].ToolText != "可见" {
+		t.Fatalf("unexpected first delta: %#v", first.Parts)
+	}
+	if len(second.Parts) != 1 || second.Parts[0].VisibleText != "" || second.Parts[0].ToolText != "" {
+		t.Fatalf("unexpected second delta after hard stop: %#v", second.Parts)
+	}
+}
+
+func TestStreamAccumulatorStopsVisibleAndToolTextAfterSplitEndOfSentence(t *testing.T) {
+	acc := StreamAccumulator{StripReferenceMarkers: true}
+	first := acc.Apply(sse.LineResult{
+		Parsed: true,
+		Parts:  []sse.ContentPart{{Type: "text", Text: "可见<| end_of_"}},
+	})
+	second := acc.Apply(sse.LineResult{
+		Parsed: true,
+		Parts:  []sse.ContentPart{{Type: "text", Text: "sentence |>export type ApiMessage = {}\n"}},
+	})
+
+	if got := acc.Text.String(); got != "可见" {
+		t.Fatalf("visible text = %q", got)
+	}
+	if len(first.Parts) != 1 || first.Parts[0].VisibleText != "可见" || first.Parts[0].ToolText != "可见" {
+		t.Fatalf("unexpected first split delta: %#v", first.Parts)
+	}
+	if len(second.Parts) != 1 || second.Parts[0].VisibleText != "" || second.Parts[0].ToolText != "" {
+		t.Fatalf("unexpected second split delta after hard stop: %#v", second.Parts)
+	}
+}

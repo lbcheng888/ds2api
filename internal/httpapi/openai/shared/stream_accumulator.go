@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"ds2api/internal/sse"
+	"ds2api/internal/textclean"
 )
 
 type StreamAccumulator struct {
@@ -16,11 +17,13 @@ type StreamAccumulator struct {
 	ToolDetectionThinking strings.Builder
 	RawText               strings.Builder
 	Text                  strings.Builder
+	OutputSanitizer       textclean.StreamSanitizer
 }
 
 type StreamPartDelta struct {
 	Type         string
 	RawText      string
+	ToolText     string
 	VisibleText  string
 	CitationOnly bool
 }
@@ -93,7 +96,9 @@ func (a *StreamAccumulator) applyTextPart(text string) StreamPartDelta {
 		delta.CitationOnly = true
 		return delta
 	}
-	cleanedText := CleanVisibleOutput(rawTrimmed, a.StripReferenceMarkers)
+	toolText := a.OutputSanitizer.Sanitize(rawTrimmed)
+	delta.ToolText = toolText
+	cleanedText := CleanVisibleOutput(toolText, a.StripReferenceMarkers)
 	trimmed := sse.TrimContinuationOverlapFromBuilder(&a.Text, cleanedText)
 	if trimmed == "" {
 		return delta

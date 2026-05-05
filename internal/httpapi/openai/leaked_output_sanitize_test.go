@@ -27,10 +27,18 @@ func TestSanitizeLeakedOutputRemovesHistoryTranscriptSuffix(t *testing.T) {
 }
 
 func TestSanitizeLeakedOutputRemovesStandaloneMetaMarkers(t *testing.T) {
-	raw := "A<| end_of_sentence |><| Assistant |>B<| end_of_thinking |>C<｜end▁of▁thinking｜>D<｜end▁of▁sentence｜>E<| end_of_toolresults |>F<｜end▁of▁instructions｜>G"
+	raw := "A<| Assistant |>B<| end_of_thinking |>C<｜end▁of▁thinking｜>D<| end_of_toolresults |>F<｜end▁of▁instructions｜>G"
 	got := sanitizeLeakedOutput(raw)
-	if got != "ABCDEFG" {
+	if got != "ABCDFG" {
 		t.Fatalf("unexpected sanitize result for meta markers: %q", got)
+	}
+}
+
+func TestSanitizeLeakedOutputTruncatesLeakedEndOfSentenceReplay(t *testing.T) {
+	raw := "可见结论<｜end▁of▁sentence｜>#!!/usr/bin/env node\nimport { createInterface } from 'node:readline';"
+	got := sanitizeLeakedOutput(raw)
+	if got != "可见结论" {
+		t.Fatalf("unexpected sanitize result for leaked end-of-sentence replay: %q", got)
 	}
 }
 

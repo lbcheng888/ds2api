@@ -12,11 +12,13 @@ import (
 	"strings"
 	"time"
 
+	"ds2api/internal/assistantturn"
 	"ds2api/internal/auth"
 	"ds2api/internal/completionruntime"
 	"ds2api/internal/config"
 	claudefmt "ds2api/internal/format/claude"
 	"ds2api/internal/httpapi/openai/history"
+	"ds2api/internal/httpapi/openai/shared"
 	"ds2api/internal/httpapi/requestbody"
 	"ds2api/internal/promptcompat"
 	"ds2api/internal/responsehistory"
@@ -145,7 +147,116 @@ func (h *Handler) handleClaudeDirectStream(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	streamReq := start.Request
-	h.handleClaudeStreamRealtime(w, r, start.Response, streamReq.ResponseModel, streamReq.Messages, streamReq.Thinking, streamReq.Search, streamReq.ToolNames, streamReq.ToolsRaw, historySession)
+	h.handleClaudeStreamRealtimeWithRetry(w, r, a, start.Response, start.Payload, start.Pow, streamReq, historySession)
+}
+
+func (h *Handler) handleClaudeStreamRealtimeWithRetry(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow string, stdReq promptcompat.StandardRequest, historySession *responsehistory.Session) {
+	if resp.StatusCode != http.StatusOK {
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		if historySession != nil {
+			historySession.Error(resp.StatusCode, strings.TrimSpace(string(body)), "error", "", "")
+		}
+		writeClaudeError(w, http.StatusInternalServerError, string(body))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	rc := http.NewResponseController(w)
+	_, canFlush := w.(http.Flusher)
+	if !canFlush {
+		config.Logger.Warn("[claude_stream] response writer does not support flush; streaming may be buffered")
+	}
+
+	streamRuntime := newClaudeStreamRuntime(
+		w,
+		rc,
+		canFlush,
+		stdReq.ResponseModel,
+		stdReq.Messages,
+		stdReq.Thinking,
+		stdReq.Search,
+		stripReferenceMarkersEnabled(),
+		stdReq.ToolNames,
+		stdReq.ToolsRaw,
+		stdReq.PromptTokenText,
+		historySession,
+	)
+	streamRuntime.sendMessageStart()
+
+	initialType := "text"
+	if stdReq.Thinking {
+		initialType = "thinking"
+	}
+	attempts := 0
+	currentResp := resp
+	for {
+		terminalWritten, retryable := h.consumeClaudeStreamAttempt(r, currentResp, streamRuntime, initialType, stdReq.Thinking, attempts < shared.EmptyOutputRetryMaxAttempts())
+		if terminalWritten {
+			return
+		}
+		if !retryable || !shared.EmptyOutputRetryEnabled() || attempts >= shared.EmptyOutputRetryMaxAttempts() {
+			streamRuntime.finalize("end_turn")
+			return
+		}
+		attempts++
+		config.Logger.Info("[claude_retry] attempting synthetic retry", "surface", "claude.messages", "stream", true, "retry_attempt", attempts, "parent_message_id", streamRuntime.responseMessageID, "reason", "missing_tool")
+		retryPow, powErr := h.DS.GetPow(r.Context(), a, 3)
+		if powErr != nil {
+			config.Logger.Warn("[claude_retry] retry PoW fetch failed, falling back to original PoW", "surface", "claude.messages", "retry_attempt", attempts, "reason", "missing_tool", "error", powErr)
+			retryPow = pow
+		}
+		nextResp, err := h.DS.CallCompletion(r.Context(), a, shared.ClonePayloadForMissingToolRetry(payload, streamRuntime.responseMessageID), retryPow, 3)
+		if err != nil {
+			streamRuntime.sendErrorWithCode("Failed to get completion.", "error")
+			if historySession != nil {
+				historySession.Error(http.StatusInternalServerError, "Failed to get completion.", "error", "", "")
+			}
+			config.Logger.Warn("[claude_retry] retry request failed", "surface", "claude.messages", "stream", true, "retry_attempt", attempts, "reason", "missing_tool", "error", err)
+			return
+		}
+		if nextResp.StatusCode != http.StatusOK {
+			defer func() { _ = nextResp.Body.Close() }()
+			body, _ := io.ReadAll(nextResp.Body)
+			message := strings.TrimSpace(string(body))
+			streamRuntime.sendErrorWithCode(message, "error")
+			if historySession != nil {
+				historySession.Error(nextResp.StatusCode, message, "error", "", "")
+			}
+			return
+		}
+		streamRuntime.promptTokenText = shared.UsagePromptWithMissingToolRetry(stdReq.PromptTokenText, attempts)
+		currentResp = nextResp
+	}
+}
+
+func (h *Handler) consumeClaudeStreamAttempt(r *http.Request, resp *http.Response, streamRuntime *claudeStreamRuntime, initialType string, thinkingEnabled bool, allowDeferMissingTool bool) (bool, bool) {
+	defer func() { _ = resp.Body.Close() }()
+	terminalWritten := true
+	streamengine.ConsumeSSE(streamengine.ConsumeConfig{
+		Context:             r.Context(),
+		Body:                resp.Body,
+		ThinkingEnabled:     thinkingEnabled,
+		InitialType:         initialType,
+		KeepAliveInterval:   claudeStreamPingInterval,
+		IdleTimeout:         claudeStreamIdleTimeout,
+		MaxKeepAliveNoInput: claudeStreamMaxKeepaliveCnt,
+	}, streamengine.ConsumeHooks{
+		OnKeepAlive: func() {
+			streamRuntime.sendPing()
+		},
+		OnParsed: streamRuntime.onParsed,
+		OnFinalize: func(reason streamengine.StopReason, scannerErr error) {
+			terminalWritten = streamRuntime.onFinalizeWithRetry(reason, scannerErr, allowDeferMissingTool)
+		},
+	})
+	if terminalWritten {
+		return true, false
+	}
+	return false, assistantturn.IsMissingToolErrorCode(streamRuntime.finalErrorCode)
 }
 
 func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store ConfigReader) bool {

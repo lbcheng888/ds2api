@@ -630,7 +630,7 @@ func normalizeValueForSchemaType(value any, schema map[string]any, typ string) (
 
 func normalizeArrayForSchema(value any, schema map[string]any) (any, bool) {
 	itemsSchema, _ := schema["items"].(map[string]any)
-	items, ok := normalizeSchemaArrayValue(value)
+	items, ok := normalizeSchemaArrayValue(value, itemsSchema)
 	if !ok {
 		return nil, false
 	}
@@ -649,12 +649,24 @@ func normalizeArrayForSchema(value any, schema map[string]any) (any, bool) {
 	return out, true
 }
 
-func normalizeSchemaArrayValue(value any) ([]any, bool) {
+func normalizeSchemaArrayValue(value any, itemsSchema map[string]any) ([]any, bool) {
 	switch v := value.(type) {
 	case []any:
 		return v, true
+	case string:
+		if arr, ok := parseLooseJSONArrayValue(v, ""); ok {
+			return arr, true
+		}
+		parsed, ok := parseLooseArrayElementValue(v)
+		if !ok || !canWrapSingleArrayItemForStrictSchema(parsed, itemsSchema) {
+			return nil, false
+		}
+		return []any{parsed}, true
 	case map[string]any:
 		if len(v) != 1 {
+			if canWrapSingleArrayItemForStrictSchema(v, itemsSchema) {
+				return []any{v}, true
+			}
 			return nil, false
 		}
 		item, ok := v["item"]
@@ -668,6 +680,39 @@ func normalizeSchemaArrayValue(value any) ([]any, bool) {
 	default:
 		return nil, false
 	}
+}
+
+func canWrapSingleArrayItemForStrictSchema(value any, itemSchema map[string]any) bool {
+	if len(itemSchema) == 0 {
+		return false
+	}
+	if len(schemaProperties(itemSchema)) > 0 {
+		_, ok := value.(map[string]any)
+		return ok
+	}
+	types := schemaTypes(itemSchema)
+	for _, typ := range types {
+		switch typ {
+		case "object":
+			if _, ok := value.(map[string]any); ok {
+				return true
+			}
+		case "string":
+			if _, ok := value.(string); ok {
+				return true
+			}
+		case "boolean":
+			if _, ok := value.(bool); ok {
+				return true
+			}
+		case "integer", "number":
+			switch value.(type) {
+			case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func normalizeInteger(value any) (any, bool) {

@@ -209,6 +209,23 @@ test('vercel stream retries empty output once and keeps one terminal frame', asy
   assert.match(completionBodies[1].prompt, /Previous reply had no visible output\. Please regenerate the visible final answer or tool call now\.$/);
 });
 
+test('vercel stream drops split leaked end_of_sentence prompt replay', async () => {
+  const { frames } = await runMockVercelStream([
+    'data: {"p":"response/content","v":"可见摘要<| end_of_"}\n\n',
+    'data: {"p":"response/content","v":"sentence |>export type ApiMessage = {}"}\n\n',
+    'data: {"p":"response/content","v":"export type ApiStreamEvent = {}"}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+  const parsed = frames.filter((frame) => frame !== '[DONE]').map((frame) => JSON.parse(frame));
+  const content = parsed
+    .map((item) => item.choices?.[0]?.delta?.content || '')
+    .join('');
+  assert.equal(content, '可见摘要');
+  assert.equal(frames.join('\n').includes('end_of_sentence'), false);
+  assert.equal(frames.join('\n').includes('ApiMessage'), false);
+  assert.equal(parsed.at(-1).choices[0].finish_reason, 'stop');
+});
+
 test('vercel stream coalesces many small content deltas while keeping one choice', async () => {
   const lines = Array.from({ length: 100 }, () => `data: ${JSON.stringify({ p: 'response/content', v: '字' })}\n\n`);
   lines.push('data: [DONE]\n\n');

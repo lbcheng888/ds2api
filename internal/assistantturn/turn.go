@@ -100,7 +100,8 @@ func BuildTurnFromCollected(result sse.CollectResult, opts BuildOptions) Turn {
 		text = shared.ReplaceCitationMarkersWithLinks(text, result.CitationLinks)
 	}
 
-	evaluated := evaluateClaudeCodeOutput(result.Text, text, result.Thinking, result.ToolDetectionThinking, result.ContentFilter, opts)
+	rawTextForEvaluation := shared.TruncateAtLeakedEndOfSentence(result.Text)
+	evaluated := evaluateClaudeCodeOutput(rawTextForEvaluation, text, result.Thinking, result.ToolDetectionThinking, result.ContentFilter, opts)
 	parsed := evaluated.Parsed
 	calls := evaluated.Calls
 	if len(calls) > 0 || evaluated.Text != result.Text {
@@ -155,7 +156,8 @@ func BuildTurnFromStreamSnapshot(snapshot StreamSnapshot, opts BuildOptions) Tur
 		text = shared.ReplaceCitationMarkersWithLinks(text, snapshot.CitationLinks)
 	}
 
-	evaluated := evaluateClaudeCodeOutput(snapshot.RawText, text, snapshot.RawThinking, snapshot.DetectionThinking, snapshot.ContentFilter, opts)
+	rawTextForEvaluation := shared.TruncateAtLeakedEndOfSentence(snapshot.RawText)
+	evaluated := evaluateClaudeCodeOutput(rawTextForEvaluation, text, snapshot.RawThinking, snapshot.DetectionThinking, snapshot.ContentFilter, opts)
 	parsed := evaluated.Parsed
 	calls := evaluated.Calls
 	if len(calls) == 0 && len(snapshot.AdditionalToolCalls) > 0 {
@@ -283,6 +285,21 @@ func ShouldRetryEmptyOutput(turn Turn, attempts, maxAttempts int) bool {
 		!turn.ContentFilter &&
 		len(turn.ToolCalls) == 0 &&
 		strings.TrimSpace(turn.Text) == ""
+}
+
+func IsMissingToolError(err *OutputError) bool {
+	return err != nil && strings.TrimSpace(err.Code) == claudecodeharness.MissingToolCallCode
+}
+
+func IsMissingToolErrorCode(code string) bool {
+	return strings.TrimSpace(code) == claudecodeharness.MissingToolCallCode
+}
+
+func ShouldRetryMissingTool(turn Turn, attempts, maxAttempts int) bool {
+	return attempts < maxAttempts &&
+		!turn.ContentFilter &&
+		len(turn.ToolCalls) == 0 &&
+		IsMissingToolError(turn.Error)
 }
 
 func FinalizeTurn(turn Turn, opts FinalizeOptions) FinalOutcome {

@@ -54,6 +54,14 @@ func RepairFinalOutput(in FinalOutputInput) FinalOutputResult {
 		out.Reason = "agent_waiting_task_output"
 		out.ToolCall = true
 	}
+	if !out.ToolCall {
+		if repaired := SynthesizeTaskOutputToolCallTextFromRunningAgents(in.FinalPrompt, out.Text, in.ToolNames, in.AllowMetaAgentTools); repaired != "" {
+			out.Text = repaired
+			out.Changed = true
+			out.Reason = "running_agent_task_output"
+			out.ToolCall = true
+		}
+	}
 	if !in.ContentFilter && strings.TrimSpace(out.Text) == "" {
 		if repaired := SynthesizeTaskOutputToolCallTextFromTaskNotification(in.FinalPrompt, in.ToolNames, in.AllowMetaAgentTools); repaired != "" {
 			out.Text = repaired
@@ -71,6 +79,14 @@ func RepairFinalOutput(in FinalOutputInput) FinalOutputResult {
 			out.Text = repaired
 			out.Changed = true
 			out.Reason = "thinking_agent_launch"
+			out.ToolCall = true
+		}
+	}
+	if !out.ToolCall {
+		if repaired := SynthesizeSafeExplorationToolCallTextFromMissingToolPromise(in.FinalPrompt, out.Text, in.ToolNames, in.AllowMetaAgentTools); repaired != "" {
+			out.Text = repaired
+			out.Changed = true
+			out.Reason = "safe_exploration_promise"
 			out.ToolCall = true
 		}
 	}
@@ -108,6 +124,145 @@ func SynthesizeReadToolCallTextFromIncompleteReadIntent(finalPrompt, finalText s
 			"limit":     "200",
 		},
 	}})
+}
+
+const safeProjectInventoryCommand = `pwd && find . -maxdepth 2 -type f | sed 's#^\./##' | sort | head -200`
+
+func SynthesizeSafeExplorationToolCallTextFromMissingToolPromise(finalPrompt, finalText string, toolNames []string, allowMetaAgentTools bool) string {
+	trimmed := strings.TrimSpace(finalText)
+	if trimmed == "" || toolcall.LooksLikeToolCallSyntax(trimmed) {
+		return ""
+	}
+	intent := CompileRequestIntent(RequestIntentInput{
+		FinalText:           trimmed,
+		FinalPrompt:         finalPrompt,
+		AvailableToolNames:  toolNames,
+		AllowMetaAgentTools: allowMetaAgentTools,
+	})
+	if intent.TextPromises.Edit || intent.TextPromises.WriteFile || intent.TextPromises.RunCommand ||
+		intent.TextPromises.LaunchAgent || intent.ClaimsWithoutTools.Any {
+		return ""
+	}
+	if intent.UserAuthorization.Execute && !intent.PureAnalysis {
+		return ""
+	}
+	if looksLikeUnsafeExplorationPromise(trimmed) {
+		return ""
+	}
+	if !intent.TextPromises.Read && !intent.TextPromises.Inspect && !intent.TextPromises.Search {
+		return ""
+	}
+	if !looksLikeGenericSafeExplorationPromise(trimmed, finalPrompt) {
+		return ""
+	}
+	if name, commandKey, ok := findShellToolName(toolNames); ok {
+		return FormatParsedToolCallsAsPromptXML([]toolcall.ParsedToolCall{{
+			Name: name,
+			Input: map[string]any{
+				commandKey:    safeProjectInventoryCommand,
+				"description": "Inspect project files",
+			},
+		}})
+	}
+	if name, ok := findListToolName(toolNames); ok {
+		return FormatParsedToolCallsAsPromptXML([]toolcall.ParsedToolCall{{
+			Name: name,
+			Input: map[string]any{
+				"path": ".",
+			},
+		}})
+	}
+	if name, ok := findGlobToolName(toolNames); ok {
+		return FormatParsedToolCallsAsPromptXML([]toolcall.ParsedToolCall{{
+			Name: name,
+			Input: map[string]any{
+				"path":    ".",
+				"pattern": "**/*",
+			},
+		}})
+	}
+	if readToolName, ok := findReadToolName(toolNames); ok {
+		path := requestedFilePathForReadRepair(finalPrompt, trimmed)
+		if path == "" {
+			return ""
+		}
+		return FormatParsedToolCallsAsPromptXML([]toolcall.ParsedToolCall{{
+			Name: readToolName,
+			Input: map[string]any{
+				"file_path": path,
+				"limit":     "200",
+			},
+		}})
+	}
+	return ""
+}
+
+func looksLikeGenericSafeExplorationPromise(text, finalPrompt string) bool {
+	trimmed := strings.TrimSpace(text)
+	if len([]rune(trimmed)) > 240 || strings.Count(trimmed, "\n") > 2 {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(trimmed, "`") && firstFileReference(trimmed, finalPrompt) == "" {
+		return false
+	}
+	if containsAny(lower, []string{"search for ", "grep for ", "locate "}) &&
+		firstFileReference(trimmed, finalPrompt) == "" &&
+		!containsAny(lower, []string{"current codebase", "codebase state", "repository structure"}) {
+		return false
+	}
+	return containsAny(lower, []string{
+		"main source files",
+		"source files",
+		"codebase",
+		"project files",
+		"current state",
+		"current code",
+		"key files",
+		"repository structure",
+	}) || containsAny(trimmed, []string{
+		"当前代码",
+		"当前状态",
+		"代码库",
+		"项目文件",
+		"关键文件",
+		"主要源码",
+		"源码文件",
+	})
+}
+
+func looksLikeUnsafeExplorationPromise(text string) bool {
+	lower := strings.ToLower(text)
+	return containsAny(lower, []string{
+		"implement",
+		"execute",
+		"fix",
+		"modify",
+		"patch",
+		"write",
+		"complete",
+		"fill ",
+		"build",
+		"test",
+		"verify",
+		"commit",
+		"restart",
+		"deploy",
+	}) || containsAny(text, []string{
+		"实现",
+		"推进",
+		"执行",
+		"修复",
+		"修改",
+		"写",
+		"补",
+		"落地",
+		"验证",
+		"测试",
+		"提交",
+		"重启",
+		"部署",
+	})
 }
 
 func ExecutableToolCallTextFromThinking(finalThinking string, toolNames []string, schemas toolcall.ParameterSchemas, allowMetaAgentTools bool) string {
@@ -252,6 +407,49 @@ func findReadToolName(toolNames []string) (string, bool) {
 	return "", false
 }
 
+func findShellToolName(toolNames []string) (string, string, bool) {
+	for _, want := range []struct {
+		name       string
+		commandKey string
+	}{
+		{name: "Bash", commandKey: "command"},
+		{name: "bash", commandKey: "command"},
+		{name: "Shell", commandKey: "command"},
+		{name: "execute_command", commandKey: "command"},
+		{name: "exec_command", commandKey: "cmd"},
+		{name: "functions.exec_command", commandKey: "cmd"},
+	} {
+		for _, name := range toolNames {
+			if strings.EqualFold(strings.TrimSpace(name), want.name) {
+				return strings.TrimSpace(name), want.commandKey, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func findListToolName(toolNames []string) (string, bool) {
+	for _, want := range []string{"List", "LS", "list_files", "list_dir"} {
+		for _, name := range toolNames {
+			if strings.EqualFold(strings.TrimSpace(name), want) {
+				return strings.TrimSpace(name), true
+			}
+		}
+	}
+	return "", false
+}
+
+func findGlobToolName(toolNames []string) (string, bool) {
+	for _, want := range []string{"Glob", "glob"} {
+		for _, name := range toolNames {
+			if strings.EqualFold(strings.TrimSpace(name), want) {
+				return strings.TrimSpace(name), true
+			}
+		}
+	}
+	return "", false
+}
+
 func isReadToolName(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "read", "read_file", "readfile":
@@ -358,6 +556,14 @@ func SynthesizeTaskOutputToolCallTextFromAgentWaiting(finalPrompt, finalText str
 	return FormatParsedToolCallsAsPromptXML(calls)
 }
 
+func SynthesizeTaskOutputToolCallTextFromRunningAgents(finalPrompt, finalText string, toolNames []string, allowMetaAgentTools bool) string {
+	calls := SynthesizeTaskOutputToolCallsFromRunningAgents(finalPrompt, finalText, toolNames, allowMetaAgentTools)
+	if len(calls) == 0 {
+		return ""
+	}
+	return FormatParsedToolCallsAsPromptXML(calls)
+}
+
 func SynthesizeTaskOutputToolCallsFromTaskNotification(finalPrompt string, toolNames []string, allowMetaAgentTools bool) []toolcall.ParsedToolCall {
 	if !allowMetaAgentTools {
 		return nil
@@ -395,6 +601,20 @@ func SynthesizeTaskOutputToolCallsFromAgentWaiting(finalPrompt, finalText string
 	if toolcall.LooksLikeToolCallSyntax(finalText) {
 		return nil
 	}
+	return taskOutputToolCallsForRunningAgents(finalPrompt, toolNames)
+}
+
+func SynthesizeTaskOutputToolCallsFromRunningAgents(finalPrompt, finalText string, toolNames []string, allowMetaAgentTools bool) []toolcall.ParsedToolCall {
+	if !allowMetaAgentTools || !LooksLikeLowInformationAgentContinuation(finalText) {
+		return nil
+	}
+	if toolcall.LooksLikeToolCallSyntax(finalText) {
+		return nil
+	}
+	return taskOutputToolCallsForRunningAgents(finalPrompt, toolNames)
+}
+
+func taskOutputToolCallsForRunningAgents(finalPrompt string, toolNames []string) []toolcall.ParsedToolCall {
 	toolName, ok := FindTaskOutputToolName(toolNames)
 	if !ok {
 		return nil
@@ -419,6 +639,29 @@ func SynthesizeTaskOutputToolCallsFromAgentWaiting(finalPrompt, finalText string
 		})
 	}
 	return calls
+}
+
+func LooksLikeLowInformationAgentContinuation(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return true
+	}
+	if len([]rune(trimmed)) > 80 {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	for _, phrase := range []string{"still running", "running", "waiting", "wait", "continue waiting"} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	for _, phrase := range []string{"继续等待", "等待", "仍在运行", "运行中"} {
+		if strings.Contains(trimmed, phrase) {
+			return true
+		}
+	}
+	onlyPunctuationOrOrdinal := strings.Trim(trimmed, " \t\r\n0123456789.。,:：;；、-—_()（）[]【】{}…")
+	return onlyPunctuationOrOrdinal == ""
 }
 
 func InvalidTaskOutputIDs(calls []toolcall.ParsedToolCall, finalPrompt string) []string {
